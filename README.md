@@ -1,43 +1,45 @@
 # Dupla Chave
 
-Custódia na Solana em que **nenhuma chave sozinha move fundos**. Os ativos ficam no Vault de uma multisig [Squads v4](https://github.com/Squads-Protocol/v4) 2-de-2 com dois votantes:
+Custódia na Solana em que **nenhuma chave sozinha move fundos**. Os ativos ficam no Vault de uma multisig [Squads v4](https://github.com/Squads-Protocol/v4) **2 de 3**. Votam:
 
-- **a carteira comum do cliente** (Phantom, Backpack, Solflare… qualquer carteira do Wallet Standard);
-- **a chave do serviço**, que só aprova o que passa pela política (limites, destinos, programas, simulação).
+- a **Phantom** do usuário (ou outra carteira do Wallet Standard);
+- a **chave do webapp**, gerada no aparelho e cifrada pela biometria dele (passkey com PRF); o serviço guarda só o texto cifrado;
+- a **chave do serviço**, que só vota em trocas de chave, nunca em envios.
 
-Executor e proponente do serviço não votam. Trocar a carteira ou a chave do serviço também exige as duas.
+Só o **operador** do serviço executa, depois de conferir a política. Com os dois votos do usuário, nem a Phantom nem o webapp executam, o que está provado no programa real.
 
-**O serviço não paga nada.** Taxas e rent saem da carteira do cliente. Cada operação é uma transação atômica: o serviço assina antes, a carteira assina por último e paga, e criar, aprovar, executar e fechar acontecem juntos.
+Trocar qualquer chave leva **72 h** e pode ser vetado ("Não fui eu") por quem ainda tem a chave que seria trocada. Perdeu o aparelho? A Phantom + o serviço recuperam o webapp. Perdeu a Phantom? A biometria + o serviço trocam a Phantom.
 
-| | Custo para a carteira |
+**O serviço não paga nada.** Taxas e rent saem da Phantom.
+
+| | Custo para a Phantom |
 |---|---|
 | Criar a conta (uma vez) | ~0,003 SOL |
-| Cada envio ou troca de chave | 0,000015 SOL. Na hora, a carteira precisa *ter* ~0,0065 SOL: o depósito das contas da Squads volta na mesma transação |
+| Cada envio | 0,000015 SOL. Na hora, a Phantom precisa *ter* ~0,0065 SOL: o depósito das contas da Squads volta na mesma transação |
+| Pedido de troca de chave | ~0,000015 SOL + ~0,006 SOL de depósito, que volta na conclusão |
 | Depósito no Vault | 0,000005 SOL |
-| Entrar pelo celular / prova da carteira nova pelo celular | 0,000005 SOL (o Solana Pay não tem assinatura de mensagem) |
-| Entrar pela extensão | grátis (assinatura de texto) |
+| Entrar | grátis (assinatura de texto) |
 
-Quem garante isso é o programa da Squads. Backend, banco e app podem falhar sem que uma chave isolada mova fundos. Os testes atacam o programa direto para provar.
+Quem garante isso é o programa da Squads. Backend, banco e webapp podem falhar sem que uma chave isolada mova fundos.
 
-## Os dois fluxos
+## Os fluxos
 
 **Cadastro**
-1. O cliente conecta a carteira que já usa.
-2. O serviço prepara a criação da conta 2-de-2 (carteira do cliente + chave nova do serviço), com um memo de vínculo. O app confere a transação: só a criação, com os membros certos, sem nada escondido.
-3. A carteira assina e paga (~0,003 SOL). A conta existe na Solana.
+1. O webapp gera a chave do webapp e a cifra com a biometria deste aparelho.
+2. O serviço prepara a criação da conta 2 de 3. O webapp confere a transação: só a criação, com os membros certos, sem nada escondido.
+3. A chave do webapp e a Phantom assinam o memo de vínculo, e a Phantom paga (~0,003 SOL).
 
-**Transação**
-1. O cliente pede o envio no app. O serviço confere a política e simula; nada vai para a chain.
-2. O serviço prepara a transação atômica (ainda sem assinar).
-3. O app remonta a transação sozinho, a partir do que mostra na tela, e compara byte a byte.
-4. **Biometria:** o app pede a digital ou o rosto do aparelho (passkey) sobre esses bytes exatos. Só então o serviço assina a parte dele.
-5. O cliente assina **uma vez** na carteira, que paga a taxa. Se algo falhar, nada acontece na Solana.
+**Envio**
+1. O usuário pede o envio. O serviço confere a política e simula; nada vai para a chain.
+2. O webapp recebe a transação atômica, remonta sozinho a partir do que mostra e compara byte a byte.
+3. **Biometria:** abre a chave do webapp, que assina esses bytes. O operador do serviço assina a execução.
+4. A Phantom assina **uma vez** e paga. Se algo falhar, nada acontece na Solana.
 
-A biometria é ativada uma vez por aparelho: a carteira assina um texto vinculando a passkey à conta. Uma biometria nova precisa da aprovação de uma já ativa; sem isso, espera 48 h antes de valer.
+**Troca de chave:** pedido (dois votos) → 72 h → concluir. Antes disso, "Não fui eu" cancela. Ver [docs/KEY_ROTATION.md](docs/KEY_ROTATION.md).
 
 ## Pelo celular (QR)
 
-O QR do computador abre **o nosso app** no navegador do celular. Ali o app confere a transação, pede a biometria do celular e só então chama a Phantom, pelo Mobile Wallet Adapter (Android). A Phantom assina e o computador segue sozinho. Entrar e provar a carteira nova são assinaturas de texto, sem custo.
+O QR do computador abre **o nosso webapp** no celular. Ali ele confere a transação e abre a chave do webapp com a biometria do celular. Depois chama a Phantom pelo Mobile Wallet Adapter (Android), que conecta e assina na mesma abertura. Para assinar, o celular nem precisa entrar na conta: o token do QR dá acesso àquela transação.
 
 ### Testar com o seu celular (devnet)
 
@@ -54,7 +56,7 @@ Quem paga é a sua Phantom: ela precisa de SOL de devnet (https://faucet.solana.
 
 Na Phantom do celular, ative o modo devnet: Configurações → Configurações de desenvolvedor → Modo testnet → Solana Devnet. No computador, abra o endereço do túnel que o script imprime (ou http://localhost:5173). O 127.0.0.1 não serve para biometria.
 
-A biometria fica presa ao domínio. O túnel muda a cada `pnpm dev:devnet`, então cada reinício pede uma biometria nova, que vale 5 minutos depois (`DK_PASSKEY_RESET_DELAY`).
+A biometria (passkey) fica presa ao domínio. O túnel muda a cada `pnpm dev:devnet`, então contas criadas num túnel não abrem a chave do webapp no túnel seguinte (só com "Recuperar o webapp"). Para testar com o celular, prefira o ambiente na VPS (`https://dupla.sjoel99.com`), com domínio fixo.
 
 Em localnet (`pnpm dev`), há a **biometria de teste** e o botão **Abrir no celular de teste**, que abre o link do QR em outra aba. Assim dá para testar o caminho do QR sem aparelho.
 
@@ -63,7 +65,7 @@ Em localnet (`pnpm dev`), há a **biometria de teste** e o botão **Abrir no cel
 ```bash
 cd ~/Desenvolvimento/Pessoal/duplachave
 pnpm install
-pnpm test     # 84 testes, ~4 s, sem rede: o Squads v4 da mainnet rodando no LiteSVM
+pnpm test     # 67 testes, ~4 s, sem rede: o Squads v4 da mainnet rodando no LiteSVM
 pnpm dev      # surfpool offline (Squads v4 das fixtures) + API :8787 + app :5173
 ```
 
@@ -71,12 +73,13 @@ Abra **http://127.0.0.1:5173**.
 
 ### Roteiro (5 minutos)
 
-1. **Escolha a carteira.** Em localnet há duas **Carteiras de teste** (A e B) que imitam a janela da Phantom: dá para testar sem extensão e sem SOL de verdade. O app pede SOL de teste para ela, prepara a criação da conta e a carteira assina (pagando ~0,003 SOL). Em seguida, **ative a biometria de teste**: confirme a janela da biometria e a carteira assina o vínculo.
-2. **Depositar:** toque em **Depositar** e informe o valor. A carteira assina e paga a transferência para o Vault, e o app envia. Também dá para usar "10 SOL no Vault" direto.
-3. **Enviar:** cole um endereço de carteira e o valor, depois toque em **Revisar**. A tela mostra "Conferido: a transação faz exatamente isto…". **Confirmar e assinar** pede a biometria, o serviço assina, a carteira abre uma vez e a transação executa; a carteira paga 0,000015 SOL. Em "Ou continuar no celular (QR)" → **Abrir no celular de teste**, a outra aba faz o mesmo papel do celular.
-4. **Servidor malicioso:** marque a opção nas ferramentas de teste e faça outro envio. O servidor mostra 1/10 do valor; o app remonta a transação, vê que não bate, mostra **Transação bloqueada** com o valor real e não pede assinatura.
-5. **Trocar de carteira:** Segurança → Trocar a carteira → Começar → escolha a **Carteira de teste B** e assine o texto. Depois toque em **Revisar e assinar a troca**: a carteira **atual** (A) assina e paga. Por fim, entre com a B (ela precisa de SOL para os próximos envios: "5 SOL na carteira").
-6. **Troca da chave do serviço:** use "Simular pedido de troca da chave do serviço" e assine (ou recuse: nada muda).
+1. **Escolha a carteira.** Em localnet há duas **Carteiras de teste** (A e B) que imitam a janela da Phantom, e a **biometria de teste**, que imita a digital. O webapp pede SOL de teste, cria a chave do webapp (confirme a biometria) e a carteira assina a criação da conta (~0,003 SOL).
+2. **Depositar:** "10 SOL no Vault" (ferramentas de teste) ou **Depositar** (a carteira paga).
+3. **Enviar:** endereço e valor → **Revisar** → "Conferido…" → **Confirmar e assinar**. A biometria abre a chave do webapp, o operador assina e a carteira assina uma vez. Em "Ou continuar no celular (QR)" → **Abrir no celular de teste**, outra aba faz o papel do celular.
+4. **Servidor malicioso:** marque a opção e faça outro envio. O servidor mostra 1/10 do valor; o webapp remonta a transação, vê que não bate e mostra **Transação bloqueada** com o valor real.
+5. **Recuperar o webapp:** Segurança → **Recuperar o webapp neste aparelho**. A biometria cria a chave nova e a carteira vota e paga. Em localnet o prazo é **2 min** (`pnpm dev`; na VPS, 72 h). A tela inicial avisa da troca pendente; depois do prazo, **Concluir troca**.
+6. **Não fui eu:** peça outra recuperação e toque em **Não fui eu**: a biometria (chave atual do webapp) veta.
+7. **Perdeu a Phantom:** Sair → **Perdeu a Phantom? Entrar com a biometria** → Segurança → **Trocar a Phantom** com a Carteira de teste B (que precisa de SOL).
 
 ### Com a Phantom de verdade
 
@@ -155,9 +158,10 @@ DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
 
 ## Limites desta versão
 
-- **Assinatura de uma vez só.** A carteira mostra uma transação técnica (instruções da Squads), não "enviar 2,5 SOL para X". O que o cliente vê é a tela do app, que remonta a transação e compara os bytes. Se o app (frontend) for adulterado, o cliente pode assinar algo que não pediu. Nesse caso, a política do serviço (limites, lista de endereços) é o que segura. Endurecimento possível: a carteira assinar também um texto com o resumo (duas janelas). Ver THREAT_MODEL #24.
-- **Mainnet bloqueada.** As chaves do serviço são de desenvolvimento; é preciso KMS/HSM antes.
-- **Modo estrito.** Perder a carteira (seed phrase) sem trocar antes **bloqueia a conta**. Recuperação ainda é pesquisa (RECOVERY.md), não código.
+- **Webapp adulterado:** a chave do webapp fica aberta no navegador durante a assinatura. Quem controla o código que o navegador roda (serviço comprometido servindo o webapp) pode capturá-la; com o voto do serviço, são 2 votos. Endurecimento: hospedar o webapp separado do serviço. Ver THREAT_MODEL #31.
+- **PRF obrigatória:** o aparelho precisa entregar a PRF da passkey (Chrome no Android com o gerenciador de senhas do Google). Teste em `/#/prf`.
+- **Perder a Phantom e todos os aparelhos** bloqueia a conta: são dois votos do usuário perdidos.
+- **Alertas simulados:** pedidos e vetos de troca só vão para o log; o webapp mostra o aviso na tela inicial. Falta o canal real (Telegram/e-mail).
+- **Mainnet bloqueada:** as chaves do serviço são de desenvolvimento; é preciso KMS/HSM antes.
 - **Só transferência de SOL.** Swap fica para depois.
-- **Notificações simuladas.** São um mock que só registra no log.
-- **A carteira precisa de SOL.** Sem ~0,0065 SOL na hora, o app avisa e não prepara a transação. Cadastros preparados e não assinados ficam em memória na API (~3 min).
+- **Mobile Wallet Adapter só no Android.**

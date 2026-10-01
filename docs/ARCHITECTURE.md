@@ -1,250 +1,165 @@
 # Arquitetura
 
-Custódia 2-de-2 na Solana. Os ativos ficam no Vault de uma multisig Squads v4. Os dois votantes são a **carteira comum do cliente** (Phantom, Backpack, Solflare…) e a **chave do serviço**, que só aprova o que passa pela política. Nenhuma chave isolada move fundos ou troca quem aprova: quem garante isso é o programa da Squads. O backend organiza o fluxo e aplica uma política *adicional*.
+Custódia na Solana sobre uma multisig Squads v4 **2 de 3**. Votam:
+- a **Phantom** do usuário;
+- a **chave do webapp**, uma chave guardada cifrada e destravada pela biometria do aparelho;
+- a chave do **serviço** (backend).
 
-**O serviço não paga nada.** Taxa e rent saem da carteira do cliente, e cada operação é **uma transação atômica** que ela assina por último: criar, aprovar, executar e fechar.
+Só o **operador** do serviço cria e executa propostas. Votar e executar são permissões separadas na Squads; como o único executor é o operador, nada aprovado roda sem o serviço conferir a política. E os votos que ele tem não bastam sozinhos.
 
-> Histórico: a primeira versão usava uma chave de aprovação gerada no próprio app, com PIN/biometria. Em 2026-10-01 o modelo passou a usar a carteira que o cliente já tem. No mesmo dia, a pedido do produto ("não quero que o sistema pague pela transação"), passou a ser atômico e pago pela carteira. Antes, o proponente criava a proposta na chain, o serviço votava numa transação separada e o pagador do serviço pagava as taxas. As decisões que mudaram estão marcadas com **(modelo atual)**.
+Termos: **webapp** é o que roda no Chrome (computador ou celular); **Phantom** é a carteira externa (app ou extensão); **serviço** é o backend.
 
-## Diagrama
+> Histórico, todo em 2026-10-01:
+> 1. A primeira versão usava uma chave própria no app.
+> 2. Virou 2 de 2: carteira comum + serviço.
+> 3. Ficou atômica e paga pela carteira.
+> 4. A biometria virou uma regra do serviço.
+> 5. Por fim, a pedido do produto ("não estou confortável"), a biometria virou **voto de verdade**: modelo 2 de 3 com operador único executor, prazo de 72 h nas trocas e chave do webapp cifrada guardada no serviço. As decisões estão em D15–D18.
 
-```mermaid
-flowchart TB
-  subgraph Cliente["Navegador do cliente"]
-    APP["App Dupla Chave<br/>(remonta e confere os bytes)"]
-    W["Carteira comum<br/>Phantom / Backpack / Solflare<br/>(paga taxa e rent)"]
-    CHK["Leitura da chain<br/>(RPC fixada no build do app)"]
-  end
-
-  subgraph Backend["API (Fastify) — sem SOL"]
-    API["Rotas + sessão"]
-    POL["PolicyEngine + simulação"]
-    COORD["CustodyService"]
-    DB[("Postgres: índice + auditoria encadeada")]
-    SS["Chave do serviço<br/>(KMS/HSM; dev: arquivo cifrado)"]
-    SK["Proponente (Initiate)"]
-  end
-
-  subgraph Solana
-    MS["Squads v4 · threshold 2 · sem config authority"]
-    V["Vault (PDA)"]
-  end
-
-  APP -->|"1. pedido (rascunho)"| API --> POL
-  APP -->|"2. preparar"| COORD
-  SS -->|"3. assina (voto do serviço)"| COORD
-  SK -->|"3. assina (cria)"| COORD
-  COORD -->|"4. transação atômica parcialmente assinada"| APP
-  CHK -->|"5. estado da multisig"| APP
-  APP -->|"6. bytes conferidos"| W
-  W -->|"7. assina por último"| APP
-  APP -->|"8. transação completa"| COORD
-  COORD -->|"9. confere bytes e envia"| MS --> V
-  COORD --- DB
-```
-
-## Membros da multisig
+## Membros
 
 | Papel | Permissão | Onde mora | O que consegue sozinho |
 |---|---|---|---|
-| Carteira do cliente | Vote + Execute | Phantom/Backpack/… do cliente | nada: 1 de 2 votos. Executar só roda o que já tem 2 votos. Não cria transações no Vault (sem Initiate) |
-| Chave do serviço | Vote | KMS/HSM (dev: arquivo cifrado) | nada: 1 de 2 votos |
-| Proponente do serviço | Initiate | servidor | criar propostas (pagando o rent de outra conta: sozinho, nem isso) |
-| Executor do serviço | Execute | servidor | executar o que **já** tem 2 votos. No modelo atual fica de reserva: quem executa é a carteira |
+| Phantom | Vote | Phantom do usuário | nada: 1 voto; não executa |
+| Chave do webapp | Vote | cifrada (AES-GCM) com a PRF da passkey; o serviço guarda só o texto cifrado | nada: 1 voto; não executa |
+| Chave do serviço | Vote | KMS/HSM (dev: arquivo cifrado) | nada: 1 voto. Só vota em **trocas de chave**, nunca em envios |
+| Operador do serviço | Initiate + Execute | servidor | cria e executa o que **já** tem 2 votos; não vota |
 
-Configuração fixa: threshold 2, `config_authority = default` (multisig autônoma), `time_lock = 0`, `rent_collector = carteira do cliente`, sem spending limit. `assertStrictTwoOfTwo` confere tudo isso **na chain** antes de cada decisão do servidor e depois de cada troca de chave. Inclui as máscaras exatas: carteira 6, serviço 2.
+Configuração fixa, conferida na chain por `assertAccountModel` antes de cada decisão e depois de cada troca:
+- threshold 2;
+- exatamente esses 3 votantes, cada um só com Vote;
+- o operador como único membro com Execute;
+- `config_authority = default`;
+- `time_lock = 0` (o prazo é imposto pelo operador; ver D16);
+- `rent_collector` = Phantom.
 
-## A transação atômica
+## Chave do webapp (D15)
+
+- **Criação, no aparelho:** uma chave Ed25519 nova. O webapp cria uma passkey com a extensão **PRF** do WebAuthn; a PRF devolve um segredo de 32 bytes, que só sai do autenticador com a biometria. HKDF desse segredo dá uma chave AES-256-GCM, que cifra a semente da chave do webapp. O dado extra autenticado da cifra é a chave pública.
+- **No serviço:** o texto cifrado (`webapp_keys`). Sem a biometria do aparelho, ele não abre.
+- **Uso:** biometria → PRF → abre a semente por um instante → assina → apaga da memória.
+- **Sal da PRF fixo:** assim a passkey pode ser descoberta sem saber antes qual é. Isso serve a quem perdeu a Phantom (D18) e a aparelhos com a passkey sincronizada pelo gerenciador de senhas.
+- **Localnet** (127.0.0.1, sem WebAuthn): a "biometria de teste" é uma PRF em software (HMAC com chave não exportável no IndexedDB), com janela de confirmação.
+- **Extra:** `POST /v1/accounts/:id/webapp-keys` guarda mais uma cópia cifrada (para outra passkey), mas só com a assinatura da própria chave do webapp.
+
+## A operação atômica
 
 ```
-[ vault_transaction_create(creator = proponente, rent_payer = carteira, memo = dk1:<hash da intenção>)
-  proposal_create(creator = proponente, rent_payer = carteira)
-  proposal_approve(serviço)
-  proposal_approve(carteira)
-  vault_transaction_execute(member = carteira)
-  vault_transaction_accounts_close(rent_collector = carteira) ]
-pagador: carteira · assinaturas: carteira, proponente, serviço
+[ vault_transaction_create(creator = operador, rent_payer = Phantom, memo = dk1:<hash da intenção>)
+  proposal_create(creator = operador, rent_payer = Phantom)
+  proposal_approve(Phantom)
+  proposal_approve(chave do webapp)
+  vault_transaction_execute(member = operador)
+  vault_transaction_accounts_close(rent_collector = Phantom) ]
+pagador: Phantom · assinaturas: Phantom, chave do webapp, operador
 ```
 
-- O serviço e o proponente assinam **antes**, ao preparar. A carteira assina por último e paga. A assinatura do serviço cobre os bytes exatos da transação final: não serve para nenhuma outra.
-- **Tudo ou nada.** Se a execução falha, nem a proposta fica na chain. Não existe "aprovada e não executada", proposta aberta ou proposta obsoleta.
-- **Custo para a carteira:** a taxa de 3 assinaturas, 0,000015 SOL. O rent das duas contas, ~0,0056 SOL, é cobrado e devolvido na mesma transação: a carteira precisa *ter* ~0,0065 SOL na hora, mas não gasta. Medido em `tests/atomic.test.ts`. A transação tem 785 bytes; a da troca de carteira, 730.
-- **Validade:** o blockhash vale ~60–90 s. Depois disso a transação preparada não entra mais (`PREPARED_WINDOW = 180 s`, com margem).
-- **Multisig antiga sem `rent_collector`** (criada antes desta versão): a transação sai sem a instrução de fechar. O rent fica nas contas da proposta, e a próxima troca de carteira define o `rent_collector`.
+1. **Rascunho** (`POST /v1/accounts/:id/intents`): política, destino, simulação. Nada vai para a chain.
+2. **Preparar** (`POST /v1/intents/:id/prepare`): índice atual, política e simulação de novo, simulação da transação inteira. Sai sem assinatura nenhuma.
+3. **Conferir** (`reviewPrepared`): o webapp lê a multisig pela RPC fixada no build. Tira da chain o serviço (o votante que sobra) e o operador. Remonta a transação a partir da intenção exibida e compara byte a byte.
+4. **Biometria:** abre a chave do webapp, que assina **esses bytes**.
+5. **Operador** (`POST /v1/intents/:id/authorize {message, webappSignature}`): o serviço só assina mensagens que ele preparou, dentro da janela, e só com a assinatura válida da chave do webapp da conta.
+6. **Conferir as assinaturas** (`verifyAuthorized`): mesmos bytes, operador e webapp válidos.
+7. **Phantom:** assina por último e paga.
+8. **Enviar** (`POST /v1/intents/:id/submit`): o serviço confere que é uma mensagem preparada e envia.
 
-## Fluxo de cadastro
+Tudo ou nada: se a execução falha, nem a proposta fica na chain.
 
-1. O app descobre as carteiras pelo Wallet Standard e conecta a escolhida.
-2. `GET /v1/wallets/:pk` diz se a carteira já tem conta. Se tiver, a carteira assina o texto de **entrada** (`signMessage`, de graça). Se não tiver, vai para o passo 3.
-3. `POST /v1/enrollment/prepare`: o servidor gera uma chave nova do serviço e monta `[memo de vínculo assinado pela carteira, multisig_create_v2(creator = carteira)]`, com a carteira pagando e a `createKey` já assinada.
-4. **O app confere a transação antes de a carteira assinar** (`verifyEnrollmentTransaction`), porque é ela que paga. Exige só essas duas instruções; threshold 2; esta carteira com máscara 6; um outro votante com 2; executor 4 e proponente 1; sem config authority nem time lock; e o rent voltando para ela. Uma transferência escondida da carteira é recusada.
-5. A carteira assina (uma janela; ~0,003 SOL) e `POST /v1/enrollment/submit` confere os bytes e envia. A assinatura da carteira nessa transação é a prova de posse: sem ela, a conta não existe.
+**Custos:**
+- 3 assinaturas: 0,000015 SOL por envio;
+- o rent das contas da proposta é cobrado e devolvido na mesma transação: a Phantom precisa *ter* ~0,0065 SOL, mas não gasta;
+- cadastro: ~0,003 SOL.
 
-Cadastros que a carteira não assinou a tempo são descartados, junto com a chave do serviço gerada para eles.
+## Cadastro
 
-## Fluxo de transação
+1. O webapp gera a chave do webapp (biometria) e conecta a Phantom.
+2. `POST /v1/enrollment/prepare {publicKey, webappPublicKey}`: memo assinado pela Phantom **e** pela chave do webapp (prova de posse das duas na própria transação) + `multisig_create_v2` (criador e pagador: a Phantom). Chave nova do serviço, operador do serviço.
+3. O webapp confere a transação (`verifyEnrollmentTransaction`): só o memo e a criação 2 de 3 com esta Phantom e esta chave votando, um terceiro votante, o operador como único executor, sem config authority nem time lock, e o rent de volta para a Phantom. Nada escondido.
+4. A chave do webapp assina, a Phantom assina e paga, e `POST /v1/enrollment/submit` leva junto a cópia cifrada da chave do webapp.
 
-1. **Rascunho:** `POST /v1/accounts/:id/intents` (`TRANSFER_SOL {destino, valor}`). O backend confere o modelo 2-de-2 na chain, a política, o destino (programa executável é recusado) e simula a transferência como o Vault. Nada vai para a chain.
-2. **Preparar:** `POST /v1/intents/:id/prepare`. Sob o lock da conta, o backend:
-   - concilia com a chain;
-   - fixa o índice (`transaction_index + 1`) e, se ele mudou, sela a intenção de novo (mesmo id);
-   - roda política e simulação outra vez e **simula a transação atômica inteira** (pega saldo insuficiente na carteira).
-   Devolve a transação **sem** as assinaturas do serviço. Ela fica em `IntentRecord.prepared` (lista: pode haver mais de uma válida ao mesmo tempo).
-3. **Conferência no app** (`reviewPrepared`): o app lê a multisig **pela RPC dele** e confere o 2-de-2. Tira da chain o outro votante e o proponente (não do backend). Depois **remonta a transação sozinho** a partir da intenção que mostra na tela e compara os bytes. Se algo diverge, mostra "Transação bloqueada" com o que a transação recebida faria de verdade (`inspectPrepared` decodifica a mensagem embutida) e não pede biometria nem abre a carteira.
-4. **Biometria:** o app pede a passkey do aparelho (digital, rosto) com desafio = `sha256(bytes da mensagem conferida)`, calculado por ele.
-5. **Serviço assina:** `POST /v1/intents/:id/authorize {message, assertion}`. O backend só assina uma mensagem que ele mesmo preparou, ainda dentro da janela, e só com uma confirmação válida de uma passkey **ativa** da conta, com user verification, de uma origem permitida, sobre exatamente esses bytes. Aí assina como serviço e proponente.
-6. **Conferência das assinaturas** (`verifyAuthorized`): mesmos bytes, assinaturas do serviço e do proponente válidas.
-7. **Carteira:** assina **uma vez** e paga. Se a preparação tiver mais de 40 s, o app prepara, confere e pede a biometria de novo.
-8. **Envio:** `POST /v1/intents/:id/submit`. O backend exige que a mensagem seja uma das preparadas e confere a assinatura da carteira. Então envia e marca EXECUTED.
+## Trocas de chave com prazo (D16, D17)
 
-Em mudanças de segurança (troca de carteira ou da chave do serviço), é a mesma coisa com uma ConfigTransaction: `config_transaction_execute` com a carteira atual como membro executor e `config_transaction_accounts_close`. O backend confere o 2-de-2 com a chave nova na chain antes de atualizar o banco.
+Dois passos:
 
-### Conciliação
+1. **Pedido** (`POST /v1/accounts/:id/security-changes`, depois `/authorize` e `/submit`): uma ConfigTransaction `[AddMember(nova, Vote), RemoveMember(atual)]` (mais `SetRentCollector(nova)` na troca da Phantom), criada e **aprovada por dois votantes na mesma transação**. Um memo assinado pela chave nova prova posse.
+2. **Execução** (`/execute-prepare`, `/execute`): só o operador executa, e **só depois de 72 h** (`DK_SECURITY_DELAY`). Quem paga assina a execução.
 
-A chain manda. Uma transação preparada pode entrar sem passar pelo `submit`: o celular envia sozinho, ou o cliente recusou no app mas a carteira já tinha assinado. Por isso, antes de preparar e a cada 30 s (`expireDue`), o backend procura as transações preparadas na chain pela conta da transação da Squads (`signaturesFor` + bytes da mensagem):
-- **entrou:** vira EXECUTED, mesmo se aqui estava recusada ou vencida, e uma troca de chave atualiza os registros;
-- **não pode mais entrar** (índice usado por outra ou blockhash vencido): sai da lista.
+| Troca | Votam o pedido | Quem paga | Quem veta ("Não fui eu") |
+|---|---|---|---|
+| Trocar a Phantom | webapp + serviço | a Phantom **nova** | a Phantom atual |
+| Recuperar o webapp | Phantom + serviço | a Phantom | a chave atual do webapp |
+| Chave do serviço | Phantom + serviço | a Phantom | Phantom ou webapp |
 
-Uma intenção com transação preparada ainda válida não vence até a janela passar.
+- **Veto:** é uma assinatura de texto (`vetoMessage`) pela chave que seria trocada. Quem ainda tem essa chave prova que ela não está perdida. Como só o operador executa, o veto vale na hora. A proposta aprovada fica stale na próxima troca executada, o que está provado na chain.
+- **Uma troca aberta por vez.** Operações normais continuam durante o prazo.
+- **Alertas:** o serviço envia alerta no pedido e no veto (hoje, `LogNotificationService`; falta o canal real).
 
-## Biometria (passkey)
+## Celular
 
-Uma passkey WebAuthn por aparelho, ligada à conta, não à carteira (sobrevive à troca de carteira).
-- **Vincular:** `POST /v1/accounts/:id/passkeys/options` → o aparelho cria a passkey → a **carteira atual assina** um texto com o id da credencial, o aparelho e o desafio (`passkeyBindingMessage`) → `POST /v1/accounts/:id/passkeys`.
-- **A primeira** passkey da conta vale na hora. As seguintes valem na hora se uma passkey ativa aprovar (confirmação sobre `sha256(texto de vínculo)`). Sem aprovação, esperam `DK_PASSKEY_RESET_DELAY` (padrão 48 h) e geram alerta. Assim, quem só tem a carteira não troca a biometria de surpresa.
-- **Domínio:** a passkey fica presa ao domínio em que foi criada (RP ID). `DK_WEBAUTHN_ORIGINS` lista de onde o app pode ser aberto; o domínio público (`DK_PUBLIC_URL`) entra sozinho. Em localnet (127.0.0.1, onde o WebAuthn não funciona) há a "biometria de teste": ES256 do WebCrypto, chave não exportável, com janela de confirmação.
-- **Sem passkey ativa,** o serviço não assina nada (`PASSKEY_REQUIRED`).
-
-## Fluxo pelo celular
-
-O QR do computador abre **o nosso app** no celular (`<URL do app>/#/m/<token>`), e não mais a carteira direto (Solana Pay):
-1. O computador pede o QR (`POST /v1/pay/connect`, `/v1/intents/:id/pay` ou `/v1/rotations/:id/pay-proof`).
-2. A câmera abre o link. O celular entra com a carteira: no Android, a Phantom é chamada pelo **Mobile Wallet Adapter**; o login é `signMessage`, sem custo.
-3. **Intenção:** o celular **não precisa entrar na conta**. O token do QR dá acesso àquela intenção (`/v1/handoff/:token/{intent,prepare,authorize,submit,reject}`). O celular faz o mesmo fluxo do computador: conferência, biometria do celular, serviço assina, carteira assina. A carteira do celular conecta e assina **na mesma abertura** (uma sessão MWA por operação, sem reautorização), conferindo que é a conta esperada.
-4. **Entrar:** o celular entra e entrega uma sessão ao computador (`/v1/handoff/:token/claim`).
-5. **Troca:** a carteira nova assina o texto de posse (`signMessage`, sem custo) e o celular envia a prova (`/v1/handoff/:token/proof`).
-6. O computador acompanha por `GET /v1/pay/:token`; numa intenção, o estado vem da própria intenção.
-
-Assim, a transação que a carteira do celular assina é a que o próprio celular conferiu e confirmou com a biometria. O token só diz o que abrir: assinar continua exigindo a carteira da conta e a biometria.
-
-iOS: o Mobile Wallet Adapter é só Android. No iPhone, a alternativa é o deeplink da Phantom (não feito).
+O QR do computador abre **o nosso webapp** no celular (`<URL>/#/m/<token>`).
+- **Assinar:** o celular não precisa entrar na conta. O token dá acesso àquela intenção e à cópia cifrada da chave (`/v1/handoff/:token/{intent,key,prepare,authorize,submit,reject}`). Conferência, biometria do celular, operador, e a Phantom pelo **Mobile Wallet Adapter**, que no Android conecta e assina na mesma abertura.
+- **Entrar:** o celular entra com a Phantom e entrega uma sessão ao computador.
 
 ## Decisões de segurança
 
-Cada decisão tem problema, alternativas, trade-off e decisão.
+As decisões D1–D14 do modelo 2 de 2 estão no histórico do git (commit `b210c7a`). As que continuam valendo:
+- **D1:** rotação numa ConfigTransaction só.
+- **D4:** spending limit e config authority proibidos.
+- **D5:** bytes idênticos.
+- **D6:** RPC fixada no build.
+- **D9:** sessão não autoriza.
+- **D10:** o banco é índice.
+- **D11:** auditoria encadeada.
+- **D13:** quem paga é o usuário; o serviço não tem SOL.
 
-### D1. Rotação atômica
+### D15. Chave do webapp como voto (PRF)
 
-- **Problema:** o pedido original descrevia "adiciona a chave nova → confirma → remove a antiga". Entre os dois passos ficam 3 votantes com threshold 2: a carteira antiga + a nova, as duas do lado do usuário, movem fundos sem o servidor. O teste `PERIGO evitado` reproduz esse roubo no programa real.
-- **Decisão:** usar uma ConfigTransaction `[AddMember(nova), RemoveMember(antiga)]`, mais `SetRentCollector(nova)` na troca da carteira. O programa executa as ações em sequência e só verifica o invariant no fim, então nenhum estado intermediário existe na chain. A chave nova herda exatamente as permissões do papel (carteira 6, serviço 2); qualquer outra máscara faz a política recusar.
-
-### D2. Aprovada pendente (modelo atual)
-
-- **Problema:** uma VaultTransaction aprovada continua executável depois que a configuração muda.
-- **Decisão:** criar, aprovar e executar vão na mesma transação. "Aprovada e não executada" deixa de existir, e com ela o congelamento das operações durante uma troca de chave, a drenagem da fila e o "executar de novo / cancelar". Uma operação e uma troca preparadas no mesmo índice não colidem: só uma entra, e a outra é preparada de novo no índice seguinte.
-
-### D3. Expiração (modelo atual)
-
-- **Problema:** o programa não tem expiração de proposta.
-- **Decisão:** a intenção tem `expiresAt` (10 min para operação, 30 min para rotação), e o app e o backend recusam preparar ou assinar depois disso. A transação preparada expira sozinha com o blockhash (~60–90 s). Não há voto para trocar nem proposta para rejeitar: nada foi para a chain.
-- **Risco residual:** recusar no app depois que a carteira assinou não desfaz a assinatura. Se a carteira enviar dentro da janela do blockhash, a transação executa, e a conciliação registra. A assinatura foi do próprio cliente.
-
-### D4. Spending limits e config authority proibidos
-
-Os dois criam caminhos que não passam pelo quórum. A política recusa `AddSpendingLimit`, `RemoveSpendingLimit`, `ChangeThreshold`, `SetTimeLock` e qualquer ConfigTransaction que não seja exatamente a rotação. `SetRentCollector` só é aceito dentro da troca da carteira, apontando para a nova.
-
-### D5. Bytes idênticos (modelo atual)
-
-Servidor e app usam a mesma função (`atomicInstructionsFor`) para montar a transação a partir da intenção e do estado da chain. O app compara os bytes da mensagem recebida com os da que ele montou. O backend compara a transação assinada com as que preparou. A primeira versão comparava instrução por instrução, mas ao compilar a mensagem as flags de conta passam a valer para a mensagem inteira. Comparar os bytes é mais simples e mais forte.
-
-### D6. Conferência pelo app, com RPC fixada no build
-
-O app lê a multisig **pela RPC dele**. Essa RPC e o cluster são fixados no build (`VITE_RPC_URL`, `VITE_CLUSTER`) e nunca vêm da API: a revisão de 2026-10-01 provou o roubo quando vinham. Com `VITE_RPC_URL_2`, o app exige contas idênticas em duas RPCs. No modelo atual, o app ainda remonta a transação inteira: um backend que mente sobre o outro votante ou o proponente não passa, porque os dois vêm da chain.
-
-### D7. Carteira do cliente (modelo atual)
-
-- A chave é a da carteira que o cliente já usa. Ela nunca passa pelo app nem pelo backend: o app pede `signMessage` e `signTransaction` pelo Wallet Standard. `signTransaction` mantém as assinaturas que o serviço já pôs.
-- O login é um texto legível, que a carteira mostra na janela dela. O cadastro é a própria criação da conta, com um memo de vínculo.
-- Não há biblioteca de adapter: a descoberta pelo Wallet Standard tem cerca de 60 linhas. Cada dependência a menos é uma a menos na cadeia de suprimentos.
-- Em localnet, as "Carteiras de teste" implementam a mesma interface: Ed25519 do WebCrypto, chave não exportável no IndexedDB, com janela de confirmação. Assim o fluxo é testável sem extensão. O app pede SOL de teste para elas antes do cadastro.
-
-### D8. Chave do servidor
-
-`ServerSigner` expõe só `publicKey()` e `sign()`. Em dev, `DevFileKeyStore` guarda seeds cifradas com AES-256-GCM em arquivos 0600, ou só em memória. **A mainnet está bloqueada no `loadConfig`** até existir KMS/HSM. A chave nova do serviço precisa estar no provedor de chaves; uma chave do usuário nunca vira "chave do serviço".
-
-### D9. Sessão não autoriza
-
-A sessão (HMAC, 12 h) vem de a carteira assinar o texto de entrada ("Isto não aprova nenhuma transação"). Mover fundos exige a transação assinada pela carteira atual **na chain**. A sessão de uma carteira substituída morre junto com ela.
-
-### D10. O banco é índice
-
-Membros, threshold e índice são relidos da chain antes de cada decisão; o que entrou na chain é conciliado. O status da proposta não existe mais: ela é criada e fechada na mesma transação.
-
-### D11. Auditoria
-
-Os eventos são encadeados por hash. A tabela tem trigger que recusa UPDATE/DELETE, e outro trigger impede reativar uma chave revogada.
-
-### D12. Uma assinatura na carteira
-
-- **Problema:** a carteira comum mostra a transação de forma técnica, como instruções da Squads. Ela não mostra "enviar 2,5 SOL para X".
+- **Problema:** a biometria era uma regra do serviço. Com a seed da Phantom vazada, alguém vinculava uma biometria nova pelo próprio serviço.
 - **Alternativas:**
-  - (a) Uma janela: a transação atômica. O cliente confia na tela do app, que remonta os bytes.
-  - (b) Duas janelas: a carteira assina antes um texto com o resumo, que ela mostra, e depois a transação.
-- **Decisão (do produto):** (a), pela fluidez.
-- **Risco residual:** um frontend adulterado pode pedir a assinatura de uma operação que o cliente não quis. Mesmo assim, ela teria passado pela política do serviço (limites, lista de endereços, simulação). O endurecimento (b) é uma troca pequena: um texto com o resumo, verificado pelo backend antes de aceitar a transação. Ver THREAT_MODEL #24.
-
-### D14. Biometria antes da carteira
-
-- **Problema:** pelo celular (Solana Pay), a carteira recebia a transação direto do servidor: nenhuma conferência independente antes de assinar. E não havia segundo fator além da carteira: sessão + carteira roubadas bastavam.
-- **Alternativas:**
-  - (a) Biometria no app antes de o serviço assinar.
-  - (b) O QR abre o nosso app no celular, que confere e só então chama a carteira.
-  - (c) As duas.
-- **Decisão (do produto):** (c).
+  - (a) 2 de 2 endurecido;
+  - (b) 3 de 3;
+  - (c) 2 de 3 com operador único executor;
+  - (d) trocar a Phantom pela chave do webapp;
+  - (e) outro programa (Smart Account, Swig).
+- **Decisão (do produto):** (c), com a chave do webapp cifrada pela PRF e guardada no serviço.
 - **Trade-offs:**
-  - mais um passo (a biometria) a cada transação;
-  - a passkey presa ao domínio — no `dev:devnet` o túnel muda a cada reinício, e cada domínio novo pede uma biometria nova, que espera o prazo (5 min no devnet);
-  - Mobile Wallet Adapter só no Android.
+  - depende da PRF no aparelho: Chrome no Android com o gerenciador de senhas do Google suporta; a página `/#/prf` testa;
+  - a chave aparece aberta no navegador por um instante, então um webapp adulterado servido pelo serviço comprometido pode capturá-la (ver THREAT_MODEL #31);
+  - perder todos os aparelhos com a passkey exige a recuperação com prazo (D17).
 
-### D13. Quem paga (modelo atual)
+### D16. Prazo imposto pelo operador
 
-- **Problema:** o serviço pagava taxa e rent de tudo (cadastro, propostas, votos, execução). Isso custa dinheiro por cliente e cria um alvo: quem consegue sessões consegue gastar o SOL do serviço.
-- **Alternativas:**
-  - (a) Serviço paga tudo (antes).
-  - (b) Carteira paga, em várias transações: proponente cria, serviço vota, carteira aprova e executa. Ainda sobra o serviço pagando a taxa do próprio voto, e volta o estado pendente.
-  - (c) Carteira paga, numa transação atômica, com o serviço pré-assinando.
-- **Decisão:** (c). O serviço fica sem SOL nenhum, nada fica pendente na chain e a assinatura do serviço só vale para aqueles bytes.
-- **Custos:**
-  - o cliente precisa de SOL na carteira: ~0,003 SOL uma vez para criar a conta; ~0,0065 SOL de saldo na hora de cada transação, com custo real de 0,000015;
-  - entrar pelo celular custa 0,000005 SOL, porque o Solana Pay não tem `signMessage`;
-  - a carteira nova, na troca pelo celular, precisa de 0,000005 SOL para a prova.
+- **Problema:** a Squads v4 tem um time lock só, global, que atrasaria também os envios.
+- **Decisão:** sem time lock na chain. O operador (único executor) só executa trocas depois de 72 h. Se o serviço estiver comprometido, o prazo some, mas o atacante ainda precisa de um segundo voto.
+
+### D17. Quem veta
+
+- **Decisão:** veta quem ainda tem a chave que seria trocada.
+  - Seed vazada pedindo a recuperação do webapp: a chave do webapp veta.
+  - Chave do webapp vazada pedindo a troca da Phantom: a Phantom veta.
+- **Risco residual:** com a seed vazada, o atacante também veta a troca legítima da Phantom, um impasse. Ele não move fundos (falta a chave do webapp), e o usuário, que tem as duas chaves, pode mover tudo para uma conta nova.
+
+### D18. Entrar sem a Phantom
+
+Quem perdeu a Phantom entra com a chave do webapp (`POST /v1/auth/webapp`, assinatura do texto de entrada). O aparelho descobre a passkey e pede a cópia cifrada ao serviço (`/v1/webapp-keys/lookup`, que entrega só texto cifrado). Depois pede "Trocar a Phantom".
 
 ## Ambientes
 
 | Variável | Uso |
 |---|---|
-| `SOLANA_RPC_URL` | RPC do backend |
-| `VITE_RPC_URL`, `VITE_RPC_URL_2`, `VITE_CLUSTER` | RPC(s) e cluster do app, fixados no build |
-| `SOLANA_CLUSTER` | `localnet` \| `devnet` (mainnet recusada nesta versão) |
-| `SQUADS_PROGRAM_ID` | precisa ser igual ao do SDK |
+| `SOLANA_RPC_URL`, `SOLANA_CLUSTER` | RPC e cluster do backend (mainnet recusada nesta versão) |
+| `VITE_RPC_URL`, `VITE_RPC_URL_2`, `VITE_CLUSTER` | RPC(s) e cluster do webapp, fixados no build |
 | `DATABASE_URL` | Postgres; sem ela, memória |
-| `DK_SESSION_SECRET`, `DK_ADMIN_TOKEN` | sessão e painel administrativo |
-| `DK_KEY_ENCRYPTION_KEY`, `DK_KEYS_DIR` | "KMS" de desenvolvimento |
-| `DK_PUBLIC_URL` | URL HTTPS do app que o celular alcança (QR "continuar no celular"); também vira origem da biometria |
-| `DK_WEBAUTHN_ORIGINS` | origens de onde o app pode ser aberto (biometria presa ao domínio) |
-| `DK_PASSKEY_RESET_DELAY` | segundos que uma biometria nova sem aprovação espera (padrão 172800) |
-| `SURFPOOL_FORK=1` | `pnpm dev` com o surfpool como fork da mainnet (padrão: offline) |
+| `DK_SESSION_SECRET`, `DK_ADMIN_TOKEN` | sessão e admin |
+| `DK_KEY_ENCRYPTION_KEY`, `DK_KEYS_DIR` | "KMS" de desenvolvimento (chaves do serviço e do operador) |
+| `DK_PUBLIC_URL` | URL HTTPS do webapp (QR "continuar no celular") |
+| `DK_SECURITY_DELAY` | prazo das trocas em segundos (padrão 259200 = 72 h; `pnpm dev` usa 120) |
 
 ## Fora desta entrega
 
-Fica para depois:
-- swap (Jupiter);
-- tokens SPL no app;
-- notificações reais;
-- recuperação (RECOVERY.md);
-- varredura de spending limits;
-- ancoragem externa da auditoria;
-- o endurecimento D12(b);
-- revogar uma biometria pelo app (hoje só há vincular);
-- deeplink da Phantom para o iPhone;
-- cadastros pendentes sobrevivendo a reinício da API (hoje ficam em memória por ~3 min).
+- alertas reais (Telegram/e-mail) para trocas pedidas e vetadas;
+- vincular um aparelho novo à mesma chave do webapp sem sincronizar a passkey (hoje: sincronização do gerenciador de senhas ou recuperação com prazo);
+- Mobile Wallet Adapter no iPhone (deeplink da Phantom);
+- swap e tokens SPL;
+- KMS/HSM e mainnet;
+- migração das contas do modelo 2 de 2.
