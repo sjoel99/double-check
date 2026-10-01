@@ -335,3 +335,14 @@ describe("invariantes", () => {
     expect(JSON.stringify(events)).not.toMatch(/secret|privateKey/i);
   });
 });
+
+describe("antes de propor", () => {
+  it("destino que é programa é recusado; simulação que falha não vira proposta", async () => {
+    const t = await setupService({ depositSol: 1 });
+    const program = (await import("@sqds/multisig")).PROGRAM_ID.toBase58();
+    expect(await securityError(t.custody.createTransferSol(t.account.id, { destination: program, amountLamports: "1000" }))).toBe("POLICY_DENIED");
+    // Mais do que o saldo: a simulação como vault falha.
+    expect(await securityError(t.custody.createTransferSol(t.account.id, { destination: Keypair.generate().publicKey.toBase58(), amountLamports: (5n * SOL).toString() }))).toBe("POLICY_DENIED");
+    expect((await readMultisig(t.chain, new PublicKey(t.account.multisig))).transactionIndex).toBe(0n);
+  });
+});

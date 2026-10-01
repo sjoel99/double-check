@@ -115,7 +115,10 @@ export async function buildServer(d: ApiDeps) {
     if (!st.success) throw new SecurityError("AUTH_STATEMENT_INVALID", st.error.message);
     if (!verifyStatement(body.signed, new PublicKey(ch.subject))) throw new SecurityError("BAD_SIGNATURE", "assinatura inválida");
     const acc = await d.store.findAccountByClientKey(ch.subject);
-    if (!acc) throw new SecurityError("NOT_A_CLIENT_KEY", "chave não é a CLIENT atual de nenhuma conta");
+    if (!acc) {
+      if (await d.store.isRevokedKey(ch.subject)) throw new SecurityError("KEY_REVOKED", "esta chave foi substituída e não volta a valer");
+      throw new SecurityError("NOT_A_CLIENT_KEY", "chave não é a CLIENT atual de nenhuma conta");
+    }
     const token = issueSession(d.sessionSecret, { sub: acc.userId, acc: acc.id, key: ch.subject, exp: now() + 12 * 3600 });
     return { token, account: acc };
   });
@@ -217,6 +220,12 @@ export async function buildServer(d: ApiDeps) {
       const { address, sol } = z.object({ address: pubkey, sol: z.number().positive().max(100) }).parse(req.body);
       await d.airdrop!(new PublicKey(address), Math.round(sol * LAMPORTS_PER_SOL));
       return { ok: true };
+    });
+    // Atalho de dev para o pedido de rotação do servidor (continua exigindo o app).
+    app.post("/v1/dev/accounts/:id/rotations/server", async (req) => {
+      const { id } = req.params as { id: string };
+      await ownAccount(req, id);
+      return d.custody.requestServerRotation(id, "rotação programada (simulada)");
     });
     // Simula um ataque de servidor malicioso para ver o app recusar (só dev).
     app.get("/v1/dev/intents/:id/tampered", async (req) => {

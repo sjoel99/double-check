@@ -297,6 +297,23 @@ export class CustodyService {
       const preview = previewVaultView(vault, instructions);
       const vaultLamports = await this.chain.getBalance(vault);
       const pre = await this.cfg.policy.validate(user, intent, preview, { vaultLamports, verifiedNewKeys: [], revokedKeys: [] });
+
+      // Destino: programa (executável) não recebe SOL; conta de outro programa é marcada.
+      const destInfo = await this.chain.getAccountInfo(destination);
+      if (destInfo?.executable) {
+        pre.allowed = false;
+        pre.reasons.push("DESTINATION_IS_PROGRAM: o destino é um programa, não uma carteira");
+      } else if (destInfo && !destInfo.owner.equals(SystemProgram.programId)) {
+        pre.riskFlags.push("DESTINATION_NOT_WALLET");
+      }
+      // Simulação como o vault: o que falharia na execução não vira proposta.
+      if (pre.allowed && this.chain.simulate) {
+        const sim = await this.chain.simulate(vault, instructions);
+        if (!sim.ok) {
+          pre.allowed = false;
+          pre.reasons.push(`SIMULATION_FAILED: ${sim.error}`);
+        }
+      }
       if (!pre.allowed) {
         await this.audit({ type: "TRANSACTION_POLICY_DENIED", accountId, multisig: acc.multisig, intentId: intent.id, intentHash: intent.intentHash, details: { reasons: pre.reasons } });
         throw new SecurityError("POLICY_DENIED", pre.reasons.join("; "));
@@ -477,7 +494,20 @@ export class CustodyService {
       } else {
         const executor = this.cfg.service.executor;
         const { instruction, lookupTableAccounts } = await executeVaultIx(this.chain, ms, index, await executor.publicKey());
-        const execSig = await sendInstructions(this.chain, [instruction], [this.cfg.service.feePayer, executor], lookupTableAccounts);
+        let execSig: string;
+        try {
+          execSig = await sendInstructions(this.chain, [instruction], [this.cfg.service.feePayer, executor], lookupTableAccounts);
+        } catch (e) {
+          // Aprovada e não executada: continua executável on-chain. Fica FAILED aqui e
+          // bloqueia rotações até ser executada ou cancelada (CLIENT + SERVER).
+          rec.status = "FAILED";
+          rec.reasons = [`EXECUTION_FAILED: ${e instanceof ChainTxError ? (e.programError ?? e.message) : String(e)}`];
+          rec.updatedAt = this.now();
+          await this.store.saveIntent(rec);
+          await this.audit({ type: "TRANSACTION_REJECTED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId, intentHash: intent.intentHash, details: { reasons: rec.reasons, approvedOnchain: true } });
+          await this.store.saveSecurityEvent({ id: randomUUID(), accountId: acc.id, code: "APPROVED_NOT_EXECUTED", message: `proposta ${intent.transactionIndex} aprovada e não executada`, at: this.now() });
+          return rec;
+        }
         rec.signatures.execute = execSig;
         rec.status = "EXECUTED";
         rec.updatedAt = this.now();

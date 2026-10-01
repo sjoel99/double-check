@@ -144,3 +144,28 @@ export async function signPossession(args: {
     expiresAt: args.now + (args.ttl ?? 300),
   });
 }
+
+export type Inspection =
+  | { ok: true; view: VaultView | ConfigView; transactionHash: string }
+  | { ok: false; code: string; message: string; view: VaultView | ConfigView | null; diffs: string[] };
+
+/** Igual a reviewOnChain, mas devolve o motivo (e o que a chain tem) em vez de lançar — para a tela de bloqueio. */
+export async function inspectOnChain(chain: Chain, intent: TransactionIntent, me: PublicKey, now: number): Promise<Inspection> {
+  try {
+    const r = await reviewOnChain(chain, intent, me, now);
+    return { ok: true, ...r };
+  } catch (e) {
+    const code = (e as { code?: string }).code ?? "ERROR";
+    let view: VaultView | ConfigView | null = null;
+    let diffs: string[] = [];
+    try {
+      const ms = new PublicKey(intent.multisig);
+      const tx = await readTransaction(chain, ms, BigInt(intent.transactionIndex));
+      if (tx?.kind === "VAULT") view = viewVaultTransaction(tx, vaultPda(ms, 0));
+      if (view) diffs = compareIntent(intent, view);
+    } catch {
+      /* sem visão da chain */
+    }
+    return { ok: false, code, message: (e as Error).message, view, diffs };
+  }
+}

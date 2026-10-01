@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { FailedTransactionMetadata, LiteSVM } from "litesvm";
-import { PublicKey, type VersionedTransaction } from "@solana/web3.js";
+import { PublicKey, type TransactionInstruction, type VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import * as multisig from "@sqds/multisig";
-import { ChainTxError, type Chain, programErrorFromLogs } from "@duplachave/solana";
+import { buildTransaction, ChainTxError, type Chain, programErrorFromLogs } from "@duplachave/solana";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
@@ -58,6 +58,18 @@ export class LiteSvmChain implements Chain {
 
   async now() {
     return Number(this.svm.getClock().unixTimestamp);
+  }
+
+  async simulate(payer: PublicKey, instructions: TransactionInstruction[]) {
+    const tx = await buildTransaction(this, payer, instructions);
+    this.svm.withSigverify(false);
+    try {
+      const r = this.svm.simulateTransaction(tx);
+      if (r instanceof FailedTransactionMetadata) return { ok: false, error: r.err().toString(), logs: r.meta().logs() };
+      return { ok: true, error: null, logs: r.meta().logs() };
+    } finally {
+      this.svm.withSigverify(true);
+    }
   }
 
   airdrop(address: PublicKey, lamports: bigint) {

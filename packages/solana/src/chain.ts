@@ -47,7 +47,14 @@ export interface Chain {
   /** Hora da chain (Clock sysvar), em segundos. */
   now(): Promise<number>;
   getAddressLookupTable?(address: PublicKey): Promise<AddressLookupTableAccount | null>;
+  /**
+   * Simula instruções como se `payer` (o vault) as assinasse — o mesmo que o
+   * programa da Squads faz no execute. Sem verificação de assinatura.
+   */
+  simulate?(payer: PublicKey, instructions: TransactionInstruction[]): Promise<SimulationResult>;
 }
+
+export type SimulationResult = { ok: boolean; error: string | null; logs: string[] };
 
 /** O SDK da Squads pede um `Connection`; isto expõe só o que ele usa. */
 export function connectionLike(chain: Chain): Connection {
@@ -139,5 +146,12 @@ export class RpcChain implements Chain {
 
   async getAddressLookupTable(address: PublicKey) {
     return (await this.connection.getAddressLookupTable(address)).value;
+  }
+
+  async simulate(payer: PublicKey, instructions: TransactionInstruction[]): Promise<SimulationResult> {
+    const tx = await buildTransaction(this, payer, instructions);
+    const sim = await this.connection.simulateTransaction(tx, { sigVerify: false, replaceRecentBlockhash: true, commitment: "confirmed" });
+    const logs = sim.value.logs ?? [];
+    return { ok: !sim.value.err, error: sim.value.err ? JSON.stringify(sim.value.err) : null, logs };
   }
 }

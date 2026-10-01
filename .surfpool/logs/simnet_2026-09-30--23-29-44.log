@@ -20,3 +20,35 @@
 [2026-09-30--23-29-58 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:51312.
 [2026-09-30--23-29-59 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:51316.
 [2026-09-30--23-30-00 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:51318.
+[2026-09-30--23-47-18 INFO actix_server::server] SIGTERM received; starting graceful shutdown
+[2026-09-30--23-47-18 INFO actix_server::worker] shutting down idle worker
+[2026-09-30--23-47-18 INFO actix_server::accept] accept thread stopped
+[2026-09-30--23-47-30 INFO surfpool::cli::simnet] Account 8rtHE3azqv8XNY6CbS2seFey3zrKzSnzNT424JXkgb7T updated.
+[2026-09-30--23-47-30 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:46498.
+[2026-09-30--23-50-27 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:48020.
+[2026-09-30--23-50-47 INFO surfpool::cli::simnet] Account FthCazkHPouhEb1JRE3TxcmVzsLZuBb884ercNtrRaE1 updated.
+[2026-09-30--23-50-47 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:35008.
+[2026-09-30--23-51-01 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:43770.
+[2026-09-30--23-51-21 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:35898.
+[2026-09-30--23-51-22 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:35914.
+[2026-09-30--23-51-23 INFO surfpool::cli::simnet] Account DTxcpNApaMLNfYgwQ99PmpCm8rjS7o1q2YdfzYsrYohB updated.
+[2026-09-30--23-51-23 INFO surfpool::cli::simnet] Account 9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin updated.
+[2026-09-30--23-52-54 INFO surfpool::cli::simnet] Account HPFgnstk4kEGGAAXK5RAQ8W9nDZvpKzNUPAXdTUCho59 updated.
+[2026-09-30--23-52-54 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:59456.
+[2026-09-30--23-53-59 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:42788.
+[2026-09-30--23-54-23 INFO surfpool::cli::simnet] Account Fn4sdsd8P6YJdEj2TEPXrS3buyYZrmj1McFsNnHsua4A updated.
+[2026-09-30--23-54-23 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:56380.
+[2026-09-30--23-54-29 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:35686.
+[2026-09-30--23-54-33 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:35696.
+[2026-09-30--23-54-34 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:35698.
+[2026-09-30--23-54-35 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:35708.
+[2026-09-30--23-55-13 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:53974.
+[2026-09-30--23-56-13 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:54830.
+[2026-09-30--23-56-14 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:54846.
+[2026-09-30--23-56-57 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:57578.
+[2026-09-30--23-56-58 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:39536.
+[2026-09-30--23-56-58 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:39548.
+[2026-09-30--23-58-31 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:48744.
+[2026-09-30--23-58-58 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:35494.
+[2026-09-30--23-58-59 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:35498.
+[2026-09-30--23-58-59 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:35510.
