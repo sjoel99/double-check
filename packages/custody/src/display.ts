@@ -68,3 +68,14 @@ export function renderIntent(
     warnings: [isClient ? "A chave antiga perderá acesso após a conclusão." : "Se você não reconhece esta solicitação, REJEITE.", ...warnings.filter((w) => !w.includes("REJEITE") && !w.includes("chave antiga"))],
   };
 }
+
+/**
+ * Rótulo do QR do Solana Pay. A Phantom mostra o rótulo (do GET), não a
+ * mensagem do POST — então o resumo do que vai ser assinado vai aqui.
+ */
+export function qrLabel(intent: TransactionIntent): string {
+  if (intent.type === "TRANSFER_SOL") return `Dupla Chave · Enviar ${formatUnits(intent.amountLamports, 9)} SOL para ${intent.destination === intent.vault ? "o seu Vault" : short(intent.destination)}`;
+  if (intent.type === "ROTATE_MEMBER")
+    return intent.role === "CLIENT" ? `Dupla Chave · Trocar a carteira da conta por ${short(intent.newKey)}` : "Dupla Chave · Nova chave do serviço (recuse se não pediu)";
+  return "Dupla Chave · Confirmar transação";
+}

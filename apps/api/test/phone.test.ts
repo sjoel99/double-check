@@ -34,7 +34,7 @@ async function setup() {
     const url = new URL(decodeURIComponent(link.slice("solana:".length)));
     expect(url.protocol).toBe("https:");
     const meta = await call("GET", url.pathname);
-    expect(meta.json.label).toBe("Dupla Chave");
+    expect(meta.json.label).toMatch(/^Dupla Chave · /);
     const r = await call("POST", url.pathname, { account: (await wallet.publicKey()).toBase58() });
     if (r.status !== 200) return { error: r.json.error as string, message: "" };
     const tx = VersionedTransaction.deserialize(Buffer.from(r.json.transaction, "base64"));
@@ -86,6 +86,8 @@ describe("celular (Solana Pay)", () => {
     const qr = await t.call("POST", `/v1/intents/${intent.json.intent.id}/pay`, {}, c.token);
 
     expect((await t.phone(qr.json.link, DevMemorySigner.generate("OUTRA"))).error).toBe("WRONG_WALLET");
+    const label = await t.call("GET", new URL(decodeURIComponent(qr.json.link.slice(7))).pathname);
+    expect(label.json.label).toBe(`Dupla Chave · Enviar 2 SOL para ${to.slice(0, 4)}…${to.slice(-4)}`);
     const out = await t.phone(qr.json.link, c.wallet);
     expect(out.message).toContain("Aprovar e executar");
     expect((await t.call("GET", `/v1/pay/${qr.json.token}`)).json.result.status).toBe("EXECUTED");

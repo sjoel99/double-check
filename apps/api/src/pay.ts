@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { PublicKey } from "@solana/web3.js";
 import { z } from "zod";
 import { SecurityError } from "@duplachave/shared";
-import type { CustodyService, Store } from "@duplachave/custody";
+import { type CustodyService, qrLabel, type Store } from "@duplachave/custody";
 
 /**
  * Assinatura pelo celular com Solana Pay "transaction request".
@@ -22,6 +22,8 @@ type Kind = "CONNECT" | "SIGN_INTENT" | "ROTATION_PROOF";
 type PayRequest = {
   token: string;
   kind: Kind;
+  /** O que a carteira mostra (a Phantom exibe o rótulo, não a mensagem do POST). */
+  label: string;
   /** intentId ou rotationId */
   subject: string | null;
   accountId: string | null;
@@ -52,10 +54,10 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
   const requests = new Map<string, PayRequest>();
   const base = d.publicUrl.replace(/\/$/, "");
 
-  const create = (kind: Kind, subject: string | null, accountId: string | null) => {
+  const create = (kind: Kind, subject: string | null, accountId: string | null, label: string) => {
     const token = randomBytes(24).toString("hex");
     const now = d.now();
-    const r: PayRequest = { token, kind, subject, accountId, createdAt: now, expiresAt: now + TTL, status: "WAITING_SCAN", wallet: null, error: null, result: null, pending: null, attempts: 0 };
+    const r: PayRequest = { token, kind, label, subject, accountId, createdAt: now, expiresAt: now + TTL, status: "WAITING_SCAN", wallet: null, error: null, result: null, pending: null, attempts: 0 };
     requests.set(token, r);
     const url = `${base}/pay/${token}`;
     return { token, url, link: `solana:${encodeURIComponent(url)}`, expiresAt: r.expiresAt, https: url.startsWith("https://") };
@@ -64,14 +66,14 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
   const publicView = (r: PayRequest) => ({ status: r.status, kind: r.kind, wallet: r.wallet, error: r.error, result: r.result, expiresAt: r.expiresAt });
 
   // ------------------------------------------------------------ o desktop cria e acompanha
-  app.post("/v1/pay/connect", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async () => create("CONNECT", null, null));
+  app.post("/v1/pay/connect", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async () => create("CONNECT", null, null, "Dupla Chave · Entrar ou criar sua conta"));
 
   app.post("/v1/intents/:id/pay", async (req) => {
     const { id } = req.params as { id: string };
     const rec = await d.store.getIntent(id);
     if (!rec) throw new SecurityError("INTENT_NOT_FOUND", id);
     await d.ownAccount(req, rec.accountId);
-    return create("SIGN_INTENT", id, rec.accountId);
+    return create("SIGN_INTENT", id, rec.accountId, qrLabel(rec.intent));
   });
 
   app.post("/v1/rotations/:id/pay-proof", async (req) => {
@@ -79,7 +81,7 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
     const rot = await d.store.getRotation(id);
     if (!rot) throw new SecurityError("ROTATION_NOT_FOUND", id);
     await d.ownAccount(req, rot.accountId);
-    return create("ROTATION_PROOF", id, rot.accountId);
+    return create("ROTATION_PROOF", id, rot.accountId, "Dupla Chave · Provar que a carteira nova é sua");
   });
 
   /** Quem criou o pedido acompanha. O token é segredo do desktop (só aparece no QR que ele mostra). */
@@ -100,7 +102,7 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
     const { token } = req.params as { token: string };
     const r = requests.get(token);
     if (!r || r.status === "EXPIRED") throw new SecurityError("PAY_NOT_FOUND", "pedido não existe ou expirou");
-    return { label: "Dupla Chave", icon: `${base}/pay/icon.svg` };
+    return { label: r.label, icon: `${base}/pay/icon.svg` };
   });
 
   app.post("/pay/:token", async (req) => {
