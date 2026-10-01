@@ -297,6 +297,14 @@ function RotationApproval({ request, busy, err, onDecide }: { request: ApprovalR
           <Icon name="shieldcheck" size={18} color="var(--accent)" />
           <div className="grow">Conferido na Solana: a proposta troca exatamente estas chaves, numa única transação.</div>
         </div>
+        {isClient && (
+          <div className="banner warn">
+            <Icon name="phone" size={18} color="#F2B33D" />
+            <div>
+              Confira no aparelho novo: a chave mostrada lá tem que ser <span className="mono">{short(intent.newKey)}</span>. Se não for, alguém usou o seu código — rejeite.
+            </div>
+          </div>
+        )}
         <div>
           {isClient && request.deviceName && <Detail label="Dispositivo novo" value={request.deviceName} />}
           <Detail label="Solicitado" value={when} />

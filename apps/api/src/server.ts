@@ -87,8 +87,9 @@ export async function buildServer(d: ApiDeps) {
 
   // ---------------------------------------------------------------- cadastro
   app.post("/v1/enrollment/challenge", async (req) => {
-    const body = z.object({ userId: z.string().uuid().optional() }).parse(req.body ?? {});
-    const userId = body.userId ?? randomUUID();
+    // Sempre um usuário novo: vincular contas a um usuário existente exige
+    // autenticação dele, o que esta versão ainda não tem.
+    const userId = randomUUID();
     const c = await d.custody.createChallenge("ENROLL_CLIENT_KEY", userId);
     return { userId, challengeId: c.id, challenge: c.challenge, expiresAt: c.expiresAt, cluster: d.cluster };
   });

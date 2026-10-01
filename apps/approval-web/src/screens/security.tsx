@@ -352,9 +352,22 @@ export function Pair({ r, c }: { r: string; c: string }) {
         </>
       )}
       {mine && info?.status !== "COMPLETED" && (
-        <div className="status">
-          <span className="spinner" /> Confirme a troca no aparelho antigo.
-        </div>
+        <>
+          <div className="card" style={{ alignItems: "center", textAlign: "center", gap: 8 }}>
+            <div className="muted" style={{ fontSize: 13 }}>
+              A chave deste aparelho
+            </div>
+            <div className="big" style={{ fontSize: 28 }}>
+              {short(ctx.device!.publicKey)}
+            </div>
+            <div className="muted" style={{ fontSize: 13, lineHeight: 1.5 }}>
+              No aparelho antigo, a "Nova" chave tem que ser exatamente esta. Se for outra, rejeite lá.
+            </div>
+          </div>
+          <div className="status">
+            <span className="spinner" /> Confirme a troca no aparelho antigo.
+          </div>
+        </>
       )}
       {info && ["REJECTED", "EXPIRED", "FAILED"].includes(info.status) && <div className="banner danger">A troca foi encerrada ({info.status}).</div>}
       {err && <div className="banner danger">{err}</div>}
