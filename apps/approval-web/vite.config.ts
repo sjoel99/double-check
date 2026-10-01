@@ -9,7 +9,17 @@ export default defineConfig(({ mode }) => {
   const rpc = env.RPC_UPSTREAM ?? "http://127.0.0.1:8899";
   const proxy = {
     "/api": { target: api, changeOrigin: true, rewrite: (p: string) => p.replace(/^\/api/, "") },
-    "/rpc": { target: rpc, changeOrigin: true, rewrite: () => "" },
+    // Para a RPC vão só os cabeçalhos essenciais: pelo túnel chegam cabeçalhos da Cloudflare
+    // (cf-*, x-forwarded-*, origin do túnel) que a RPC pública da devnet recusa.
+    "/rpc": {
+      target: rpc,
+      changeOrigin: true,
+      rewrite: () => "",
+      configure: (proxy: { on: (ev: "proxyReq", fn: (req: { getHeaderNames(): string[]; removeHeader(h: string): void }) => void) => void }) =>
+        proxy.on("proxyReq", (req) => {
+          for (const h of req.getHeaderNames()) if (!["host", "content-type", "content-length", "accept"].includes(h)) req.removeHeader(h);
+        }),
+    },
   };
   return {
     plugins: [react()],
