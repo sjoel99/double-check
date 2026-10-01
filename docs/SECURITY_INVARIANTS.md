@@ -8,9 +8,9 @@ Cada invariante tem quem a garante e os testes que a provam. "Programa" = o ELF 
 | 2 | Nenhuma private key isolada consegue trocar os votantes | Programa (ConfigTransaction também exige 2 votos; sem config authority; `assertStrictTwoOfTwo`) | `onchain` Testes 6, 7, 8 (só CLIENT_A), 9 (sem o app) |
 | 3 | O servidor não retira nem redireciona ativos sem o usuário | Programa + app (conferência na chain) | `protocol` "INVARIANTE 3 — backend inteiro comprometido"; `onchain` Teste 2 |
 | 4 | O cliente não retira ativos sem a política/aprovação do servidor | Programa + PolicyEngine (antes de propor e de novo antes de assinar) | `protocol` "INVARIANTE 4"; `onchain` Teste 1; "PERIGO evitado" (por que a rotação é atômica) |
-| 5 | A transação mostrada é exatamente a aprovada | App (`reviewOnChain` pela RPC própria) + declaração com intentHash e hash da conta on-chain + voto montado no app | `protocol` "INVARIANTE 5", Teste 10, "voto não pode ser redirecionado" |
+| 5 | A transação mostrada é exatamente a aprovada | App (`reviewOnChain` pela RPC fixada no build, nunca indicada pela API) + declaração com intentHash e hash da conta on-chain + voto montado no app | `protocol` "INVARIANTE 5", Teste 10, "voto não pode ser redirecionado" |
 | 6 | Chave revogada nunca volta a ser válida | Programa (`NotAMember`) + backend (`REVOKED_KEY_REUSE`) + trigger no Postgres + sessão morre | `protocol` "INVARIANTE 6", Teste 8; `database` "trigger impede reativar"; `api` "sessão antiga morre" |
-| 7 | Chave nova prova posse antes de entrar | Backend (`checkPossession`) + política (`NO_PROOF_OF_POSSESSION`) | `protocol` Teste 13 (5 variações) |
+| 7 | Chave nova prova posse antes de entrar | Backend (`checkPossession`) + política (`NO_PROOF_OF_POSSESSION`) + app confere a prova (`verifyRotationProof`) | `protocol` Teste 13 (5 variações); `regressions` A4 |
 
 ## Os 13 testes pedidos
 
@@ -33,7 +33,7 @@ Cada invariante tem quem a garante e os testes que a provam. "Programa" = o ELF 
 ## Como rodar
 
 ```bash
-pnpm test        # 46 testes: on-chain (LiteSVM + ELF da mainnet), protocolo, banco, API
+pnpm test        # 63 testes: on-chain (LiteSVM + ELF da mainnet), protocolo, regressões, política, banco, API
 pnpm test:pg     # protocolo inteiro com Postgres real (precisa de um Postgres; ver README)
 ```
 

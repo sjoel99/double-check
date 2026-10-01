@@ -9,7 +9,7 @@ O programa da Squads é quem impõe isso. Backend, banco e app podem falhar sem 
 ```bash
 cd ~/Desenvolvimento/Pessoal/duplachave
 pnpm install
-pnpm test     # 46 testes, ~3 s, sem rede: o Squads v4 da mainnet rodando no LiteSVM
+pnpm test     # 63 testes, ~4 s, sem rede: o Squads v4 da mainnet rodando no LiteSVM
 pnpm dev      # surfpool (fork local da mainnet) + API :8787 + Approval App :5173
 ```
 
@@ -51,11 +51,13 @@ Três descobertas no programa mudaram o desenho pedido (detalhes em [docs/RESEAR
 2. **VaultTransaction aprovada continua executável depois da rotação.** Por isso a rotação drena a fila e para se achar aprovada pendente.
 3. **Não há expiração on-chain**, mas em 2-de-2 um único voto de rejeição encerra a proposta. O servidor rejeita on-chain o que vence.
 
+Depois da primeira versão, uma revisão adversarial independente achou 5 bugs confirmados com teste — o mais grave: a API indicava ao app qual RPC usar, e um backend comprometido podia apontá-lo para uma RPC falsa e desviar fundos. Os 8 achados foram corrigidos e os 5 confirmados viraram testes (`tests/regressions.test.ts`). Detalhes no fim de [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+
 ## Documentos
 
 - [docs/RESEARCH.md](docs/RESEARCH.md) — Fase 1: versões, APIs usadas e o comportamento do programa
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — diagrama, fluxo, decisões de segurança (problema, alternativas, decisão)
-- [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) — 22 ameaças com impacto, mitigação e risco residual
+- [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) — 23 ameaças com impacto, mitigação e risco residual
 - [docs/KEY_ROTATION.md](docs/KEY_ROTATION.md) — rotação do cliente e do servidor, máquina de estados
 - [docs/RECOVERY.md](docs/RECOVERY.md) — por que não há recuperação no v4 puro e os caminhos possíveis
 - [docs/SECURITY_INVARIANTS.md](docs/SECURITY_INVARIANTS.md) — invariantes ↔ testes
@@ -95,3 +97,4 @@ SOLANA_RPC_URL=https://api.devnet.solana.com SOLANA_CLUSTER=devnet pnpm dev   # 
 - App web, não nativo. No navegador, a biometria/PIN é uma trava da interface; no app nativo a trava passa a ser do Keystore/Keychain.
 - Só transferência de SOL no app (o backend e o leitor já entendem TransferChecked de tokens). Swap fica para depois.
 - Notificações são um mock que registra no log.
+- O app web confere a chain pela RPC fixada no build (`VITE_RPC_URL`, padrão `/rpc` → surfpool). Em produção, use um provedor diferente do backend (e `VITE_RPC_URL_2` para quórum).

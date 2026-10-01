@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS key_rotations (
   created_at       bigint NOT NULL,
   expires_at       bigint NOT NULL,
   intent_id        text,
+  possession       jsonb,
   history          jsonb NOT NULL
 );
 

@@ -79,7 +79,7 @@ apps/approval-web       Approval App (React, WebCrypto Ed25519 não exportável)
 5. **Revisão no app**: o app lê pela **RPC dele** a multisig, a proposta e a transação no índice; reconstrói o que a transação faz e compara com a intenção recebida (`reviewOnChain`). Divergência → tela "Transação bloqueada", nada é assinado.
 6. **Assinatura**: depois da biometria/PIN, o app assina (a) uma declaração off-chain e (b) o voto `proposal_approve` que **ele mesmo monta** (não assina bytes recebidos do servidor).
 7. **Servidor**: confere a declaração (campos, validade, assinante = CLIENT atual **na chain**, hash da conta on-chain, nonce de uso único), confere que o voto é exatamente `proposal_approve(multisig, índice, cliente, memo)`, paga a taxa e envia. Roda a política de novo com estado fresco. Só então assina o próprio voto.
-8. **Execução**: o EXECUTOR executa. Se falhar, a intenção fica `FAILED` e um evento de segurança registra "aprovada e não executada" (ela continua executável e bloqueia rotações até ser executada ou cancelada).
+8. **Execução**: antes de votar, o servidor simula de novo como o vault (o saldo pode ter mudado desde a proposta). O EXECUTOR executa. Se a execução falhar, a intenção fica `APPROVED_PENDING_EXECUTION` — ela continua executável na chain — e o app oferece "Executar de novo" ou "Cancelar" (cancelamento também exige CLIENT + SERVER). Enquanto existir, pedidos de rotação são recusados sem congelar a conta.
 
 ### A declaração assinada pelo cliente
 
@@ -119,7 +119,7 @@ Cada decisão: problema, alternativas, trade-off, decisão.
 
 - **Problema**: VaultTransaction aprovada continua executável depois que a configuração muda (item 6 da pesquisa). Uma aprovação feita com a chave antiga sobreviveria à troca.
 - **Alternativas**: executar antes; cancelar antes (exige os dois); deixar e cancelar depois com a chave nova.
-- **Decisão**: o executor executa imediatamente após o segundo voto, então "aprovada e não executada" só existe se a execução falhou. A rotação drena a fila: rejeita propostas ativas (um voto basta) e, se encontrar aprovada pendente, para em `ROLLBACK_REQUIRED` pedindo execução ou cancelamento (CLIENT + SERVER). Depois da rotação, CLIENT_B + SERVER também conseguem cancelar (teste).
+- **Decisão**: o servidor simula de novo antes de votar e o executor executa logo após o segundo voto, então "aprovada e não executada" só existe se a execução falhar. Nesse caso a intenção vira `APPROVED_PENDING_EXECUTION` com "Executar de novo"/"Cancelar" no app. Pedir uma rotação com aprovada pendente é recusado (`APPROVED_PENDING`) **antes** de congelar; durante a drenagem, propostas ativas são rejeitadas (um voto basta). Rotação que falha em qualquer passo termina `FAILED` e descongela. Depois de uma rotação, CLIENT_B + SERVER também conseguem cancelar uma aprovada antiga (teste).
 
 ### D3. Expiração
 
@@ -134,9 +134,9 @@ Os dois criam caminhos que não passam pelo quórum (item 3 e 4 da pesquisa). A 
 
 O voto do cliente é `proposal_approve(multisig, índice, cliente, memo)` montado no app com o pagador e o blockhash informados pelo servidor. O servidor confere que é exatamente essa instrução antes de pagar a taxa. Sem isso, um servidor malicioso poderia entregar ao app um voto para outro índice.
 
-### D6. Conferência pelo app, com RPC própria
+### D6. Conferência pelo app, com RPC fixada no build
 
-O que impede "app mostra A, backend envia B" é o app ler a transação **pela RPC dele**. Em dev o `/rpc` do app e a API apontam para o mesmo surfpool; em produção o app deve usar outro provedor (ou dois, comparando), senão um backend comprometido que também controle a RPC poderia mentir para os dois lados. Ver THREAT_MODEL.md, "RPC malicioso".
+O que impede "app mostra A, backend envia B" é o app ler a transação **pela RPC dele**. Essa RPC (e o cluster) é fixada no build do app (`VITE_RPC_URL`, `VITE_CLUSTER`), nunca indicada pela API — a primeira versão lia a RPC de `/v1/config`, e a revisão provou o roubo: backend comprometido + RPC falsa indicada por ele = app aprovando um índice cujo conteúdo real é outro. Com `VITE_RPC_URL_2`, o app lê de duas RPCs e exige contas idênticas. Em dev, o `/rpc` do app e a API apontam para o mesmo surfpool; em produção, use provedores diferentes do backend e hospede o app separado.
 
 ### D7. Chave do cliente
 

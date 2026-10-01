@@ -67,7 +67,6 @@ const app = await buildServer({
   store,
   chain,
   cluster: cfg.SOLANA_CLUSTER,
-  appRpcUrl: cfg.APP_RPC_URL,
   sessionSecret,
   adminToken,
   feePayer: feePayer.toBase58(),

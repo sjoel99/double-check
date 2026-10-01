@@ -79,6 +79,8 @@ const STATUS: Record<string, string> = {
   AWAITING_CLIENT: "Aguardando você",
   AWAITING_SERVER: "Com o serviço",
   EXECUTING: "Executando",
+  APPROVED_PENDING_EXECUTION: "Aguardando execução",
+  CANCELLED: "Cancelada",
   EXECUTED: "Executada",
   REJECTED: "Rejeitada",
   EXPIRED: "Expirada",

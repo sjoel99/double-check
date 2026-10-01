@@ -15,7 +15,6 @@ export type ApiDeps = {
   store: Store & ChallengeStore;
   chain: Chain;
   cluster: string;
-  appRpcUrl: string;
   sessionSecret: string;
   adminToken: string | null;
   feePayer: string;
@@ -77,16 +76,19 @@ export async function buildServer(d: ApiDeps) {
 
   app.get("/healthz", async () => ({ ok: true }));
 
+  // A RPC que o app usa para conferir NÃO vem daqui: é fixada no build do app.
+  // Se viesse da API, um backend comprometido apontaria o app para uma RPC falsa.
   app.get("/v1/config", async () => ({
     cluster: d.cluster,
-    rpcUrl: d.appRpcUrl,
     feePayer: d.feePayer,
     mode: "STRICT_2_OF_2",
     devTools: Boolean(d.airdrop),
   }));
 
   // ---------------------------------------------------------------- cadastro
-  app.post("/v1/enrollment/challenge", async (req) => {
+  // Cadastro cria multisig paga pelo serviço: limite apertado por IP (produção: convite/captcha + cota).
+  const enrollLimit = { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } };
+  app.post("/v1/enrollment/challenge", enrollLimit, async (req) => {
     // Sempre um usuário novo: vincular contas a um usuário existente exige
     // autenticação dele, o que esta versão ainda não tem.
     const userId = randomUUID();
@@ -94,7 +96,7 @@ export async function buildServer(d: ApiDeps) {
     return { userId, challengeId: c.id, challenge: c.challenge, expiresAt: c.expiresAt, cluster: d.cluster };
   });
 
-  app.post("/v1/enrollment", async (req) => {
+  app.post("/v1/enrollment", enrollLimit, async (req) => {
     const body = z.object({ userId: z.string().uuid(), userName: z.string().max(80).optional(), deviceName: z.string().min(1).max(60), challengeId: z.string().uuid(), possession: signed }).parse(req.body);
     const { account, deviceId } = await d.custody.enroll(body);
     const token = issueSession(d.sessionSecret, { sub: account.userId, acc: account.id, key: account.roles.client, exp: now() + 12 * 3600 });
@@ -164,6 +166,23 @@ export async function buildServer(d: ApiDeps) {
     return { record: await view(rec), approvals, approvalRequest: rec.status === "AWAITING_CLIENT" ? await d.custody.approvalRequest(id) : null };
   });
 
+  app.post("/v1/intents/:id/execute", async (req) => {
+    const { id } = req.params as { id: string };
+    const rec = await d.store.getIntent(id);
+    if (!rec) throw new SecurityError("INTENT_NOT_FOUND", id);
+    await ownAccount(req, rec.accountId);
+    return view(await d.custody.retryExecution(id));
+  });
+
+  app.get("/v1/intents/:id/cancel-request", async (req) => {
+    const { id } = req.params as { id: string };
+    const rec = await d.store.getIntent(id);
+    if (!rec) throw new SecurityError("INTENT_NOT_FOUND", id);
+    await ownAccount(req, rec.accountId);
+    if (rec.status !== "APPROVED_PENDING_EXECUTION") throw new SecurityError("INTENT_NOT_CANCELLABLE", rec.status);
+    return d.custody.approvalRequest(id);
+  });
+
   app.post("/v1/intents/:id/decision", async (req) => {
     const { id } = req.params as { id: string };
     const rec = await d.store.getIntent(id);
@@ -185,11 +204,12 @@ export async function buildServer(d: ApiDeps) {
     return { rotation: rot, pairing: { rotationId: rot.id, challenge: rot.challenge, multisig: acc.multisig, cluster: d.cluster, expiresAt: rot.expiresAt } };
   });
 
-  app.get("/v1/rotations/:id/pairing", async (req) => {
+  // Desafio no corpo (não na URL): URLs vão para logs.
+  app.post("/v1/rotations/:id/pairing", async (req) => {
     const { id } = req.params as { id: string };
-    const { c } = z.object({ c: z.string().regex(/^[0-9a-f]{64}$/) }).parse(req.query);
+    const { challenge } = z.object({ challenge: z.string().regex(/^[0-9a-f]{64}$/) }).parse(req.body);
     const rot = await d.store.getRotation(id);
-    if (!rot || rot.challenge !== c) throw new SecurityError("ROTATION_NOT_FOUND", id);
+    if (!rot || rot.role !== "CLIENT" || rot.challenge !== challenge) throw new SecurityError("ROTATION_NOT_FOUND", id);
     const acc = (await d.store.getAccount(rot.accountId))!;
     return { rotationId: rot.id, status: rot.status, role: rot.role, newKey: rot.newKey, multisig: acc.multisig, cluster: d.cluster, expiresAt: rot.expiresAt, newDeviceName: rot.newDeviceName };
   });
@@ -204,7 +224,9 @@ export async function buildServer(d: ApiDeps) {
   app.get("/v1/accounts/:id/rotations", async (req) => {
     const { id } = req.params as { id: string };
     await ownAccount(req, id);
-    return { rotations: await d.store.listRotations(id) };
+    // Sem o desafio: ele só sai uma vez, na resposta de quem pediu a troca.
+    const list = await d.store.listRotations(id);
+    return { rotations: list.map(({ challenge: _c, possession: _p, ...r }) => r) };
   });
 
   app.post("/v1/admin/accounts/:id/rotations/server", async (req, reply: FastifyReply) => {

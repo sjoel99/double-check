@@ -82,7 +82,7 @@ export type TransactionIntent = IntentBody & { intentHash: string };
 
 export const ApprovalStatementSchema = z.object({
   domain: z.literal("duplachave/approval/v1"),
-  decision: z.enum(["APPROVE", "REJECT"]),
+  decision: z.enum(["APPROVE", "REJECT", "CANCEL"]),
   cluster: z.enum(CLUSTERS),
   multisig: base58,
   transactionIndex: decimal,

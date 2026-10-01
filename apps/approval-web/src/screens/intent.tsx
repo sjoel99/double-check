@@ -123,7 +123,7 @@ export function IntentScreen({ id }: { id: string }) {
       setData({ record: r.record, approvalRequest: request, tampered });
       if (request) {
         // A conferência é do app: lê a transação pela RPC dele e compara com o que vai mostrar.
-        setCheck(await inspectOnChain(ctx.chain, request.intent, new PublicKey(ctx.device!.publicKey), now()));
+        setCheck(await inspectOnChain(ctx.chain, request, new PublicKey(ctx.device!.publicKey), now(), { initiatedHere: ctx.initiatedHere }));
       }
     } catch (e) {
       setErr(errorText(e));
@@ -147,7 +147,7 @@ export function IntentScreen({ id }: { id: string }) {
     }
     setBusy(decision);
     try {
-      const payload = await signClientDecision({ chain: ctx.chain, request: data.approvalRequest, signer: ctx.signer(), decision, now: now() });
+      const payload = await signClientDecision({ chain: ctx.chain, request: data.approvalRequest, signer: ctx.signer(), decision, now: now(), initiatedHere: ctx.initiatedHere });
       const out = await api<IntentView>("POST", `/v1/intents/${id}/decision`, payload);
       if (decision === "REJECT") ctx.toast("Rejeitada. A proposta foi encerrada na Solana.");
       // Este aparelho acabou de aprovar a própria saída: a sessão dele morre aqui.
@@ -164,7 +164,7 @@ export function IntentScreen({ id }: { id: string }) {
   if (!data) return <Loading err={err} />;
   const { record } = data;
 
-  if (record.status !== "AWAITING_CLIENT") return <Outcome record={record} />;
+  if (record.status !== "AWAITING_CLIENT") return <Outcome record={record} reload={load} />;
   if (!check) return <Loading err={err} label="Conferindo na Solana…" />;
   if (!check.ok) return <Blocked check={check} request={data.approvalRequest!} />;
 
@@ -394,8 +394,44 @@ function Blocked({ check, request }: { check: Extract<Inspection, { ok: false }>
   );
 }
 
-function Outcome({ record }: { record: IntentView }) {
-  const { go, config } = useApp();
+function Outcome({ record, reload }: { record: IntentView; reload: () => Promise<void> }) {
+  const ctx = useApp();
+  const { go, config } = ctx;
+  const [busy, setBusy] = useState<null | "retry" | "cancel">(null);
+  const [err, setErr] = useState<string | null>(null);
+  const pending = record.status === "APPROVED_PENDING_EXECUTION";
+  const retry = async () => {
+    setBusy("retry");
+    setErr(null);
+    try {
+      await api("POST", `/v1/intents/${record.intent.id}/execute`);
+      await reload();
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const cancel = async () => {
+    setErr(null);
+    try {
+      await ctx.unlock(`Cancelar #${record.intent.transactionIndex}`);
+    } catch {
+      return;
+    }
+    setBusy("cancel");
+    try {
+      const request = await api<ApprovalRequest>("GET", `/v1/intents/${record.intent.id}/cancel-request`);
+      const payload = await signClientDecision({ chain: ctx.chain, request, signer: ctx.signer(), decision: "CANCEL", now: now() });
+      await api("POST", `/v1/intents/${record.intent.id}/decision`, payload);
+      ctx.toast("Cancelada na Solana. Nada mais pode executá-la.");
+      await reload();
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
   const ok = record.status === "EXECUTED";
   const intent = record.intent;
   const rot = intent.type === "ROTATE_MEMBER";
@@ -406,7 +442,15 @@ function Outcome({ record }: { record: IntentView }) {
     ["Serviço conferiu a política e aprovou", record.signatures.serverApprove],
     [rot ? "Chaves trocadas na Solana" : "Executada na Solana", record.signatures.execute],
   ];
-  const label: Record<string, string> = { REJECTED: "Transação rejeitada", EXPIRED: "Prazo expirado", FAILED: "Falhou", AWAITING_SERVER: "Com o serviço", EXECUTING: "Executando" };
+  const label: Record<string, string> = {
+    REJECTED: "Transação rejeitada",
+    EXPIRED: "Prazo expirado",
+    FAILED: "Falhou",
+    AWAITING_SERVER: "Com o serviço",
+    EXECUTING: "Executando",
+    APPROVED_PENDING_EXECUTION: "Aprovada, aguardando execução",
+    CANCELLED: "Cancelada",
+  };
   return (
     <>
       <div className="page" style={{ paddingTop: 56, gap: 26 }}>
@@ -447,15 +491,33 @@ function Outcome({ record }: { record: IntentView }) {
         </div>
         {record.signatures.reject && (
           <div className="detail">
-            <div>Rejeição on-chain</div>
+            <div>{record.status === "CANCELLED" ? "Cancelamento on-chain" : "Rejeição on-chain"}</div>
             <div className="mono">{short(record.signatures.reject)}</div>
           </div>
         )}
+        {pending && (
+          <div className="banner warn">
+            <Icon name="shieldalert" size={18} color="#F2B33D" />
+            <div>Você e o serviço aprovaram, mas a execução falhou. A proposta continua válida na Solana: execute de novo ou cancele (o cancelamento também precisa de você e do serviço).</div>
+          </div>
+        )}
+        {err && <div className="banner danger">{err}</div>}
       </div>
       <div className="actions">
-        <button type="button" className="btn" onClick={() => go("/")}>
-          Voltar ao início
-        </button>
+        {pending ? (
+          <>
+            <button type="button" className="btn" disabled={Boolean(busy)} onClick={cancel}>
+              {busy === "cancel" ? <span className="spinner" /> : null}Cancelar
+            </button>
+            <button type="button" className="btn primary" disabled={Boolean(busy)} onClick={retry}>
+              {busy === "retry" ? <span className="spinner" /> : null}Executar de novo
+            </button>
+          </>
+        ) : (
+          <button type="button" className="btn" onClick={() => go("/")}>
+            Voltar ao início
+          </button>
+        )}
       </div>
     </>
   );

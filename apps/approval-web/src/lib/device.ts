@@ -26,6 +26,8 @@ export type DeviceRecord = {
   createdAt: number;
   session?: { token: string; accountId: string } | null;
   failedPins?: number;
+  /** Rotações de chave do cliente pedidas por este aparelho (o app só aprova estas). */
+  myRotations?: string[];
   lockedUntil?: number;
 };
 

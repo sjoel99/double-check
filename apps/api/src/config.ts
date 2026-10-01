@@ -5,8 +5,6 @@ const Env = z.object({
   PORT: z.coerce.number().default(8787),
   HOST: z.string().default("127.0.0.1"),
   SOLANA_RPC_URL: z.string().url().default("http://127.0.0.1:8899"),
-  /** RPC que o app deve usar para conferir a chain. Em produção, de outro provedor. */
-  APP_RPC_URL: z.string().default("/rpc"),
   SOLANA_CLUSTER: z.enum(["localnet", "devnet", "mainnet-beta"]).default("localnet"),
   SQUADS_PROGRAM_ID: z.string().default(multisig.PROGRAM_ID.toBase58()),
   DATABASE_URL: z.string().optional(),

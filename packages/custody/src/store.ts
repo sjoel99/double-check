@@ -30,7 +30,20 @@ export type MemberRecord = {
   revokedAt: number | null;
 };
 
-export type IntentStatus = "AWAITING_CLIENT" | "AWAITING_SERVER" | "EXECUTING" | "EXECUTED" | "REJECTED" | "EXPIRED" | "FAILED";
+/**
+ * APPROVED_PENDING_EXECUTION: os dois votaram, mas a execução falhou. A proposta
+ * continua executável on-chain; sai daqui executando ou cancelando (CLIENT + SERVER).
+ */
+export type IntentStatus =
+  | "AWAITING_CLIENT"
+  | "AWAITING_SERVER"
+  | "EXECUTING"
+  | "APPROVED_PENDING_EXECUTION"
+  | "EXECUTED"
+  | "CANCELLED"
+  | "REJECTED"
+  | "EXPIRED"
+  | "FAILED";
 
 export type IntentRecord = {
   intent: TransactionIntent;
@@ -71,6 +84,8 @@ export type RotationRecord = {
   createdAt: number;
   expiresAt: number;
   intentId: string | null;
+  /** Prova de posse da chave nova (declaração assinada por ela). O app confere de novo. */
+  possession: unknown | null;
   history: { status: RotationStatus; at: number; note?: string }[];
 };
 
@@ -86,6 +101,8 @@ export type AuditEventType =
   | "TRANSACTION_EXECUTED"
   | "TRANSACTION_REJECTED"
   | "TRANSACTION_EXPIRED"
+  | "TRANSACTION_CANCELLED"
+  | "EXECUTION_FAILED"
   | "APPROVAL_REFUSED"
   | "CLIENT_KEY_ROTATION_REQUESTED"
   | "SERVER_KEY_ROTATION_REQUESTED"
@@ -130,7 +147,7 @@ export type ApprovalRecord = {
   accountId: string;
   publicKey: string;
   role: "CLIENT" | "SERVER";
-  decision: "APPROVE" | "REJECT";
+  decision: "APPROVE" | "REJECT" | "CANCEL";
   /** Declaração assinada (só material público: dados + assinatura). */
   statement: unknown;
   txSignature: string | null;

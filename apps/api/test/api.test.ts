@@ -15,7 +15,7 @@ async function setup() {
   const store = new MemoryStore();
   const custody = new CustodyService({ cluster: "localnet", chain, store, policy: new DefaultPolicyEngine(), serverKeys: new DevServerKeyProvider("localnet"), service, notifications: new LogNotificationService(), squadsTreasury: chain.treasury });
   const app = await buildServer({
-    custody, store, chain, cluster: "localnet", appRpcUrl: "/rpc", sessionSecret: "s".repeat(64), adminToken: "admin-token-123456",
+    custody, store, chain, cluster: "localnet", sessionSecret: "s".repeat(64), adminToken: "admin-token-123456",
     feePayer: (await service.feePayer.publicKey()).toBase58(),
     airdrop: async (a, l) => chain.airdrop(a, BigInt(l)),
   });
@@ -72,6 +72,20 @@ describe("API", () => {
     expect(r.json.error).toBe("BAD_SIGNATURE");
   });
 
+  it("/v1/config não indica RPC ao app (o app fixa a dele no build)", async () => {
+    const t = await setup();
+    const r = await t.call("GET", "/v1/config");
+    expect(r.json.rpcUrl).toBeUndefined();
+  });
+
+  it("lista de rotações não expõe o desafio", async () => {
+    const t = await setup();
+    const { token, account } = await enroll(t);
+    await t.call("POST", `/v1/accounts/${account.id}/rotations/client`, { newDeviceName: "x" }, token);
+    const list = await t.call("GET", `/v1/accounts/${account.id}/rotations`, undefined, token);
+    expect(list.json.rotations[0].challenge).toBeUndefined();
+  });
+
   it("sem sessão: 401; conta de outro: 403", async () => {
     const t = await setup();
     const a = await enroll(t);
@@ -89,7 +103,7 @@ describe("API", () => {
     const { rotationId, challenge, multisig } = rot.json.pairing;
 
     // Aparelho novo, só com o QR.
-    const pairing = await t.call("GET", `/v1/rotations/${rotationId}/pairing?c=${challenge}`);
+    const pairing = await t.call("POST", `/v1/rotations/${rotationId}/pairing`, { challenge });
     expect(pairing.json.status).toBe("REQUESTED");
     const fresh = DevMemorySigner.generate("NEW");
     const proof = await t.call("POST", `/v1/rotations/${rotationId}/proof`, { possession: await signPossession({ signer: fresh, operation: "ROTATE_CLIENT_KEY", cluster: "localnet", multisig, rotationId, challenge, now: t.now() }) });

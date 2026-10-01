@@ -208,10 +208,10 @@ export class PgStore implements Store, ChallengeStore {
   // rotations -----------------------------------------------------------------
   async saveRotation(r: RotationRecord) {
     await this.db.query(
-      `INSERT INTO key_rotations (id, account_id, role, old_key, new_key, new_device_name, status, challenge, created_at, expires_at, intent_id, history)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-       ON CONFLICT (id) DO UPDATE SET new_key = EXCLUDED.new_key, status = EXCLUDED.status, intent_id = EXCLUDED.intent_id, history = EXCLUDED.history`,
-      [r.id, r.accountId, r.role, r.oldKey, r.newKey, r.newDeviceName, r.status, r.challenge, r.createdAt, r.expiresAt, r.intentId, JSON.stringify(r.history)],
+      `INSERT INTO key_rotations (id, account_id, role, old_key, new_key, new_device_name, status, challenge, created_at, expires_at, intent_id, possession, history)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       ON CONFLICT (id) DO UPDATE SET new_key = EXCLUDED.new_key, status = EXCLUDED.status, intent_id = EXCLUDED.intent_id, possession = EXCLUDED.possession, history = EXCLUDED.history`,
+      [r.id, r.accountId, r.role, r.oldKey, r.newKey, r.newDeviceName, r.status, r.challenge, r.createdAt, r.expiresAt, r.intentId, r.possession === null ? null : JSON.stringify(r.possession), JSON.stringify(r.history)],
     );
   }
   private rotation(r: Record<string, unknown>): RotationRecord {
@@ -227,6 +227,7 @@ export class PgStore implements Store, ChallengeStore {
       createdAt: Number(r.created_at),
       expiresAt: Number(r.expires_at),
       intentId: (r.intent_id as string | null) ?? null,
+      possession: r.possession ?? null,
       history: r.history as RotationRecord["history"],
     };
   }

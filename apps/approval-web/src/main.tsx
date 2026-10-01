@@ -5,6 +5,7 @@ import "./styles.css";
 import { AppProvider, type Config, useApp } from "./app";
 import { api } from "./lib/api";
 import { type DeviceRecord, ed25519Supported, loadDevice } from "./lib/device";
+import { PINNED_CLUSTER } from "./lib/chain";
 import { Home } from "./screens/home";
 import { IntentScreen, Send } from "./screens/intent";
 import { Onboarding } from "./screens/onboarding";
@@ -32,6 +33,7 @@ function Boot() {
       if (!(await ed25519Supported())) return setState({ error: "Este navegador não tem Ed25519 no WebCrypto (Chrome 137+, Firefox 129+, Safari 17+). Sem isso a chave não pode ficar protegida." });
       try {
         const [config, device] = await Promise.all([api<Config>("GET", "/v1/config", undefined, { auth: false }), loadDevice()]);
+        if (config.cluster !== PINNED_CLUSTER) return setState({ error: `A API está em ${config.cluster}, mas este app foi feito para ${PINNED_CLUSTER}. Não continue.` });
         setState({ config, device });
       } catch (e) {
         setState({ error: `API indisponível: ${(e as Error).message}. Rode \`pnpm dev\` na raiz do projeto.` });

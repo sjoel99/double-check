@@ -1,18 +1,20 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { RpcChain } from "@duplachave/solana";
+import type { Chain } from "@duplachave/solana";
 import type { Cluster } from "@duplachave/shared";
 import { api, ApiError } from "./lib/api";
 import { appChain } from "./lib/chain";
 import { type DeviceRecord, loadDevice, saveDevice, unlockWithBiometric, unlockWithPin, WebCryptoSigner } from "./lib/device";
 import { Icon } from "./icons";
 
-export type Config = { cluster: Cluster; rpcUrl: string; feePayer: string; mode: string; devTools: boolean };
+export type Config = { cluster: Cluster; feePayer: string; mode: string; devTools: boolean };
 
 type UnlockRequest = { summary: string; resolve: () => void; reject: (e: Error) => void };
 
 type Ctx = {
   config: Config;
-  chain: RpcChain;
+  chain: Chain;
+  /** Esta troca de chave do cliente foi pedida neste aparelho? */
+  initiatedHere: (rotationId: string) => boolean;
   device: DeviceRecord | null;
   setDevice: (d: DeviceRecord | null) => Promise<void>;
   route: string;
@@ -43,7 +45,7 @@ export function AppProvider({ config, initialDevice, children }: { config: Confi
   const [toastMsg, setToast] = useState<string | null>(null);
   const [unlockReq, setUnlockReq] = useState<UnlockRequest | null>(null);
   const [malicious, setMalicious] = useState(false);
-  const chain = useMemo(() => appChain(config.cluster, config.rpcUrl), [config]);
+  const chain = useMemo(() => appChain(), []);
   const toastTimer = useRef<number>(0);
 
   const ctx: Ctx = {
@@ -63,6 +65,7 @@ export function AppProvider({ config, initialDevice, children }: { config: Confi
       clearTimeout(toastTimer.current);
       toastTimer.current = window.setTimeout(() => setToast(null), 3800);
     },
+    initiatedHere: (rotationId) => Boolean(device?.myRotations?.includes(rotationId)),
     signer: () => {
       if (!device) throw new Error("sem chave neste aparelho");
       return new WebCryptoSigner(device);

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { Keypair, PublicKey, SystemProgram, type TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
+import { Keypair, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import {
   ApprovalStatementSchema,
@@ -13,11 +13,12 @@ import {
   type TransferSolIntent,
 } from "@duplachave/shared";
 import { randomHex, type Signed, type Signer, signStatement, verifyEd25519, verifyStatement } from "@duplachave/crypto";
-import { type Chain, ChainTxError, parseInstruction, SYSTEM_PROGRAM, sendInstructions } from "@duplachave/solana";
+import { type Chain, ChainTxError, parseInstruction, type RawInstruction, SYSTEM_PROGRAM, sendInstructions } from "@duplachave/solana";
 import {
   approvalMemo,
   approveIx,
   assertStrictTwoOfTwo,
+  cancelIx,
   compareIntent,
   createConfigProposalIxs,
   createStrictMultisigIx,
@@ -32,6 +33,7 @@ import {
   rotationActions,
   type MultisigState,
   vaultPda,
+  vaultMessageInstructions,
   viewConfigTransaction,
   viewVaultTransaction,
 } from "@duplachave/squads";
@@ -71,10 +73,10 @@ export type CustodyConfig = {
 const ROTATION_TRANSITIONS: Record<RotationStatus, RotationStatus[]> = {
   REQUESTED: ["NEW_KEY_VERIFIED", "REJECTED", "EXPIRED", "FAILED"],
   NEW_KEY_VERIFIED: ["OPERATIONS_FROZEN", "EXPIRED", "FAILED"],
-  OPERATIONS_FROZEN: ["AWAITING_CLIENT_APPROVAL", "FAILED", "ROLLBACK_REQUIRED"],
+  OPERATIONS_FROZEN: ["AWAITING_CLIENT_APPROVAL", "EXPIRED", "FAILED", "ROLLBACK_REQUIRED"],
   AWAITING_CLIENT_APPROVAL: ["AWAITING_SERVER_APPROVAL", "REJECTED", "EXPIRED", "FAILED"],
   AWAITING_SERVER_APPROVAL: ["EXECUTING", "REJECTED", "EXPIRED", "FAILED"],
-  EXECUTING: ["VERIFIED", "FAILED", "ROLLBACK_REQUIRED"],
+  EXECUTING: ["VERIFIED", "FAILED", "REJECTED", "ROLLBACK_REQUIRED"],
   VERIFIED: ["COMPLETED", "ROLLBACK_REQUIRED"],
   COMPLETED: [],
   REJECTED: [],
@@ -363,9 +365,11 @@ export class CustodyService {
     const rec = await this.store.getIntent(intentId);
     if (!rec) deny("INTENT_NOT_FOUND", intentId);
     let deviceName: string | null = null;
+    let possession: Signed<unknown> | null = null;
     if (rec.intent.type === "ROTATE_MEMBER") {
       const rot = await this.store.getRotation(rec.intent.rotationId);
       deviceName = rot?.newDeviceName ?? null;
+      possession = (rot?.possession as Signed<unknown> | null) ?? null;
     }
     return {
       intent: rec.intent,
@@ -373,6 +377,7 @@ export class CustodyService {
       feePayer: (await this.cfg.service.feePayer.publicKey()).toBase58(),
       recentBlockhash: await this.chain.getLatestBlockhash(),
       deviceName,
+      possession,
     };
   }
 
@@ -395,8 +400,11 @@ export class CustodyService {
         throw new SecurityError(code, msg);
       };
 
-      if (rec.status !== "AWAITING_CLIENT") return refuse("INTENT_NOT_PENDING", `intenção em ${rec.status}`);
-      if (this.now() > intent.expiresAt) {
+      const cancelling = (payload.statement?.statement as { decision?: string } | undefined)?.decision === "CANCEL";
+      if (cancelling) {
+        if (rec.status !== "APPROVED_PENDING_EXECUTION") return refuse("INTENT_NOT_CANCELLABLE", `intenção em ${rec.status}`);
+      } else if (rec.status !== "AWAITING_CLIENT") return refuse("INTENT_NOT_PENDING", `intenção em ${rec.status}`);
+      if (!cancelling && this.now() > intent.expiresAt) {
         await this.expireIntent(rec, acc);
         return refuse("INTENT_EXPIRED", "intenção expirada; proposta rejeitada on-chain");
       }
@@ -414,7 +422,7 @@ export class CustodyService {
         st.transactionKind !== (intent.kind === "OPERATION" ? "VAULT" : "CONFIG");
       if (mismatch) return refuse("STATEMENT_MISMATCH", "declaração não corresponde a esta intenção");
       const now = this.now();
-      if (st.expiresAt < now || st.createdAt > now + 60 || st.expiresAt > intent.expiresAt) return refuse("STATEMENT_EXPIRED", "declaração fora da validade");
+      if (st.expiresAt < now || st.createdAt > now + 60 || (!cancelling && st.expiresAt > intent.expiresAt)) return refuse("STATEMENT_EXPIRED", "declaração fora da validade");
 
       // 2. Quem assinou é o CLIENT atual segundo a chain (não segundo o banco).
       const state = await this.verifiedState(acc);
@@ -434,6 +442,7 @@ export class CustodyService {
       if (!(await this.store.consumeNonce(`approval:${acc.multisig}`, st.nonce, st.expiresAt))) return refuse("REPLAY", "declaração já usada");
 
       const target = { userId: acc.userId, accountId: acc.id };
+      if (st.decision === "CANCEL") return this.cancelApproved(acc, rec, payload, st.signer);
       if (st.decision === "REJECT") {
         const sig = await this.serverReject(acc, index, `dk1:client-reject:${intent.intentHash.slice(0, 32)}`);
         rec.status = "REJECTED";
@@ -447,7 +456,7 @@ export class CustodyService {
       }
 
       // 5. O voto do cliente: exatamente proposal_approve(multisig, índice, cliente).
-      const clientSig = await this.relayClientVote(acc, intent, onchain.hash, payload.approveTransaction).catch((e) => refuse("CLIENT_VOTE_INVALID", String(e)));
+      const clientSig = await this.relayClientVote(acc, intent, onchain.hash, payload.approveTransaction, "APPROVE").catch((e) => refuse("CLIENT_VOTE_INVALID", String(e)));
       rec.status = "AWAITING_SERVER";
       rec.signatures.clientApprove = clientSig;
       rec.updatedAt = this.now();
@@ -464,6 +473,21 @@ export class CustodyService {
         verifiedNewKeys: rotation?.newKey && rotation.history.some((h) => h.status === "NEW_KEY_VERIFIED") ? [rotation.newKey] : [],
         revokedKeys: rotation?.newKey && (await this.store.isRevokedKey(rotation.newKey)) ? [rotation.newKey] : [],
       });
+      if (intent.type === "ROTATE_MEMBER") {
+        // A chave nova do SERVIDOR tem que ser uma chave que o servidor controla; a do CLIENTE, nunca.
+        const serverControls = Boolean(await this.cfg.serverKeys.get(intent.newKey));
+        if (intent.role === "SERVER" && !serverControls) decision.reasons.push("SERVER_KEY_NOT_CONTROLLED: a chave nova do servidor não está no provedor de chaves");
+        if (intent.role === "CLIENT" && serverControls) decision.reasons.push("CLIENT_KEY_IS_SERVER_KEY");
+        if (rotation?.role !== intent.role) decision.reasons.push("ROTATION_ROLE_MISMATCH");
+        decision.allowed = decision.reasons.length === 0;
+      } else if (view.kind === "VAULT" && this.chain.simulate) {
+        // Estado mudou desde a proposta (saldo, contas): simula de novo antes de votar.
+        const sim = await this.chain.simulate(vaultPda(ms, 0), vaultMessageInstructions(onchain.kind === "VAULT" ? onchain.account : (null as never)).map(toInstruction));
+        if (!sim.ok) {
+          decision.allowed = false;
+          decision.reasons.push(`SIMULATION_FAILED: ${sim.error}`);
+        }
+      }
       if (!decision.allowed) {
         const sig = await this.serverReject(acc, index, `dk1:policy-reject:${intent.intentHash.slice(0, 32)}`);
         rec.status = "REJECTED";
@@ -492,34 +516,81 @@ export class CustodyService {
       if (intent.type === "ROTATE_MEMBER") {
         await this.executeRotation(acc, rec);
       } else {
-        const executor = this.cfg.service.executor;
-        const { instruction, lookupTableAccounts } = await executeVaultIx(this.chain, ms, index, await executor.publicKey());
-        let execSig: string;
-        try {
-          execSig = await sendInstructions(this.chain, [instruction], [this.cfg.service.feePayer, executor], lookupTableAccounts);
-        } catch (e) {
-          // Aprovada e não executada: continua executável on-chain. Fica FAILED aqui e
-          // bloqueia rotações até ser executada ou cancelada (CLIENT + SERVER).
-          rec.status = "FAILED";
-          rec.reasons = [`EXECUTION_FAILED: ${e instanceof ChainTxError ? (e.programError ?? e.message) : String(e)}`];
-          rec.updatedAt = this.now();
-          await this.store.saveIntent(rec);
-          await this.audit({ type: "TRANSACTION_REJECTED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId, intentHash: intent.intentHash, details: { reasons: rec.reasons, approvedOnchain: true } });
-          await this.store.saveSecurityEvent({ id: randomUUID(), accountId: acc.id, code: "APPROVED_NOT_EXECUTED", message: `proposta ${intent.transactionIndex} aprovada e não executada`, at: this.now() });
-          return rec;
-        }
-        rec.signatures.execute = execSig;
-        rec.status = "EXECUTED";
-        rec.updatedAt = this.now();
-        await this.store.saveIntent(rec);
-        await this.audit({ type: "TRANSACTION_EXECUTED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId, intentHash: intent.intentHash, txSignature: execSig });
+        await this.executeVault(acc, rec);
       }
       return (await this.store.getIntent(intentId))!;
     });
   }
 
+  /**
+   * Executa uma VaultTransaction aprovada. Se falhar, a proposta continua
+   * executável on-chain: a intenção vai para APPROVED_PENDING_EXECUTION (nunca
+   * "falhou"), e o usuário escolhe tentar de novo ou cancelar (CLIENT + SERVER).
+   */
+  private async executeVault(acc: SmartAccountRecord, rec: IntentRecord) {
+    const intent = rec.intent;
+    const ms = new PublicKey(acc.multisig);
+    const index = BigInt(intent.transactionIndex);
+    const executor = this.cfg.service.executor;
+    try {
+      const { instruction, lookupTableAccounts } = await executeVaultIx(this.chain, ms, index, await executor.publicKey());
+      const execSig = await sendInstructions(this.chain, [instruction], [this.cfg.service.feePayer, executor], lookupTableAccounts);
+      rec.signatures.execute = execSig;
+      rec.status = "EXECUTED";
+      rec.reasons = [];
+      rec.updatedAt = this.now();
+      await this.store.saveIntent(rec);
+      await this.audit({ type: "TRANSACTION_EXECUTED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId: intent.id, intentHash: intent.intentHash, txSignature: execSig });
+    } catch (e) {
+      rec.status = "APPROVED_PENDING_EXECUTION";
+      rec.reasons = [`EXECUTION_FAILED: ${e instanceof ChainTxError ? (e.programError ?? e.message) : String(e)}`];
+      rec.updatedAt = this.now();
+      await this.store.saveIntent(rec);
+      await this.audit({ type: "EXECUTION_FAILED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId: intent.id, intentHash: intent.intentHash, details: { reasons: rec.reasons } });
+      await this.store.saveSecurityEvent({ id: randomUUID(), accountId: acc.id, code: "APPROVED_NOT_EXECUTED", message: `proposta ${intent.transactionIndex} aprovada e não executada: executar de novo ou cancelar`, at: this.now() });
+    }
+  }
+
+  /** Tenta de novo a execução de uma aprovada (VaultTransaction ou rotação). */
+  async retryExecution(intentId: string) {
+    const first = await this.store.getIntent(intentId);
+    if (!first) deny("INTENT_NOT_FOUND", intentId);
+    return this.withLock(first.accountId, async () => {
+      const rec = (await this.store.getIntent(intentId))!;
+      const acc = await this.account(rec.accountId);
+      if (rec.status !== "APPROVED_PENDING_EXECUTION") deny("INTENT_NOT_PENDING_EXECUTION", rec.status);
+      const p = await readProposal(this.chain, new PublicKey(acc.multisig), BigInt(rec.intent.transactionIndex));
+      if (p?.status !== "Approved") deny("NOT_APPROVED", `proposta em ${p?.status}`);
+      if (rec.intent.type === "ROTATE_MEMBER") await this.executeRotation(acc, rec);
+      else await this.executeVault(acc, rec);
+      return (await this.store.getIntent(intentId))!;
+    });
+  }
+
+  /** Cancela uma aprovada não executada: voto de cancelamento do cliente + do servidor. */
+  private async cancelApproved(acc: SmartAccountRecord, rec: IntentRecord, payload: ClientDecisionPayload, signer: string) {
+    const intent = rec.intent;
+    const ms = new PublicKey(acc.multisig);
+    const index = BigInt(intent.transactionIndex);
+    const clientSig = await this.relayClientVote(acc, intent, rec.transactionHash, payload.approveTransaction, "CANCEL").catch((e) => {
+      throw new SecurityError("CLIENT_VOTE_INVALID", String(e));
+    });
+    const server = await this.serverSigner(acc);
+    const serverSig = await this.send([cancelIx(ms, index, await server.publicKey(), `dk1:cancel:${intent.intentHash.slice(0, 32)}`)], [server]);
+    const p = await readProposal(this.chain, ms, index);
+    if (p?.status !== "Cancelled") deny("NOT_CANCELLED", `proposta em ${p?.status}`);
+    rec.status = "CANCELLED";
+    rec.signatures.reject = serverSig;
+    rec.updatedAt = this.now();
+    await this.store.saveIntent(rec);
+    await this.store.saveApproval({ id: randomUUID(), intentId: intent.id, accountId: acc.id, publicKey: signer, role: "CLIENT", decision: "CANCEL", statement: payload.statement, txSignature: clientSig, createdAt: this.now() });
+    await this.audit({ type: "TRANSACTION_CANCELLED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId: intent.id, intentHash: intent.intentHash, txSignature: serverSig });
+    if (intent.type === "ROTATE_MEMBER") await this.finishRotation(intent.rotationId, "REJECTED", "aprovada e cancelada");
+    return rec;
+  }
+
   /** Confere a transação de voto montada pelo app e a envia, pagando a taxa. */
-  private async relayClientVote(acc: SmartAccountRecord, intent: TransactionIntent, txHash: string, b64?: string): Promise<string> {
+  private async relayClientVote(acc: SmartAccountRecord, intent: TransactionIntent, txHash: string, b64: string | undefined, kind: "APPROVE" | "CANCEL"): Promise<string> {
     if (!b64) deny("NO_VOTE", "aprovação sem a transação de voto");
     const tx = VersionedTransaction.deserialize(Buffer.from(b64, "base64"));
     const feePayer = await this.cfg.service.feePayer.publicKey();
@@ -528,7 +599,7 @@ export class CustodyService {
     if (!msg.payerKey.equals(feePayer)) deny("WRONG_PAYER", "pagador inesperado");
     if (tx.message.addressTableLookups.length) deny("ALT_IN_VOTE", "voto com lookup table");
     if (msg.instructions.length !== 1) deny("VOTE_EXTRA_INSTRUCTIONS", "voto deve ter exatamente uma instrução");
-    const expected = approveIx(new PublicKey(acc.multisig), BigInt(intent.transactionIndex), client, approvalMemo(intent.intentHash, txHash));
+    const expected = (kind === "CANCEL" ? cancelIx : approveIx)(new PublicKey(acc.multisig), BigInt(intent.transactionIndex), client, approvalMemo(intent.intentHash, txHash));
     const got = msg.instructions[0]!;
     const sameKeys =
       got.keys.length === expected.keys.length &&
@@ -550,6 +621,8 @@ export class CustodyService {
   private async expireIntent(rec: IntentRecord, acc: SmartAccountRecord) {
     const index = BigInt(rec.intent.transactionIndex);
     const p = await readProposal(this.chain, new PublicKey(acc.multisig), index);
+    // Já aprovada pelos dois: não é "vencida", é execução pendente — nunca descongela nem esconde.
+    if (p?.status === "Approved") return;
     let sig: string | undefined;
     if (p?.status === "Active") sig = await this.serverReject(acc, index, `dk1:expired:${rec.intent.intentHash.slice(0, 32)}`);
     rec.status = "EXPIRED";
@@ -560,16 +633,35 @@ export class CustodyService {
     if (rec.intent.type === "ROTATE_MEMBER") await this.finishRotation(rec.intent.rotationId, "EXPIRED", "aprovação não chegou a tempo");
   }
 
-  /** Varre intenções vencidas e as encerra on-chain (um voto de rejeição basta em 2-de-2). */
+  /**
+   * Varre intenções vencidas e as encerra on-chain (um voto de rejeição basta em 2-de-2).
+   * Roda sob o mesmo lock das decisões; um item com erro não impede os outros.
+   */
   async expireDue(accountId: string) {
-    const acc = await this.account(accountId);
-    const now = this.now();
-    for (const rec of await this.store.listIntents(accountId)) {
-      if ((rec.status === "AWAITING_CLIENT" || rec.status === "AWAITING_SERVER") && now > rec.intent.expiresAt) await this.expireIntent(rec, acc);
-    }
-    for (const rot of await this.store.listRotations(accountId)) {
-      if (!TERMINAL.includes(rot.status) && !rot.intentId && now > rot.expiresAt) await this.finishRotation(rot.id, "EXPIRED", "prazo da rotação venceu");
-    }
+    return this.withLock(accountId, async () => {
+      const acc = await this.account(accountId);
+      const now = this.now();
+      for (const rec of await this.store.listIntents(accountId)) {
+        if ((rec.status === "AWAITING_CLIENT" || rec.status === "AWAITING_SERVER") && now > rec.intent.expiresAt) {
+          try {
+            await this.expireIntent(rec, acc);
+          } catch (e) {
+            this.cfg.log?.(`expirar ${rec.intent.id}: ${String(e)}`);
+          }
+        }
+      }
+      for (const rot of await this.store.listRotations(accountId)) {
+        if (TERMINAL.includes(rot.status) || now <= rot.expiresAt) continue;
+        if (["EXECUTING", "VERIFIED"].includes(rot.status)) continue; // em execução: quem resolve é a execução
+        const rec = rot.intentId ? await this.store.getIntent(rot.intentId) : null;
+        if (rec && ["AWAITING_CLIENT", "AWAITING_SERVER", "APPROVED_PENDING_EXECUTION", "EXECUTING"].includes(rec.status)) continue;
+        try {
+          await this.finishRotation(rot.id, "EXPIRED", "prazo da rotação venceu");
+        } catch (e) {
+          this.cfg.log?.(`expirar rotação ${rot.id}: ${String(e)}`);
+        }
+      }
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -599,7 +691,8 @@ export class CustodyService {
         await this.store.saveIntent(rec);
       }
     }
-    await this.advanceRotation(id, to, note);
+    if (ROTATION_TRANSITIONS[rot.status].includes(to)) await this.advanceRotation(id, to, note);
+    else await this.store.saveRotation({ ...rot, status: "FAILED", history: [...rot.history, { status: "FAILED", at: this.now(), note: `${note} (de ${rot.status})` }] });
     if (acc.frozenBy === id) {
       await this.store.saveAccount({ ...acc, frozenBy: null });
       await this.audit({ type: "OPERATIONS_UNFROZEN", accountId: acc.id, multisig: acc.multisig, details: { rotationId: id } });
@@ -608,13 +701,23 @@ export class CustodyService {
     await this.audit({ type, accountId: acc.id, multisig: acc.multisig, details: { rotationId: id, note } });
   }
 
+  /** Aprovada e não executada sobrevive à rotação: precisa sair da fila antes. */
+  private async assertNoApprovedPending(acc: SmartAccountRecord, state: MultisigState) {
+    const ms = new PublicKey(acc.multisig);
+    for (let i = state.staleTransactionIndex + 1n; i <= state.transactionIndex; i++) {
+      if ((await readProposal(this.chain, ms, i))?.status === "Approved")
+        deny("APPROVED_PENDING", `proposta ${i} aprovada e não executada: execute ou cancele antes de trocar chaves`);
+    }
+  }
+
   /** Passo 1 (CLIENT): o app atual pede a troca; o backend emite o desafio para a chave nova. */
   async requestClientRotation(accountId: string, args: { newDeviceName: string }) {
     return this.withLock(accountId, async () => {
       const acc = await this.account(accountId);
-      await this.verifiedState(acc);
+      const state = await this.verifiedState(acc);
       const open = (await this.store.listRotations(accountId)).find((r) => !TERMINAL.includes(r.status));
       if (open) deny("ROTATION_IN_PROGRESS", open.id);
+      await this.assertNoApprovedPending(acc, state);
       const now = this.now();
       const rot: RotationRecord = {
         id: randomUUID(),
@@ -628,6 +731,7 @@ export class CustodyService {
         createdAt: now,
         expiresAt: now + this.rotationTtl,
         intentId: null,
+        possession: null,
         history: [{ status: "REQUESTED", at: now }],
       };
       await this.store.saveRotation(rot);
@@ -643,6 +747,7 @@ export class CustodyService {
     return this.withLock(rot0.accountId, async () => {
       const rot = (await this.store.getRotation(rotationId))!;
       const acc = await this.account(rot.accountId);
+      if (rot.role !== "CLIENT") deny("ROTATION_WRONG_ROLE", "esta rotação não é da chave do cliente");
       if (rot.status !== "REQUESTED") deny("ROTATION_BAD_STATE", rot.status);
       if (this.now() > rot.expiresAt) {
         await this.finishRotation(rot.id, "EXPIRED", "prova chegou depois do prazo");
@@ -657,7 +762,8 @@ export class CustodyService {
       }
       const state = await this.verifiedState(acc);
       if (state.members.some((m) => m.key === st.newPublicKey)) deny("KEY_ALREADY_MEMBER", "a chave nova já é membro");
-      await this.advanceRotation(rotationId, "NEW_KEY_VERIFIED", undefined, { newKey: st.newPublicKey });
+      if (await this.cfg.serverKeys.get(st.newPublicKey)) deny("CLIENT_KEY_IS_SERVER_KEY", "chave do servidor não pode virar chave do cliente");
+      await this.advanceRotation(rotationId, "NEW_KEY_VERIFIED", undefined, { newKey: st.newPublicKey, possession });
       await this.audit({ type: "NEW_KEY_PROOF_VERIFIED", accountId: acc.id, multisig: acc.multisig, publicKey: st.newPublicKey, details: { rotationId } });
       return this.freezeAndPropose(rotationId);
     });
@@ -667,9 +773,10 @@ export class CustodyService {
   async requestServerRotation(accountId: string, reason: string) {
     return this.withLock(accountId, async () => {
       const acc = await this.account(accountId);
-      await this.verifiedState(acc);
+      const state = await this.verifiedState(acc);
       const open = (await this.store.listRotations(accountId)).find((r) => !TERMINAL.includes(r.status));
       if (open) deny("ROTATION_IN_PROGRESS", open.id);
+      await this.assertNoApprovedPending(acc, state);
       const now = this.now();
       const rot: RotationRecord = {
         id: randomUUID(),
@@ -683,11 +790,13 @@ export class CustodyService {
         createdAt: now,
         expiresAt: now + this.rotationTtl,
         intentId: null,
+        possession: null,
         history: [{ status: "REQUESTED", at: now, note: reason }],
       };
       await this.store.saveRotation(rot);
       await this.audit({ type: "SERVER_KEY_ROTATION_REQUESTED", accountId, multisig: acc.multisig, publicKey: acc.roles.server, details: { rotationId: rot.id, reason } });
 
+      try {
       const newKey = await this.cfg.serverKeys.create(`server:${acc.userId}:rot:${rot.id}`);
       const possession = await signStatement(newKey, {
         domain: "duplachave/possession/v1",
@@ -702,8 +811,12 @@ export class CustodyService {
         expiresAt: now + 300,
       });
       const st = await this.checkPossession(possession, { operation: "ROTATE_SERVER_KEY", multisig: acc.multisig, rotationId: rot.id, challenge: rot.challenge });
-      await this.advanceRotation(rot.id, "NEW_KEY_VERIFIED", undefined, { newKey: st.newPublicKey });
+      await this.advanceRotation(rot.id, "NEW_KEY_VERIFIED", undefined, { newKey: st.newPublicKey, possession });
       await this.audit({ type: "NEW_KEY_PROOF_VERIFIED", accountId, multisig: acc.multisig, publicKey: st.newPublicKey, details: { rotationId: rot.id } });
+      } catch (e) {
+        await this.finishRotation(rot.id, "FAILED", `pedido do servidor falhou: ${String(e)}`);
+        throw e;
+      }
       return this.freezeAndPropose(rot.id);
     });
   }
@@ -714,6 +827,23 @@ export class CustodyService {
    * aprovadas pendentes bloqueiam) e cria a ConfigTransaction atômica.
    */
   private async freezeAndPropose(rotationId: string) {
+    let created: bigint | null = null;
+    try {
+      return await this.freezeAndProposeInner(rotationId, (i) => (created = i));
+    } catch (e) {
+      // Qualquer falha encerra a rotação e descongela; proposta criada sem registro é rejeitada.
+      const rot = await this.store.getRotation(rotationId);
+      if (rot && !rot.intentId && created !== null) {
+        const acc = await this.account(rot.accountId);
+        const p = await readProposal(this.chain, new PublicKey(acc.multisig), created).catch(() => null);
+        if (p?.status === "Active") await this.serverReject(acc, created, "dk1:rotation-failed").catch(() => {});
+      }
+      await this.finishRotation(rotationId, "FAILED", String(e)).catch(() => {});
+      throw e;
+    }
+  }
+
+  private async freezeAndProposeInner(rotationId: string, onCreate: (index: bigint) => void) {
     let rot = (await this.store.getRotation(rotationId))!;
     let acc = await this.account(rot.accountId);
     await this.store.saveAccount({ ...acc, frozenBy: rot.id });
@@ -731,9 +861,7 @@ export class CustodyService {
         const pending = (await this.store.listIntents(acc.id)).find((r) => r.intent.transactionIndex === i.toString());
         if (pending && pending.status !== "EXECUTED") await this.store.saveIntent({ ...pending, status: "REJECTED", reasons: ["rotação de chave"], updatedAt: this.now() });
       } else if (p.status === "Approved") {
-        await this.advanceRotation(rotationId, "OPERATIONS_FROZEN");
-        await this.advanceRotation(rotationId, "ROLLBACK_REQUIRED", `proposta ${i} aprovada e não executada: executar ou cancelar (CLIENT+SERVER) antes`);
-        deny("APPROVED_PENDING", `proposta ${i} aprovada e não executada`);
+        deny("APPROVED_PENDING", `proposta ${i} aprovada e não executada: execute ou cancele antes de trocar chaves`);
       }
     }
     rot = await this.advanceRotation(rotationId, "OPERATIONS_FROZEN");
@@ -758,6 +886,7 @@ export class CustodyService {
     };
     const intent = sealIntent(body);
     const proposer = this.cfg.service.proposer;
+    onCreate(index);
     const sig = await this.send(
       createConfigProposalIxs({
         multisig: ms,
@@ -792,15 +921,20 @@ export class CustodyService {
     if (intent.type !== "ROTATE_MEMBER") return;
     const ms = new PublicKey(acc.multisig);
     const index = BigInt(intent.transactionIndex);
-    await this.advanceRotation(intent.rotationId, "EXECUTING");
+    const rot0 = (await this.store.getRotation(intent.rotationId))!;
+    if (rot0.status !== "EXECUTING") await this.advanceRotation(intent.rotationId, "EXECUTING");
     const executor = this.cfg.service.executor;
     let sig: string;
     try {
       sig = await sendInstructions(this.chain, [executeConfigIx(ms, index, await executor.publicKey(), await this.cfg.service.feePayer.publicKey())], [this.cfg.service.feePayer, executor]);
     } catch (e) {
-      await this.advanceRotation(intent.rotationId, "FAILED", String(e));
-      await this.store.saveAccount({ ...acc, frozenBy: null });
-      throw e;
+      // Aprovada on-chain: continua congelada (a troca ainda pode acontecer). Tentar de novo ou cancelar.
+      rec.status = "APPROVED_PENDING_EXECUTION";
+      rec.reasons = [`EXECUTION_FAILED: ${e instanceof ChainTxError ? (e.programError ?? e.message) : String(e)}`];
+      rec.updatedAt = this.now();
+      await this.store.saveIntent(rec);
+      await this.audit({ type: "EXECUTION_FAILED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId: intent.id, details: { rotationId: intent.rotationId, reasons: rec.reasons } });
+      return;
     }
     rec.signatures.execute = sig;
     rec.status = "EXECUTED";
@@ -895,4 +1029,8 @@ function previewVaultView(vault: PublicKey, instructions: TransactionInstruction
         ? { type: "TRANSFER_SOL" as const, amountLamports: t.lamports.toString(), destination: t.to }
         : null,
   };
+}
+
+function toInstruction(r: RawInstruction): TransactionInstruction {
+  return new TransactionInstruction({ programId: r.programId, keys: r.keys, data: Buffer.from(r.data) });
 }
