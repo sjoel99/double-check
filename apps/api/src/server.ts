@@ -8,6 +8,7 @@ import type { CustodyService, Store, ChallengeStore, IntentRecord } from "@dupla
 import { renderIntent } from "@duplachave/custody";
 import { type Chain, ChainTxError, parseInstruction } from "@duplachave/solana";
 import { issueSession, readSession, type Session } from "./session";
+import { registerPay } from "./pay";
 
 export type ApiDeps = {
   custody: CustodyService;
@@ -21,6 +22,8 @@ export type ApiDeps = {
   signAsFeePayer: (message: Uint8Array) => Promise<Uint8Array>;
   /** Só em localnet: airdrop para testar. */
   airdrop?: (address: PublicKey, lamports: number) => Promise<void>;
+  /** URL pública (HTTPS) que o celular alcança, para o QR do Solana Pay. */
+  publicUrl?: string;
   now?: () => number;
   log?: boolean;
 };
@@ -279,6 +282,21 @@ export async function buildServer(d: ApiDeps) {
     });
   }
 
+  // Celular (Solana Pay). O spec pede CORS aberto nas rotas que a carteira chama.
+  app.addHook("onSend", async (req, reply) => {
+    if (req.url.startsWith("/pay/")) reply.header("access-control-allow-origin", "*").header("access-control-allow-headers", "content-type").header("access-control-allow-methods", "GET, POST, OPTIONS");
+  });
+  app.options("/pay/:token", async (_req, reply) => reply.status(204).send());
+  const pay = registerPay(app, {
+    custody: d.custody,
+    store: d.store,
+    publicUrl: d.publicUrl ?? "http://127.0.0.1:8787",
+    issueToken: tokenFor,
+    now,
+    ownAccount,
+    log: (m) => app.log.warn(m),
+  });
+
   void SystemProgram;
-  return app;
+  return Object.assign(app, { pay });
 }

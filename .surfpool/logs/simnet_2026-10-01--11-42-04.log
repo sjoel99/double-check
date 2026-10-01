@@ -23,3 +23,8 @@
 [2026-10-01--11-54-42 INFO surfpool::cli::simnet] Account 75LXvDtkRMTdXaZMnH1kqrNGBQyUSccYjMS4Ci18fyKE updated.
 [2026-10-01--11-54-42 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:55648.
 [2026-10-01--11-54-43 INFO surfpool::cli::simnet] Account 7Xzngm1R8RBC7xwQirAVAj5qyBZ2mvtYbQJNLohFhMgh updated.
+[2026-10-01--12-06-07 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:39518.
+[2026-10-01--12-06-27 INFO surfpool::cli::simnet] Account EmmsBTaWXFMKFLUvBX4MwxsTvuZG58P5TSNgySW6MXys updated.
+[2026-10-01--12-06-27 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:42160.
+[2026-10-01--12-06-42 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:39554.
+[2026-10-01--12-07-01 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:49280.

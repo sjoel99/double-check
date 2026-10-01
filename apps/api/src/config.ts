@@ -8,6 +8,8 @@ const Env = z.object({
   SOLANA_CLUSTER: z.enum(["localnet", "devnet", "mainnet-beta"]).default("localnet"),
   SQUADS_PROGRAM_ID: z.string().default(multisig.PROGRAM_ID.toBase58()),
   DATABASE_URL: z.string().optional(),
+  /** URL HTTPS pública da API (túnel), para o QR que o celular lê. */
+  DK_PUBLIC_URL: z.string().url().optional(),
   /** Segredo das sessões HTTP. Sessão não autoriza nada sozinha. */
   DK_SESSION_SECRET: z.string().min(32).optional(),
   /** Token do painel administrativo (só pede rotação da chave do servidor; não aprova nada). */

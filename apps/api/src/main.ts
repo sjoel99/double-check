@@ -71,6 +71,7 @@ const app = await buildServer({
   adminToken,
   feePayer: feePayer.toBase58(),
   signAsFeePayer: (m) => service.feePayer.sign(m),
+  publicUrl: cfg.DK_PUBLIC_URL ?? `http://${cfg.HOST}:${cfg.PORT}`,
   airdrop: cfg.SOLANA_CLUSTER === "localnet" ? airdrop : undefined,
   log: true,
 });
@@ -87,4 +88,6 @@ setInterval(async () => {
 }, 30_000).unref();
 
 await app.listen({ port: cfg.PORT, host: cfg.HOST });
+if (cfg.DK_PUBLIC_URL) log(`QR do celular aponta para ${cfg.DK_PUBLIC_URL}/pay/…`);
+else log("sem DK_PUBLIC_URL: o QR só funciona com o celular de teste (celular de verdade exige HTTPS — use pnpm dev:devnet)");
 log(`API em http://${cfg.HOST}:${cfg.PORT} · cluster ${cfg.SOLANA_CLUSTER} · RPC ${cfg.SOLANA_RPC_URL.replace(/api-key=[^&]+/, "api-key=***")} · pagador ${feePayer.toBase58()}`);

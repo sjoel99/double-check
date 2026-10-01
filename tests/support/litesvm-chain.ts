@@ -41,8 +41,23 @@ export class LiteSvmChain implements Chain {
     return this.svm.latestBlockhash();
   }
 
+  /** Transações que confirmaram (para o fluxo em que a carteira envia ela mesma). */
+  readonly landed = new Map<string, { message: Uint8Array; signatures: Uint8Array[]; signers: PublicKey[] }>();
+
+  async getLandedTransaction(signature: string) {
+    const t = this.landed.get(signature);
+    return t ? { ok: true, error: null, ...t } : null;
+  }
+
   async sendTransaction(tx: VersionedTransaction): Promise<string> {
     const res = this.svm.sendTransaction(tx);
+    if (!(res instanceof FailedTransactionMetadata)) {
+      this.landed.set(bs58.encode(tx.signatures[0]!), {
+        message: tx.message.serialize(),
+        signatures: tx.signatures.map((s) => new Uint8Array(s)),
+        signers: tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures),
+      });
+    }
     // Blockhash novo a cada envio: duas transações idênticas não colidem.
     this.svm.expireBlockhash();
     if (res instanceof FailedTransactionMetadata) {

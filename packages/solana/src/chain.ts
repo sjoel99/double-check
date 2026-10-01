@@ -8,6 +8,9 @@ import {
   VersionedTransaction,
 } from "@solana/web3.js";
 import type { Cluster } from "@duplachave/shared";
+import bs58 from "bs58";
+
+const bs58decode = (s: string) => bs58.decode(s);
 import { type Signer, signTransaction } from "@duplachave/crypto";
 
 export class ChainTxError extends Error {
@@ -52,9 +55,17 @@ export interface Chain {
    * programa da Squads faz no execute. Sem verificação de assinatura.
    */
   simulate?(payer: PublicKey, instructions: TransactionInstruction[]): Promise<SimulationResult>;
+  /**
+   * Transação já enviada por outra pessoa (a carteira do celular envia ela mesma,
+   * no Solana Pay). null enquanto não confirmar.
+   */
+  getLandedTransaction?(signature: string): Promise<LandedTransaction | null>;
 }
 
 export type SimulationResult = { ok: boolean; error: string | null; logs: string[] };
+
+/** Transação confirmada, como a chain a guardou: mensagem e assinaturas. */
+export type LandedTransaction = { ok: boolean; error: string | null; message: Uint8Array; signatures: Uint8Array[]; signers: PublicKey[] };
 
 /** O SDK da Squads pede um `Connection`; isto expõe só o que ele usa. */
 export function connectionLike(chain: Chain): Connection {
@@ -146,6 +157,20 @@ export class RpcChain implements Chain {
 
   async getAddressLookupTable(address: PublicKey) {
     return (await this.connection.getAddressLookupTable(address)).value;
+  }
+
+  async getLandedTransaction(signature: string): Promise<LandedTransaction | null> {
+    const tx = await this.connection.getTransaction(signature, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
+    if (!tx) return null;
+    const msg = tx.transaction.message;
+    const signers = msg.staticAccountKeys.slice(0, msg.header.numRequiredSignatures);
+    return {
+      ok: !tx.meta?.err,
+      error: tx.meta?.err ? JSON.stringify(tx.meta.err) : null,
+      message: msg.serialize(),
+      signatures: tx.transaction.signatures.map((s) => bs58decode(s)),
+      signers,
+    };
   }
 
   async simulate(payer: PublicKey, instructions: TransactionInstruction[]): Promise<SimulationResult> {
