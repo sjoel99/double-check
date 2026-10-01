@@ -120,7 +120,7 @@ Uma passkey WebAuthn por aparelho, ligada à conta, não à carteira (sobrevive 
 O QR do computador abre **o nosso app** no celular (`<URL do app>/#/m/<token>`), e não mais a carteira direto (Solana Pay):
 1. O computador pede o QR (`POST /v1/pay/connect`, `/v1/intents/:id/pay` ou `/v1/rotations/:id/pay-proof`).
 2. A câmera abre o link. O celular entra com a carteira: no Android, a Phantom é chamada pelo **Mobile Wallet Adapter**; o login é `signMessage`, sem custo.
-3. **Intenção:** o celular faz o mesmo fluxo do computador (conferência, biometria do celular, serviço assina, carteira assina).
+3. **Intenção:** o celular **não precisa entrar na conta**. O token do QR dá acesso àquela intenção (`/v1/handoff/:token/{intent,prepare,authorize,submit,reject}`). O celular faz o mesmo fluxo do computador: conferência, biometria do celular, serviço assina, carteira assina. A carteira do celular conecta e assina **na mesma abertura** (uma sessão MWA por operação, sem reautorização), conferindo que é a conta esperada.
 4. **Entrar:** o celular entra e entrega uma sessão ao computador (`/v1/handoff/:token/claim`).
 5. **Troca:** a carteira nova assina o texto de posse (`signMessage`, sem custo) e o celular envia a prova (`/v1/handoff/:token/proof`).
 6. O computador acompanha por `GET /v1/pay/:token`; numa intenção, o estado vem da própria intenção.
