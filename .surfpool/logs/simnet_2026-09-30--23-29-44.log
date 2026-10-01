@@ -1,0 +1,22 @@
+[2026-09-30--23-29-44 INFO actix_server::builder] starting 5 workers
+[2026-09-30--23-29-44 INFO actix_server::server] Tokio runtime found; starting in existing Tokio runtime
+[2026-09-30--23-29-44 INFO actix_server::server] starting service: "actix-web-service-127.0.0.1:18488", workers: 5, listening on: 127.0.0.1:18488
+[2026-09-30--23-29-45 INFO parity_ws] Listening for new connections on 127.0.0.1:8900.
+[2026-09-30--23-29-46 INFO surfpool::cli::simnet] Datasource connection successful. Epoch 1046 / Slot index 281002 / Slot 452153002.
+[2026-09-30--23-29-46 INFO surfpool::cli::simnet] No keypair found at provided path /home/joelsantos/.config/solana/id.json; skipping airdrop for that keypair
+[2026-09-30--23-29-51 INFO surfpool::cli::simnet] Account D3LdBY2gY3ruPhAyfGvdXQTGT13Xqr1FZGarTEsi2QqD updated.
+[2026-09-30--23-29-51 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:57846.
+[2026-09-30--23-29-52 INFO surfpool::cli::simnet] Account BSTq9w3kZwNwpBXJEvTZz2G9ZTNyKBvoSeXMvwb4cNZr updated.
+[2026-09-30--23-29-53 INFO surfpool::cli::simnet] Account 5DH2e3cJmFpyi6mk65EGFediunm4ui6BiKNUNrhWtD1b updated.
+[2026-09-30--23-29-53 INFO surfpool::cli::simnet] Account Fy3YMJCvwbAXUgUM5b91ucUVA3jYzwWLHL3MwBqKsh8n updated.
+[2026-09-30--23-29-53 INFO surfpool::cli::simnet] Account SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf updated.
+[2026-09-30--23-29-53 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:57848.
+[2026-09-30--23-29-53 INFO surfpool::cli::simnet] Account 2xRjLuzbCgjfTio6hk9AZF8ajdrbf8MdE4HhpMmxVEpi updated.
+[2026-09-30--23-29-54 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:57852.
+[2026-09-30--23-29-55 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:57856.
+[2026-09-30--23-29-56 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:57860.
+[2026-09-30--23-29-57 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:57868.
+[2026-09-30--23-29-58 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:51302.
+[2026-09-30--23-29-58 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:51312.
+[2026-09-30--23-29-59 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:51316.
+[2026-09-30--23-30-00 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:51318.

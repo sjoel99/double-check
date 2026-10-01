@@ -143,6 +143,7 @@ export class CustodyService {
       assertStrictTwoOfTwo(state, acc.roles);
     } catch (e) {
       await this.audit({ type: "INVARIANT_VIOLATION", accountId: acc.id, multisig: acc.multisig, details: { error: String(e) } });
+      await this.store.saveSecurityEvent({ id: randomUUID(), accountId: acc.id, code: "INVARIANT_VIOLATION", message: String(e), at: this.now() });
       await this.cfg.notifications.securityAlert({ userId: acc.userId, accountId: acc.id }, { code: "INVARIANT_VIOLATION", message: String(e) });
       throw e;
     }
@@ -330,6 +331,7 @@ export class CustodyService {
         updatedAt: now,
       };
       await this.store.saveIntent(rec);
+      await this.store.saveSquadsTransaction({ accountId, multisig: acc.multisig, transactionIndex: index.toString(), kind: "VAULT", address: onchain.address, hash: onchain.hash, intentId: intent.id, createSignature: sig, createdAt: now });
       await this.audit({ type: "TRANSACTION_PROPOSED", accountId, multisig: acc.multisig, transactionIndex: index.toString(), intentId: intent.id, intentHash: intent.intentHash, txSignature: sig });
       await this.cfg.notifications.transactionApprovalRequested(
         { userId: acc.userId, accountId },
@@ -421,6 +423,7 @@ export class CustodyService {
         rec.signatures.reject = sig;
         rec.updatedAt = now;
         await this.store.saveIntent(rec);
+        await this.store.saveApproval({ id: randomUUID(), intentId, accountId: acc.id, publicKey: st.signer, role: "CLIENT", decision: "REJECT", statement: payload.statement, txSignature: sig, createdAt: now });
         await this.audit({ type: "CLIENT_REJECTED", accountId: acc.id, publicKey: st.signer, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId, intentHash: intent.intentHash, txSignature: sig });
         if (intent.type === "ROTATE_MEMBER") await this.finishRotation(intent.rotationId, "REJECTED", "cliente rejeitou");
         return rec;
@@ -432,6 +435,7 @@ export class CustodyService {
       rec.signatures.clientApprove = clientSig;
       rec.updatedAt = this.now();
       await this.store.saveIntent(rec);
+      await this.store.saveApproval({ id: randomUUID(), intentId, accountId: acc.id, publicKey: st.signer, role: "CLIENT", decision: "APPROVE", statement: payload.statement, txSignature: clientSig, createdAt: this.now() });
       await this.audit({ type: "CLIENT_APPROVED", accountId: acc.id, publicKey: st.signer, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId, intentHash: intent.intentHash, txSignature: clientSig });
       if (intent.type === "ROTATE_MEMBER") await this.advanceRotation(intent.rotationId, "AWAITING_SERVER_APPROVAL");
 
@@ -460,6 +464,7 @@ export class CustodyService {
       rec.signatures.serverApprove = serverSig;
       rec.status = "EXECUTING";
       await this.store.saveIntent(rec);
+      await this.store.saveApproval({ id: randomUUID(), intentId, accountId: acc.id, publicKey: acc.roles.server, role: "SERVER", decision: "APPROVE", statement: { policy: "allowed", riskFlags: decision.riskFlags }, txSignature: serverSig, createdAt: this.now() });
       await this.audit({ type: "SERVER_APPROVED", accountId: acc.id, publicKey: acc.roles.server, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId, intentHash: intent.intentHash, txSignature: serverSig });
 
       const proposal = await readProposal(this.chain, ms, index);
@@ -741,6 +746,7 @@ export class CustodyService {
 
     const flags = ["SECURITY_CHANGE", rot.role === "CLIENT" ? "CLIENT_KEY_ROTATION" : "SERVER_KEY_ROTATION"];
     await this.store.saveIntent({ intent, accountId: acc.id, transactionHash: onchain.hash, status: "AWAITING_CLIENT", riskFlags: flags, reasons: [], signatures: { create: sig }, updatedAt: now });
+    await this.store.saveSquadsTransaction({ accountId: acc.id, multisig: acc.multisig, transactionIndex: index.toString(), kind: "CONFIG", address: onchain.address, hash: onchain.hash, intentId: intent.id, createSignature: sig, createdAt: now });
     await this.audit({ type: "TRANSACTION_PROPOSED", accountId: acc.id, multisig: acc.multisig, transactionIndex: index.toString(), intentId: intent.id, intentHash: intent.intentHash, txSignature: sig, details: { rotationId } });
     const updated = await this.advanceRotation(rotationId, "AWAITING_CLIENT_APPROVAL", undefined, { intentId: intent.id });
     await this.cfg.notifications.keyRotationRequested(

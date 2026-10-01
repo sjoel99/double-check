@@ -12,6 +12,7 @@
   "devDependencies": {
     "@duplachave/crypto": "workspace:*",
     "@duplachave/custody": "workspace:*",
+    "@duplachave/database": "workspace:*",
     "@duplachave/policy-engine": "workspace:*",
     "@duplachave/shared": "workspace:*",
     "@duplachave/solana": "workspace:*",

@@ -124,7 +124,46 @@ export type AuditEvent = {
 
 export type AuditInput = Partial<Omit<AuditEvent, "seq" | "at" | "type" | "prevHash" | "hash">> & { type: AuditEventType };
 
+export type ApprovalRecord = {
+  id: string;
+  intentId: string;
+  accountId: string;
+  publicKey: string;
+  role: "CLIENT" | "SERVER";
+  decision: "APPROVE" | "REJECT";
+  /** Declaração assinada (só material público: dados + assinatura). */
+  statement: unknown;
+  txSignature: string | null;
+  createdAt: number;
+};
+
+export type SquadsTransactionRecord = {
+  accountId: string;
+  multisig: string;
+  transactionIndex: string;
+  kind: "VAULT" | "CONFIG";
+  address: string;
+  hash: string;
+  intentId: string;
+  createSignature: string;
+  createdAt: number;
+};
+
+export type SecurityEventRecord = {
+  id: string;
+  accountId: string | null;
+  code: string;
+  message: string;
+  at: number;
+};
+
 export interface Store {
+  saveApproval(a: ApprovalRecord): Promise<void>;
+  listApprovals(intentId: string): Promise<ApprovalRecord[]>;
+  saveSquadsTransaction(t: SquadsTransactionRecord): Promise<void>;
+  saveSecurityEvent(e: SecurityEventRecord): Promise<void>;
+  listSecurityEvents(accountId: string): Promise<SecurityEventRecord[]>;
+
   saveUser(u: UserRecord): Promise<void>;
   getUser(id: string): Promise<UserRecord | null>;
 
@@ -178,6 +217,14 @@ export class MemoryStore implements Store, ChallengeStore {
   private challenges = new Map<string, ChallengeRecord>();
   async putChallenge(c: ChallengeRecord) { this.challenges.set(c.id, clone(c)); }
   async takeChallenge(id: string) { const c = this.challenges.get(id) ?? null; this.challenges.delete(id); return c; }
+  private approvals: ApprovalRecord[] = [];
+  private squadsTxs: SquadsTransactionRecord[] = [];
+  private secEvents: SecurityEventRecord[] = [];
+  async saveApproval(a: ApprovalRecord) { this.approvals.push(clone(a)); }
+  async listApprovals(intentId: string) { return this.approvals.filter((a) => a.intentId === intentId).map(clone); }
+  async saveSquadsTransaction(t: SquadsTransactionRecord) { this.squadsTxs.push(clone(t)); }
+  async saveSecurityEvent(e: SecurityEventRecord) { this.secEvents.push(clone(e)); }
+  async listSecurityEvents(accountId: string) { return this.secEvents.filter((e) => e.accountId === accountId).map(clone); }
   private users = new Map<string, UserRecord>();
   private devices = new Map<string, DeviceRecord>();
   private accounts = new Map<string, SmartAccountRecord>();
