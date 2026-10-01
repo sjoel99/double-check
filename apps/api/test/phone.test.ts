@@ -99,6 +99,29 @@ describe("continuar no celular", () => {
     expect(await t.chain.getBalance(new PublicKey(to))).toBe(2n * SOL);
   });
 
+  it("pelo QR, sem entrar na conta: confere, biometria, serviço assina e a carteira assina — uma abertura da carteira", async () => {
+    const t = await setup();
+    const wallet = DevMemorySigner.generate("PHANTOM_MOBILE");
+    const phone = await phoneEnroll(t, wallet);
+    t.chain.airdrop(new PublicKey(phone.account.vault), 5n * SOL);
+    const intent = await t.call("POST", `/v1/accounts/${phone.account.id}/intents`, { type: "TRANSFER_SOL", destination: Keypair.generate().publicKey.toBase58(), amountSol: "1" }, phone.token);
+    const token = tokenOf((await t.call("POST", `/v1/intents/${intent.json.intent.id}/pay`, {}, phone.token)).json.url);
+    const info = await t.call("GET", `/v1/handoff/${token}`);
+    expect(info.json.wallet).toBe(phone.account.roles.client);
+    // Sem sessão nenhuma: só o token.
+    const prepared = await t.call("POST", `/v1/handoff/${token}/prepare`, {});
+    const review = await reviewPrepared(t.chain, prepared.json, await wallet.publicKey(), t.now());
+    const message = Buffer.from(review.message).toString("base64");
+    const bogus = await softGet(phone.passkey, { challenge: await transactionChallenge(new Uint8Array([7])), rpId: RP_ID, origin: ORIGIN });
+    expect((await t.call("POST", `/v1/handoff/${token}/authorize`, { message, assertion: bogus })).json.error).toBe("PASSKEY_INVALID");
+    const assertion = await softGet(phone.passkey, { challenge: await transactionChallenge(review.message), rpId: RP_ID, origin: ORIGIN });
+    const auth = await t.call("POST", `/v1/handoff/${token}/authorize`, { message, assertion });
+    const done = await t.call("POST", `/v1/handoff/${token}/submit`, { transaction: await signAsWallet(verifyAuthorized(review, auth.json.transaction), wallet) });
+    expect(done.json.status).toBe("EXECUTED");
+    expect((await t.call("GET", `/v1/pay/${token}`)).json.status).toBe("DONE");
+    expect((await t.call("POST", `/v1/handoff/${token}/prepare`, {})).json.error).toBe("PAY_USED");
+  });
+
   it("troca de carteira pelo celular: a nova prova posse assinando texto (sem custo); a atual assina a troca", async () => {
     const t = await setup();
     const wallet = DevMemorySigner.generate("PHANTOM_MOBILE");

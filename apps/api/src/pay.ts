@@ -3,7 +3,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { SecurityError } from "@duplachave/shared";
 import type { WalletProof } from "@duplachave/crypto";
-import { type CustodyService, qrLabel, type Store } from "@duplachave/custody";
+import { type CustodyService, qrLabel, renderIntent, type Store } from "@duplachave/custody";
 
 /**
  * Continuar no celular. O computador mostra um QR com `<URL do app>/#/m/<token>`:
@@ -120,7 +120,54 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
       if (!rot || !acc || rot.status !== "REQUESTED") throw new SecurityError("ROTATION_BAD_STATE", rot?.status ?? "inexistente");
       fields = d.custody.possessionFieldsFor(rot, acc.multisig);
     }
-    return { kind: h.kind, label: h.label, intentId: h.kind === "SIGN_INTENT" ? h.subject : null, accountId: h.accountId, fields };
+    const wallet = h.kind === "SIGN_INTENT" && h.accountId ? ((await d.store.getAccount(h.accountId))?.roles.client ?? null) : null;
+    return { kind: h.kind, label: h.label, intentId: h.kind === "SIGN_INTENT" ? h.subject : null, accountId: h.accountId, wallet, fields };
+  });
+
+  // ------------------------------------------------------------ assinar pelo celular, sem entrar na conta
+  // O token do QR (segredo que só o computador da conta mostrou) dá acesso a ESTA intenção.
+  // Quem autoriza de fato continua sendo a biometria e a carteira da conta: o
+  // serviço só assina com biometria válida, e só envia o que a carteira assinou.
+  const signHandoff = (req: FastifyRequest) => {
+    const h = get((req.params as { token: string }).token);
+    if (h.kind !== "SIGN_INTENT" || h.status !== "WAITING") throw new SecurityError("PAY_USED", "este QR já foi usado ou expirou");
+    return h;
+  };
+  const intentView = async (id: string) => {
+    const rec = await d.store.getIntent(id);
+    if (!rec) throw new SecurityError("INTENT_NOT_FOUND", id);
+    return { ...rec, display: renderIntent(rec.intent, { riskFlags: rec.riskFlags }) };
+  };
+
+  app.get("/v1/handoff/:token/intent", async (req) => {
+    const h = get((req.params as { token: string }).token);
+    if (h.kind !== "SIGN_INTENT") throw new SecurityError("PAY_USED", "este QR não é de assinatura");
+    return { record: await intentView(h.subject!) };
+  });
+
+  app.post("/v1/handoff/:token/prepare", async (req) => {
+    const h = signHandoff(req);
+    const acc = (await d.store.getAccount(h.accountId!))!;
+    return d.custody.prepareIntent(h.subject!, acc.roles.client);
+  });
+
+  app.post("/v1/handoff/:token/authorize", async (req) => {
+    const h = signHandoff(req);
+    const body = z.object({ message: z.string().min(100).max(4096), assertion: z.object({ id: z.string() }).passthrough() }).parse(req.body);
+    return d.custody.authorizeIntent(h.subject!, body as never);
+  });
+
+  app.post("/v1/handoff/:token/submit", async (req) => {
+    const h = signHandoff(req);
+    const { transaction } = z.object({ transaction: z.string().min(100).max(4096) }).parse(req.body);
+    await d.custody.submitIntent(h.subject!, transaction);
+    return intentView(h.subject!);
+  });
+
+  app.post("/v1/handoff/:token/reject", async (req) => {
+    const h = signHandoff(req);
+    await d.custody.rejectByClient(h.subject!);
+    return intentView(h.subject!);
   });
 
   /** Entrar pelo celular: o celular já entrou com a carteira; o computador recebe uma sessão da mesma conta. */

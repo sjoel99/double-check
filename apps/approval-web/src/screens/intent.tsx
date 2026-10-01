@@ -6,6 +6,7 @@ import { ApiError } from "../lib/api";
 import { KNOWN_PROGRAM_NAMES } from "@duplachave/solana";
 import { errorText, useApp } from "../app";
 import { api } from "../lib/api";
+import { ConnectedWallet } from "../lib/wallets";
 import { now, short, sol } from "../lib/chain";
 import { Icon } from "../icons";
 import type { IntentView } from "./home";
@@ -115,8 +116,23 @@ const PREPARED_FRESH_MS = 40_000;
 
 type Loaded = { record: IntentView; request: ApprovalRequest | null; preparedAt: number; prepareErr: string | null };
 
-export function IntentScreen({ id }: { id: string }) {
+/**
+ * `handoff`: aberta pelo QR no celular, sem entrar na conta. O token do QR dá
+ * acesso a esta intenção; a biometria e a carteira da conta continuam sendo
+ * quem autoriza. A carteira do celular conecta e assina na mesma abertura.
+ */
+export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: string; wallet: string } }) {
   const ctx = useApp();
+  const base = handoff ? `/v1/handoff/${handoff.token}` : `/v1/intents/${id}`;
+  const opt = handoff ? { auth: false } : undefined;
+  const myWallet = handoff?.wallet ?? ctx.session!.publicKey;
+  /** A carteira que assina: a da sessão, ou (pelo QR) a carteira do celular já sabendo qual conta esperar. */
+  const signer = async () => {
+    if (!handoff) return ctx.accountWallet();
+    const w = ctx.wallets.find((x) => x.name === "Mobile Wallet Adapter");
+    if (!w) throw new Error("Abra este link no Android com a Phantom instalada.");
+    return ConnectedWallet.forAddress(w, handoff.wallet, ctx.config.cluster);
+  };
   const [data, setData] = useState<Loaded | null>(null);
   const [check, setCheck] = useState<Inspection | null>(null);
   const [busy, setBusy] = useState<null | "sign" | "reject">(null);
@@ -124,19 +140,19 @@ export function IntentScreen({ id }: { id: string }) {
   const [err, setErr] = useState<string | null>(null);
   const [handedOver, setHandedOver] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
-  const viaPhone = ctx.session?.via === "phone";
+  const viaPhone = !handoff && ctx.session?.via === "phone";
 
   /** Pede a transação atômica (o serviço já assinou) e confere: o app remonta os bytes sozinho. */
   const prepare = useCallback(async () => {
-    const path = ctx.dev.malicious ? `/v1/dev/intents/${id}/prepare-tampered` : `/v1/intents/${id}/prepare`;
-    const request = await api<ApprovalRequest>("POST", path, {});
-    const inspection = await inspectPrepared(ctx.chain, request, new PublicKey(ctx.session!.publicKey), now(), { initiatedHere: ctx.initiatedHere });
+    const path = ctx.dev.malicious && !handoff ? `/v1/dev/intents/${id}/prepare-tampered` : `${base}/prepare`;
+    const request = await api<ApprovalRequest>("POST", path, {}, opt);
+    const inspection = await inspectPrepared(ctx.chain, request, new PublicKey(myWallet), now(), { initiatedHere: handoff ? undefined : ctx.initiatedHere });
     return { request, inspection };
-  }, [id, ctx]);
+  }, [id, ctx, base, myWallet]);
 
   const load = useCallback(async () => {
     try {
-      const r = await api<{ record: IntentView }>("GET", `/v1/intents/${id}`);
+      const r = await api<{ record: IntentView }>("GET", handoff ? `${base}/intent` : base, undefined, opt);
       if (r.record.status !== "AWAITING_CLIENT") return setData({ record: r.record, request: null, preparedAt: 0, prepareErr: null });
       try {
         const { request, inspection } = await prepare();
@@ -165,7 +181,7 @@ export function IntentScreen({ id }: { id: string }) {
     setErr(null);
     setBusy("sign");
     try {
-      const c = await ctx.accountWallet();
+      const c = await signer();
       let review = check.review;
       let request = data.request;
       if (Date.now() - data.preparedAt > PREPARED_FRESH_MS) {
@@ -179,20 +195,23 @@ export function IntentScreen({ id }: { id: string }) {
       }
       setStepText("Confirme com a biometria…");
       const allow = (request.passkeys ?? []).filter((p) => p.rpId === location.hostname).map((p) => p.id);
-      if (!allow.length) return ctx.go(`/passkey?then=${encodeURIComponent(`/intent/${id}`)}`);
+      if (!allow.length) {
+        if (handoff) throw new Error("Esta conta ainda não tem biometria ativa neste endereço. Ative primeiro (Entrar e ativar a biometria).");
+        return ctx.go(`/passkey?then=${encodeURIComponent(`/intent/${id}`)}`);
+      }
       const assertion = await confirmPasskey(await challengeFor(review.message), allow, { devTools: ctx.config.devTools, confirm: ctx.biometric, what: summaryOf(request) });
       setStepText("O serviço está assinando…");
-      const auth = await api<{ transaction: string }>("POST", `/v1/intents/${id}/authorize`, { message: Buffer.from(review.message).toString("base64"), assertion });
+      const auth = await api<{ transaction: string }>("POST", `${base}/authorize`, { message: Buffer.from(review.message).toString("base64"), assertion }, opt);
       const tx = verifyAuthorized(review, auth.transaction);
       setStepText(`Confirme na ${c.name}…`);
       const signed = await c.signTransaction(tx);
       setStepText("Enviando para a Solana…");
-      const out = await api<IntentView>("POST", `/v1/intents/${id}/submit`, { transaction: signed });
+      const out = await api<IntentView>("POST", `${base}/submit`, { transaction: signed }, opt);
       const intent = request.intent;
       if (intent.type === "ROTATE_MEMBER" && intent.role === "CLIENT" && out.status === "EXECUTED") return setHandedOver(true);
       await load();
     } catch (e) {
-      if (e instanceof ApiError && e.code === "PASSKEY_REQUIRED") return ctx.go(`/passkey?then=${encodeURIComponent(`/intent/${id}`)}`);
+      if (e instanceof ApiError && e.code === "PASSKEY_REQUIRED" && !handoff) return ctx.go(`/passkey?then=${encodeURIComponent(`/intent/${id}`)}`);
       setErr(errorText(e));
     } finally {
       setBusy(null);
@@ -204,7 +223,7 @@ export function IntentScreen({ id }: { id: string }) {
     setErr(null);
     setBusy("reject");
     try {
-      await api("POST", `/v1/intents/${id}/reject`);
+      await api("POST", `${base}/reject`, undefined, opt);
       ctx.toast("Recusada. Nada foi para a Solana.");
       await load();
     } catch (e) {
@@ -239,7 +258,7 @@ export function IntentScreen({ id }: { id: string }) {
   if (!check.ok) return <Blocked check={check} request={request} />;
 
   const intent = request.intent;
-  const walletName = ctx.session!.walletName;
+  const walletName = handoff ? "Carteira do celular" : ctx.session!.walletName;
   const primaryClass = `btn ${intent.type === "ROTATE_MEMBER" ? "amber" : "primary"}`;
   const actions = (
     <>
@@ -262,7 +281,7 @@ export function IntentScreen({ id }: { id: string }) {
             <span className="spinner" /> {stepText}
           </div>
         )}
-        {!viaPhone && !busy && (
+        {!viaPhone && !busy && !handoff && (
           <button type="button" className="linkbtn" style={{ flexBasis: "100%", padding: "2px 0 0" }} onClick={() => setQrOpen(true)}>
             Ou continuar no celular (QR)
           </button>
@@ -364,7 +383,7 @@ function RotationApproval({ request, header, actions, err }: { request: Approval
             </div>
             <div className="grow">
               <div className="muted" style={{ fontSize: 12 }}>
-                {isClient ? `Atual (${session!.walletName})` : "Chave atual do serviço"}
+                {isClient ? `Atual (${session?.walletName ?? "carteira da conta"})` : "Chave atual do serviço"}
               </div>
               <div className="mono" style={{ fontSize: 17, color: "var(--muted)", textDecoration: "line-through", textDecorationColor: "#5b6270" }}>
                 {short(intent.oldKey)}

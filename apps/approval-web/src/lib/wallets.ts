@@ -79,6 +79,14 @@ export class ConnectedWallet {
     return new ConnectedWallet(wallet, account, cluster);
   }
 
+  /**
+   * Carteira já conhecida (a da conta), sem abrir a carteira para conectar: no
+   * celular, a conexão e a assinatura acontecem na mesma abertura da Phantom.
+   */
+  static forAddress(wallet: StandardWallet, publicKey: string, cluster: string): ConnectedWallet {
+    return new ConnectedWallet(wallet, { address: publicKey, publicKey: new PublicKey(publicKey).toBytes() }, cluster);
+  }
+
   get name() {
     return walletLabel(this.wallet.name);
   }

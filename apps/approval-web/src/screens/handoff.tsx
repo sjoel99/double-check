@@ -6,8 +6,9 @@ import { short } from "../lib/chain";
 import type { StandardWallet } from "../lib/wallets";
 import { Icon, Logo } from "../icons";
 import { WalletList } from "./welcome";
+import { IntentScreen } from "./intent";
 
-type Info = { kind: "CONNECT" | "SIGN_INTENT" | "ROTATION_PROOF"; label: string; intentId: string | null; accountId: string | null; fields: Omit<PossessionFields, "publicKey"> | null };
+type Info = { kind: "CONNECT" | "SIGN_INTENT" | "ROTATION_PROOF"; label: string; intentId: string | null; accountId: string | null; wallet: string | null; fields: Omit<PossessionFields, "publicKey"> | null };
 
 /**
  * O que o QR do computador abre no celular. Aqui (e não na carteira direto) a
@@ -19,6 +20,7 @@ export function MobileHandoff({ token }: { token: string }) {
   const [step, setStep] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
+  const [login, setLogin] = useState(false);
 
   useEffect(() => {
     api<Info>("GET", `/v1/handoff/${token}`, undefined, { auth: false })
@@ -47,7 +49,7 @@ export function MobileHandoff({ token }: { token: string }) {
       const s = await loginOrEnroll(ctx, c, setStep);
       if (info.kind === "SIGN_INTENT") {
         if (s.accountId !== info.accountId) throw new Error("Esta carteira não é a da conta que pediu a assinatura. Troque de conta na carteira e tente de novo.");
-        return ctx.go(`/intent/${info.intentId}`);
+        return ctx.go(login ? `/passkey?then=${encodeURIComponent(`/intent/${info.intentId}`)}` : `/intent/${info.intentId}`);
       }
       await api("POST", `/v1/handoff/${token}/claim`, { accountId: s.accountId });
       setDone("Pronto. O computador entrou na sua conta.");
@@ -57,6 +59,20 @@ export function MobileHandoff({ token }: { token: string }) {
       setStep(null);
     }
   };
+
+  // Assinar pelo QR, sem entrar na conta: uma abertura só da Phantom (conecta e assina juntos).
+  const mwa = ctx.wallets.some((w) => w.name === "Mobile Wallet Adapter");
+  if (info?.kind === "SIGN_INTENT" && info.wallet && mwa && !login && ctx.session?.accountId !== info.accountId)
+    return (
+      <>
+        <IntentScreen id={info.intentId!} handoff={{ token, wallet: info.wallet }} />
+        <div style={{ display: "flex", justifyContent: "center", padding: "0 16px 16px" }}>
+          <button type="button" className="linkbtn" onClick={() => setLogin(true)}>
+            Biometria não ativa neste celular? Entrar e ativar
+          </button>
+        </div>
+      </>
+    );
 
   const title =
     info?.kind === "ROTATION_PROOF" ? "Conecte a carteira NOVA" : info?.kind === "SIGN_INTENT" ? "Entre com a carteira da conta" : "Entre com a sua carteira";

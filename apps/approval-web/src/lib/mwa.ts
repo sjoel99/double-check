@@ -40,7 +40,7 @@ export function makeMwaWallet(opts: { chain: string; identity: { name: string; u
   const toAccount = (addressB64: string): MwaAccount => ({ address: addressB64, publicKey: fromB64(addressB64), chains: [opts.chain], features: [] });
 
   /** Uma sessão: autoriza (a Phantom mostra quem pede) e roda `fn` na mesma conexão. */
-  const session = async <T>(what: string, fn: (wallet: any, acc: MwaAccount) => Promise<T>): Promise<T> => {
+  const session = async <T>(what: string, fn: (wallet: any, acc: MwaAccount) => Promise<T>, expected?: Uint8Array): Promise<T> => {
     await ensureLocalNetwork();
     trace(`mwa:${what}:inicio`);
     try {
@@ -49,7 +49,8 @@ export function makeMwaWallet(opts: { chain: string; identity: { name: string; u
         const auth = await wallet.authorize({ identity: opts.identity, chain: opts.chain as `${string}:${string}` });
         trace(`mwa:${what}:autorizado`, `${auth.accounts.length} conta(s)`);
         const acc = toAccount(auth.accounts[0]!.address as string);
-        if (account && b64(account.publicKey) !== b64(acc.publicKey)) throw new Error("A carteira está em outra conta. Troque de conta na Phantom e tente de novo.");
+        const want = expected ?? account?.publicKey;
+        if (want && b64(want) !== b64(acc.publicKey)) throw new Error("A Phantom está em outra conta. Troque para a conta desta carteira e tente de novo.");
         account = acc;
         return fn(wallet, acc);
       });
@@ -81,23 +82,31 @@ export function makeMwaWallet(opts: { chain: string; identity: { name: string; u
       "standard:events": { version: "1.0.0", on: () => () => {} },
       "solana:signMessage": {
         version: "1.0.0",
-        signMessage: async ({ message }: { message: Uint8Array }) =>
-          session("signMessage", async (wallet, acc) => {
-            const r = await wallet.signMessages({ addresses: [acc.address], payloads: [b64(message)] });
-            const signed = fromB64(r.signed_payloads[0]);
-            return [{ signedMessage: message, signature: signed.slice(-64) }];
-          }),
+        signMessage: async ({ message, account: input }: { message: Uint8Array; account?: { publicKey: Uint8Array } }) =>
+          session(
+            "signMessage",
+            async (wallet, acc) => {
+              const r = await wallet.signMessages({ addresses: [acc.address], payloads: [b64(message)] });
+              const signed = fromB64(r.signed_payloads[0]);
+              return [{ signedMessage: message, signature: signed.slice(-64) }];
+            },
+            input?.publicKey,
+          ),
       },
       "solana:signTransaction": {
         version: "1.0.0",
         supportedTransactionVersions: [0],
-        signTransaction: async ({ transaction }: { transaction: Uint8Array }) =>
-          session("signTransaction", async (wallet) => {
-            const r = await wallet.signTransactions({ payloads: [b64(transaction)] });
-            const signed = fromB64(r.signed_payloads[0]);
-            VersionedTransaction.deserialize(signed); // legível, senão erro aqui
-            return [{ signedTransaction: signed }];
-          }),
+        signTransaction: async ({ transaction, account: input }: { transaction: Uint8Array; account?: { publicKey: Uint8Array } }) =>
+          session(
+            "signTransaction",
+            async (wallet) => {
+              const r = await wallet.signTransactions({ payloads: [b64(transaction)] });
+              const signed = fromB64(r.signed_payloads[0]);
+              VersionedTransaction.deserialize(signed); // legível, senão erro aqui
+              return [{ signedTransaction: signed }];
+            },
+            input?.publicKey,
+          ),
       },
     },
   };
