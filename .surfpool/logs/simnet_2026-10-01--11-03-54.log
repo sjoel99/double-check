@@ -1,0 +1,13 @@
+[2026-10-01--11-03-54 ERROR surfpool::cli::simnet] Failed to start subgraph and explorer server: Address already in use (os error 98)
+[2026-10-01--11-03-54 INFO parity_ws] Listening for new connections on 127.0.0.1:9000.
+[2026-10-01--11-03-55 WARN surfpool::cli::simnet] Failed to start subgraph and explorer server: Address already in use (os error 98)
+[2026-10-01--11-03-55 INFO surfpool::cli::simnet] Continuing with simnet startup...
+[2026-10-01--11-03-55 INFO surfpool::cli::simnet] Datasource connection successful. Epoch 0 / Slot index 0 / Slot 31.
+[2026-10-01--11-03-55 INFO surfpool::cli::simnet] No keypair found at provided path /home/joelsantos/.config/solana/id.json; skipping airdrop for that keypair
+[2026-10-01--11-03-59 INFO surfpool::cli::simnet] Account SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf not found, creating a new account from default values
+[2026-10-01--11-03-59 INFO surfpool::cli::simnet] Account SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf updated.
+[2026-10-01--11-03-59 INFO surfpool::cli::simnet] Account BSTq9w3kZwNwpBXJEvTZz2G9ZTNyKBvoSeXMvwb4cNZr not found, creating a new account from default values
+[2026-10-01--11-03-59 INFO surfpool::cli::simnet] Account BSTq9w3kZwNwpBXJEvTZz2G9ZTNyKBvoSeXMvwb4cNZr updated.
+[2026-10-01--11-04-07 INFO surfpool::cli::simnet] Account E58CNCEYhNTW1V57njxbFazhmrNskVzdMcErVyCmuRB4 updated.
+[2026-10-01--11-04-07 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:39154.
+[2026-10-01--11-04-07 INFO surfpool::cli::simnet] Account 2NELR4atc3cFdpDupFsXS4fCGjrp3QWhhdsdEXsaN8Ak updated.

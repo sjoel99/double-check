@@ -10,7 +10,7 @@ O programa da Squads é quem impõe isso. Backend, banco e app podem falhar sem 
 cd ~/Desenvolvimento/Pessoal/duplachave
 pnpm install
 pnpm test     # 63 testes, ~4 s, sem rede: o Squads v4 da mainnet rodando no LiteSVM
-pnpm dev      # surfpool (fork local da mainnet) + API :8787 + Approval App :5173
+pnpm dev      # surfpool offline (Squads v4 das fixtures) + API :8787 + Approval App :5173
 ```
 
 Abra **http://127.0.0.1:5173** (Chrome 137+, Firefox 129+ ou Safari 17+: precisa de Ed25519 no WebCrypto).
@@ -25,7 +25,7 @@ Roteiro no app (5 minutos):
 6. **Troca da chave do serviço**: no aparelho novo, "Simular pedido de troca da chave do serviço" → aprove (ou rejeite: nada muda).
 7. **Atividade**: intenções e o registro de auditoria encadeado por hash.
 
-Tudo fica em memória (API e surfpool): reiniciar `pnpm dev` zera as contas, e o app mostra "Conta não encontrada" com a opção de apagar a chave e começar de novo.
+O surfpool roda **offline**, com o ELF do Squads v4 carregado das fixtures: no modo fork (`SURFPOOL_FORK=1 pnpm dev`), cada conta nova vira consulta ao RPC público da mainnet, que limita por IP e fazia aprovações falharem com "Internal error". Tudo fica em memória (API e surfpool): reiniciar `pnpm dev` zera as contas, e o app mostra "Conta não encontrada" com a opção de apagar a chave e começar de novo.
 
 O app também abre no celular na mesma rede: `DK_WEB_HOST=0.0.0.0 pnpm dev` e acesse `http://<ip-do-notebook>:5173`. Só que o navegador do celular exige HTTPS para WebCrypto/IndexedDB fora de `localhost`, então isso precisa de um túnel HTTPS (ex.: `cloudflared tunnel --url http://localhost:5173`).
 
