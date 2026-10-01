@@ -21,12 +21,37 @@ Quem garante isso é o programa da Squads. Backend, banco e app podem falhar sem
 2. O serviço monta a transação, confere a política, simula e aprova.
 3. O cliente assina **uma vez** na carteira. Essa transação aprova e executa junto; se a execução falhar, nada fica aprovado.
 
+## Pelo celular (QR)
+
+Em qualquer ponto que precise de assinatura, o app mostra um QR do **Solana Pay**. A Phantom ou a Solflare do celular lê o código, busca a transação no nosso servidor e mostra a mensagem (por exemplo "Aprovar e executar #3: Enviar 2,5 SOL · Destino 9xQe…"). Depois a carteira assina e **envia ela mesma**. O serviço paga a taxa e o computador acompanha até confirmar.
+
+O Solana Pay não tem assinatura de mensagem. Por isso, pelo celular:
+- **Cadastro:** um memo de vínculo assinado pela carteira, na mesma transação que cria a multisig (atômico).
+- **Entrada:** um memo de entrada.
+- **Prova da carteira nova (na troca):** um memo com o texto de posse. A prova guardada é a mensagem da transação + a assinatura da carteira, e qualquer um confere offline.
+
+### Testar com o seu celular (devnet)
+
+```bash
+pnpm dev:devnet
+```
+
+O script:
+- sobe um túnel HTTPS (cloudflared) para a API, porque o celular exige HTTPS;
+- sobe um Postgres em Docker e chaves persistentes;
+- aponta tudo para a devnet;
+- imprime o endereço do **pagador de taxas**: abasteça-o uma vez em https://faucet.solana.com, porque o airdrop automático da devnet está limitado.
+
+Na Phantom do celular, ative o modo devnet: Configurações → Configurações de desenvolvedor → Modo testnet → Solana Devnet. Depois, no computador, abra http://127.0.0.1:5173 e use **Usar a carteira do celular**.
+
+Em localnet (`pnpm dev`), o botão **Abrir no celular de teste** abre uma aba que faz o papel da carteira do celular. Assim dá para testar o caminho do QR sem aparelho.
+
 ## Testar agora
 
 ```bash
 cd ~/Desenvolvimento/Pessoal/duplachave
 pnpm install
-pnpm test     # 69 testes, ~4 s, sem rede: o Squads v4 da mainnet rodando no LiteSVM
+pnpm test     # 74 testes, ~4 s, sem rede: o Squads v4 da mainnet rodando no LiteSVM
 pnpm dev      # surfpool offline (Squads v4 das fixtures) + API :8787 + app :5173
 ```
 

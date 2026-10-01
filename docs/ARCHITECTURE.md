@@ -81,6 +81,18 @@ Configuração fixa: threshold 2, `config_authority = default` (multisig autôno
 
 Em mudanças de segurança (troca de carteira ou da chave do serviço), a carteira assina só `proposal_approve`. O executor do serviço executa e o backend confere o resultado na chain antes de atualizar o banco.
 
+## Fluxo pelo celular (Solana Pay)
+
+1. O app pede um QR (`POST /v1/pay/connect`, `/v1/intents/:id/pay` ou `/v1/rotations/:id/pay-proof`) e mostra `solana:<URL HTTPS>/pay/<token>`.
+2. A carteira do celular faz `GET` (rótulo e ícone) e depois `POST { account }`. O backend confere a carteira, monta a transação, **assina como pagador** e devolve `{ transaction, message }`. A primeira assinatura é a do pagador, então o id da transação já é conhecido.
+3. A carteira assina e envia ela mesma. O backend acompanha o id na chain e confere a transação confirmada:
+   - **intenção:** os bytes têm que ser os esperados;
+   - **entrada/cadastro:** o memo tem que estar assinado pela carteira;
+   - **troca:** a mensagem e a assinatura viram a prova de posse.
+4. O computador acompanha por `GET /v1/pay/:token` e segue sozinho. Em cadastro ou entrada, ele recebe a sessão.
+
+O Solana Pay não tem signMessage, por isso cadastro, entrada e prova de posse viram transações com memo. No cadastro, o memo e a criação da multisig vão na **mesma** transação: a conta só passa a existir se a carteira assinou.
+
 ## Decisões de segurança
 
 Cada decisão tem problema, alternativas, trade-off e decisão.
