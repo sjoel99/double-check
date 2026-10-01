@@ -1,0 +1,29 @@
+{
+  "name": "duplachave",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "fixtures": "tsx scripts/baixar-fixtures.ts"
+  },
+  "devDependencies": {
+    "@duplachave/crypto": "workspace:*",
+    "@duplachave/custody": "workspace:*",
+    "@duplachave/policy-engine": "workspace:*",
+    "@duplachave/shared": "workspace:*",
+    "@duplachave/solana": "workspace:*",
+    "@duplachave/squads": "workspace:*",
+    "@solana/web3.js": "^1.99.0",
+    "@sqds/multisig": "2.1.4",
+    "@types/bn.js": "^5.2.0",
+    "@types/node": "^24.0.0",
+    "bs58": "^6.0.0",
+    "litesvm": "0.8.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.0"
+  }
+}

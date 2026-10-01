@@ -1,0 +1,16 @@
+{
+  "name": "@duplachave/squads",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@duplachave/crypto": "workspace:*",
+    "@duplachave/shared": "workspace:*",
+    "@duplachave/solana": "workspace:*",
+    "@solana/web3.js": "^1.99.0",
+    "@sqds/multisig": "2.1.4",
+    "bn.js": "^5.2.5"
+  }
+}
