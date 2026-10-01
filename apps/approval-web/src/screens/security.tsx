@@ -167,7 +167,7 @@ export function Rotate() {
       const p = r.pairing;
       // Lembra que a troca foi pedida aqui: o app recusa aprovar troca de chave que não pediu.
       if (ctx.device) await ctx.setDevice({ ...ctx.device, myRotations: [...(ctx.device.myRotations ?? []), p.rotationId].slice(-20) });
-      const link = `${location.origin}/?device=novo#/pair?r=${p.rotationId}&c=${p.challenge}`;
+      const link = `${location.origin}/?device=novo-${p.rotationId.slice(0, 8)}#/pair?r=${p.rotationId}&c=${p.challenge}`;
       setPairing({ rotationId: p.rotationId, challenge: p.challenge, link, qr: await QRCode.toDataURL(link, { margin: 1, width: 400 }) });
     } catch (e) {
       setErr(errorText(e));

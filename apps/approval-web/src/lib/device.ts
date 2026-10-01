@@ -34,13 +34,26 @@ export type DeviceRecord = {
 /** Namespace do aparelho. `?device=novo` simula um segundo aparelho no mesmo navegador (dev). */
 export const DEVICE_NS = new URLSearchParams(location.search).get("device") ?? "principal";
 
+let dbPromise: Promise<IDBDatabase> | null = null;
+
+/** Uma conexão só, reaproveitada (cada `open` sem `close` segurava o banco aberto). */
 function idb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
+  dbPromise ??= new Promise((resolve, reject) => {
     const req = indexedDB.open(DB, 1);
     req.onupgradeneeded = () => req.result.createObjectStore(STORE);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    req.onsuccess = () => {
+      req.result.onversionchange = () => {
+        req.result.close();
+        dbPromise = null;
+      };
+      resolve(req.result);
+    };
+    req.onerror = () => {
+      dbPromise = null;
+      reject(req.error);
+    };
   });
+  return dbPromise;
 }
 
 async function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
