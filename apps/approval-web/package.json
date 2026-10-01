@@ -14,7 +14,7 @@
     "@duplachave/shared": "workspace:*",
     "@duplachave/solana": "workspace:*",
     "@duplachave/squads": "workspace:*",
-    "@simplewebauthn/browser": "14.0.0",
+    "@noble/curves": "^2.4.0",
     "@solana-mobile/mobile-wallet-adapter-protocol": "2.3.0",
     "@solana/web3.js": "^1.99.0",
     "@sqds/multisig": "2.1.4",

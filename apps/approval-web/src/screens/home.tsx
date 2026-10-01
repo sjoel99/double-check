@@ -6,7 +6,9 @@ import { now, sendSigned, short, sol } from "../lib/chain";
 import { verifyAccountOnChain } from "@duplachave/custody/src/client";
 import { Icon, Logo } from "../icons";
 import QRCode from "qrcode";
-import { usePasskeys } from "./passkey";
+import type { VersionedTransaction as VTx } from "@solana/web3.js";
+import { reviewSecurityRequest, verifyAuthorized } from "@duplachave/custody/src/client";
+import { useChanges } from "./security";
 
 export type AccountView = {
   account: { id: string; multisig: string; vault: string; roles: { client: string; server: string; executor: string; proposer: string }; frozenBy: string | null };
@@ -124,7 +126,7 @@ export function Home() {
   const pending = intents.filter((i) => i.status === "AWAITING_CLIENT" || i.status === "APPROVED_PENDING_EXECUTION");
   const recent = intents.filter((i) => !pending.includes(i)).slice(0, 5);
   const s = ctx.session!;
-  const passkeys = usePasskeys();
+  const { pending: pendingChanges } = useChanges(15000);
 
   return (
     <>
@@ -177,7 +179,7 @@ export function Home() {
                 <span style={{ color: "var(--danger)" }}>Configuração on-chain diferente do esperado. Não assine nada.</span>
               ) : (
                 <>
-                  <b>Proteção 2 de 2.</b> <span className="muted">Sua {s.walletName} + a política do serviço.</span>
+                  <b>Proteção 2 de 3.</b> <span className="muted">Sua {s.walletName} + a biometria; o serviço confere e executa.</span>
                 </>
               )}
             </div>
@@ -193,11 +195,11 @@ export function Home() {
           </button>
         </div>
 
-        {passkeys.list !== null && !passkeys.active && s.via !== "phone" && (
-          <button type="button" className="banner warn" style={{ textAlign: "left", cursor: "pointer", border: 0 }} onClick={() => ctx.go("/passkey")}>
-            <Icon name="finger" size={18} color="#F2B33D" />
+        {pendingChanges.length > 0 && (
+          <button type="button" className="banner warn" style={{ textAlign: "left", cursor: "pointer", border: 0 }} onClick={() => ctx.go("/security")}>
+            <Icon name="clock" size={18} color="#F2B33D" />
             <div>
-              {passkeys.pending ? <b>Biometria aguardando o prazo de segurança.</b> : <b>Ative a biometria deste aparelho.</b>} Sem ela, o serviço não assina nenhuma transação. <u>Abrir</u>
+              <b>Há uma troca de chave pendente.</b> Executa em até 72 h. Não foi você? Abra e toque em "Não fui eu". <u>Abrir</u>
             </div>
           </button>
         )}
@@ -289,8 +291,16 @@ function DevTools({ vault, accountId, reload }: { vault: string; accountId: stri
         disabled={busy}
         onClick={() =>
           run(async () => {
-            const r = await api("POST", `/v1/dev/accounts/${accountId}/rotations/server`, {});
-            ctx.go(`/intent/${r.intent.id}`);
+            // Pedido de troca da chave do serviço: a Phantom vota e paga; executa depois do prazo.
+            const r = await api("POST", `/v1/dev/accounts/${accountId}/security-changes/server`, {});
+            const sec = await api("GET", `/v1/accounts/${accountId}/security`);
+            const review = await reviewSecurityRequest(ctx.chain, r.desc, r.transaction, { client: new PublicKey(sec.account.roles.client), webapp: new PublicKey(sec.account.roles.webapp) });
+            const auth = await api("POST", `/v1/security-changes/${r.change.id}/authorize`, { message: Buffer.from(review.message).toString("base64") });
+            const tx: VTx = verifyAuthorized(review, auth.transaction, [review.roles.operator, review.roles.server, new PublicKey(r.desc.newKey)]);
+            const w = await ctx.accountWallet();
+            await api("POST", `/v1/security-changes/${r.change.id}/submit`, { transaction: await w.signTransaction(tx) });
+            ctx.toast("Pedido feito: executa depois do prazo, em Segurança.");
+            ctx.go("/security");
           })
         }
       >

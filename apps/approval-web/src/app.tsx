@@ -1,8 +1,7 @@
 import { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { verifyEnrollmentTransaction } from "@duplachave/custody/src/client";
-import { passkeyBindingMessage } from "@duplachave/crypto";
 import { makeMwaWallet } from "./lib/mwa";
-import { type BiometricConfirm, challengeForText, confirmPasskey, createPasskey, deviceName } from "./lib/passkey";
+import { type BiometricConfirm, createWebappKey, deviceName, unlockWebappKey, type UnlockedKey, type WebappKeyBlob } from "./lib/webappKey";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Chain } from "@duplachave/solana";
 import type { Cluster } from "@duplachave/shared";
@@ -246,47 +245,66 @@ export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: st
     onStep("Pedindo SOL de teste para a sua carteira…");
     await api("POST", "/v1/dev/airdrop", { address: publicKey, sol: 2 }, { auth: false });
   }
-  onStep("Preparando sua conta 2 de 2…");
-  const p = await api("POST", "/v1/enrollment/prepare", { publicKey, walletName: c.name }, { auth: false });
-  const { transaction } = verifyEnrollmentTransaction(p.transaction, new PublicKey(publicKey));
-  onStep(`Confirme na ${c.name}: criar a conta custa ~0,003 SOL, pagos pela sua carteira…`);
-  const signed = await c.signTransaction(transaction);
-  onStep("Criando sua conta 2 de 2 na Solana…");
-  const r = await api("POST", "/v1/enrollment/submit", { enrollmentId: p.enrollmentId, transaction: signed }, { auth: false });
-  const s: Session = { token: r.token, accountId: r.account.id, walletName: c.name, publicKey, myRotations: [], via: "extension" };
-  await ctx.setSession(s);
-  return { ...s, created: true };
+  // A chave do webapp nasce aqui, cifrada pela biometria deste aparelho; é um dos três votos.
+  onStep("Confirme a biometria: ela protege a chave do webapp neste aparelho…");
+  const key = await createWebappKey({ devTools: ctx.config.devTools, confirm: ctx.biometric, what: "Criar a chave do webapp" });
+  try {
+    onStep("Preparando sua conta 2 de 3…");
+    const p = await api("POST", "/v1/enrollment/prepare", { publicKey, webappPublicKey: key.publicKey.toBase58(), walletName: c.name }, { auth: false });
+    const { transaction } = verifyEnrollmentTransaction(p.transaction, new PublicKey(publicKey), key.publicKey);
+    transaction.addSignature(key.publicKey, key.sign(transaction.message.serialize()));
+    onStep(`Confirme na ${c.name}: criar a conta custa ~0,003 SOL, pagos pela sua carteira…`);
+    const signed = await c.signTransaction(transaction);
+    onStep("Criando sua conta 2 de 3 na Solana…");
+    const r = await api("POST", "/v1/enrollment/submit", { enrollmentId: p.enrollmentId, transaction: signed, keyBlob: { ...key.blob, deviceName: deviceName() } }, { auth: false });
+    const s: Session = { token: r.token, accountId: r.account.id, walletName: c.name, publicKey, myRotations: [], via: "extension" };
+    await ctx.setSession(s);
+    return { ...s, created: true };
+  } finally {
+    key.wipe();
+  }
 }
 
 /**
- * Ativa a biometria deste aparelho: cria a passkey, a carteira da conta assina
- * o texto de vínculo e, se já houver outra biometria ativa, ela aprova (sem
- * aprovação, a nova espera o prazo de segurança antes de valer).
+ * Entrar só com a biometria (perdeu a Phantom): o aparelho descobre a passkey,
+ * pede ao serviço a cópia cifrada da chave do webapp, abre e assina a entrada.
  */
-export async function activatePasskey(ctx: Ctx, c: ConnectedWallet, onStep: (s: string) => void): Promise<{ status: "ACTIVE" | "PENDING"; activeAt: number }> {
-  const s = ctx.session!;
-  const device = deviceName();
-  const sec = await api<{ account: { multisig: string } }>("GET", `/v1/accounts/${s.accountId}/security`);
-  const o = await api("POST", `/v1/accounts/${s.accountId}/passkeys/options`, { deviceName: device });
+export async function loginWithBiometrics(ctx: Ctx, onStep: (s: string) => void): Promise<Session> {
   onStep("Confirme a biometria deste aparelho…");
-  const response = await createPasskey(o.options, { devTools: ctx.config.devTools, confirm: ctx.biometric });
-  const tag = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(response.id))))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
-    .slice(0, 16);
-  const text = passkeyBindingMessage({ publicKey: s.publicKey, account: sec.account.multisig, cluster: ctx.config.cluster, credential: tag, device, challenge: o.options.challenge });
-  onStep(`Assine o vínculo na ${c.name}…`);
-  const walletSignature = await c.signMessage(text);
-  let approval = null;
-  if (!o.firstPasskey && o.existing.length) {
-    try {
-      onStep("Aprove com uma biometria que já está ativa nesta conta…");
-      approval = await confirmPasskey(await challengeForText(text), o.existing, { devTools: ctx.config.devTools, confirm: ctx.biometric, what: "Aprovar a biometria nova deste aparelho" });
-    } catch {
-      approval = null; // sem aprovação: a nova espera o prazo
-    }
+  let found: { accountId: string; publicKey: string; client: string } | null = null;
+  const key = await unlockWebappKey(null, {
+    devTools: ctx.config.devTools,
+    confirm: ctx.biometric,
+    what: "Entrar com a biometria (sem a Phantom)",
+    lookup: async (credentialId) => {
+      const r = await api("POST", "/v1/webapp-keys/lookup", { credentialId }, { auth: false });
+      found = r;
+      return r;
+    },
+  });
+  try {
+    const pub = key.publicKey.toBase58();
+    const ch = await api("POST", "/v1/auth/challenge", { publicKey: pub }, { auth: false });
+    const signature = (await import("bs58")).default.encode(key.sign(new TextEncoder().encode(ch.message)));
+    const r = await api("POST", "/v1/auth/webapp", { challengeId: ch.challengeId, publicKey: pub, signature }, { auth: false });
+    const s: Session = { token: r.token, accountId: r.account.id, walletName: "sem Phantom", publicKey: r.account.roles.client, myRotations: [], via: "webapp" };
+    void found;
+    await ctx.setSession(s);
+    return s;
+  } finally {
+    key.wipe();
   }
-  return api("POST", `/v1/accounts/${s.accountId}/passkeys`, { challengeId: o.challengeId, response, walletSignature, approval });
+}
+
+/** As cópias cifradas da chave do webapp desta conta (pela sessão ou pelo token do QR). */
+export async function accountKeyBlobs(path: string, auth = true): Promise<{ publicKey: string; blob: WebappKeyBlob }[]> {
+  return (await api<{ keys: { publicKey: string; blob: WebappKeyBlob }[] }>("GET", path, undefined, auth ? undefined : { auth: false })).keys;
+}
+
+/** Abre a chave do webapp desta conta com a biometria, para uma assinatura. */
+export async function unlockAccountKey(ctx: Ctx, keys: { publicKey: string; blob: WebappKeyBlob }[], what: string): Promise<UnlockedKey> {
+  if (!keys.length) throw new Error("Esta conta não tem a chave do webapp guardada.");
+  return unlockWebappKey(keys, { devTools: ctx.config.devTools, confirm: ctx.biometric, what });
 }
 
 export function errorText(e: unknown): string {

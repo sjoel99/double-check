@@ -1,14 +1,12 @@
 import { useEffect, useState } from "react";
-import { possessionMessage, type PossessionFields } from "@duplachave/crypto";
 import { errorText, loginOrEnroll, useApp } from "../app";
 import { api } from "../lib/api";
-import { short } from "../lib/chain";
 import type { StandardWallet } from "../lib/wallets";
 import { Icon, Logo } from "../icons";
 import { WalletList } from "./welcome";
 import { IntentScreen } from "./intent";
 
-type Info = { kind: "CONNECT" | "SIGN_INTENT" | "ROTATION_PROOF"; label: string; intentId: string | null; accountId: string | null; wallet: string | null; fields: Omit<PossessionFields, "publicKey"> | null };
+type Info = { kind: "CONNECT" | "SIGN_INTENT"; label: string; intentId: string | null; accountId: string | null; wallet: string | null };
 
 /**
  * O que o QR do computador abre no celular. Aqui (e não na carteira direto) a
@@ -39,17 +37,10 @@ export function MobileHandoff({ token }: { token: string }) {
     try {
       setStep(`Conectando à ${w.name}…`);
       const c = await ctx.connect(w);
-      if (info.kind === "ROTATION_PROOF") {
-        setStep(`Assine na ${w.name} para provar que a carteira nova é sua…`);
-        const fields = { ...info.fields!, publicKey: c.publicKey };
-        const signature = await c.signMessage(possessionMessage(fields));
-        await api("POST", `/v1/handoff/${token}/proof`, { proof: { ...fields, signature } }, { auth: false });
-        return setDone(`Carteira nova (${short(c.publicKey)}) conferida. Volte ao computador e assine a troca com a carteira atual.`);
-      }
       const s = await loginOrEnroll(ctx, c, setStep);
       if (info.kind === "SIGN_INTENT") {
         if (s.accountId !== info.accountId) throw new Error("Esta carteira não é a da conta que pediu a assinatura. Troque de conta na carteira e tente de novo.");
-        return ctx.go(login ? `/passkey?then=${encodeURIComponent(`/intent/${info.intentId}`)}` : `/intent/${info.intentId}`);
+        return ctx.go(`/intent/${info.intentId}`);
       }
       await api("POST", `/v1/handoff/${token}/claim`, { accountId: s.accountId });
       setDone("Pronto. O computador entrou na sua conta.");
@@ -75,7 +66,7 @@ export function MobileHandoff({ token }: { token: string }) {
     );
 
   const title =
-    info?.kind === "ROTATION_PROOF" ? "Conecte a carteira NOVA" : info?.kind === "SIGN_INTENT" ? "Entre com a carteira da conta" : "Entre com a sua carteira";
+    info?.kind === "SIGN_INTENT" ? "Entre com a carteira da conta" : "Entre com a sua carteira";
   return (
     <div className="page" style={{ paddingTop: 36, gap: 20 }}>
       <Logo size={44} />
@@ -93,20 +84,13 @@ export function MobileHandoff({ token }: { token: string }) {
             <Icon name="check" size={26} color="#0B0D10" sw={2.6} />
           </div>
           <div style={{ fontSize: 16, lineHeight: 1.5, textAlign: "center" }}>{done}</div>
-          {info?.kind === "CONNECT" && (
-            <button type="button" className="btn" onClick={() => ctx.go("/passkey")}>
-              <Icon name="finger" size={18} /> Ativar biometria neste celular
-            </button>
-          )}
         </div>
       ) : (
         info && (
           <>
             <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>{title}</div>
             <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
-              {info.kind === "ROTATION_PROOF"
-                ? "Na Phantom, mude para a conta nova antes de continuar. Ela só assina um texto provando que é sua — sem custo."
-                : "O app confere a transação aqui no celular e pede a sua biometria antes de abrir a carteira."}
+              O webapp confere a transação aqui no celular e pede a sua biometria antes de abrir a carteira.
             </div>
             <WalletList onPick={pick} busy={Boolean(step)} />
           </>

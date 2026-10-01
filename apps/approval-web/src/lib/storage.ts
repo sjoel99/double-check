@@ -51,7 +51,7 @@ export type Session = {
   /** Trocas de carteira pedidas por esta sessão (o app só aprova estas). */
   myRotations: string[];
   /** Como esta sessão assina: carteira do celular (QR) ou extensão do navegador. */
-  via?: "phone" | "extension";
+  via?: "phone" | "extension" | "webapp";
 };
 
 export const loadSession = () => kvGet<Session>("session");

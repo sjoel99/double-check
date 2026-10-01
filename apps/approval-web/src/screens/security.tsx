@@ -1,15 +1,15 @@
-import { useEffect, useState } from "react";
-import { PublicKey } from "@solana/web3.js";
+import { useCallback, useEffect, useState } from "react";
+import { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { readMultisig, type MultisigState } from "@duplachave/squads";
-import { possessionMessage, type PossessionFields } from "@duplachave/crypto";
-import { errorText, useApp } from "../app";
+import { reviewSecurityRequest, verifyAuthorized, vetoMessage, type SecurityChangeDesc } from "@duplachave/custody/src/client";
+import { accountKeyBlobs, errorText, unlockAccountKey, useApp } from "../app";
 import { api } from "../lib/api";
 import { now, short } from "../lib/chain";
-import type { StandardWallet } from "../lib/wallets";
+import type { ConnectedWallet, StandardWallet } from "../lib/wallets";
+import { createWebappKey, deviceName, signatureB58 } from "../lib/webappKey";
 import { Icon } from "../icons";
 import { IntentRow, Tabs, useAccount } from "./home";
 import { WalletList } from "./welcome";
-import { PhoneQr, SCAN_STEPS } from "../components/PhoneQr";
 
 function TopBar({ title, back = "/" }: { title: string; back?: string }) {
   const { go } = useApp();
@@ -23,94 +23,232 @@ function TopBar({ title, back = "/" }: { title: string; back?: string }) {
   );
 }
 
-/** Conferência local: o app lê a multisig pela RPC dele e checa o modelo 2 de 2. */
+export type ChangeView = {
+  id: string;
+  role: "CLIENT" | "WEBAPP" | "SERVER";
+  oldKey: string;
+  newKey: string;
+  status: "PREPARED" | "PENDING" | "EXECUTED" | "VETOED" | "FAILED";
+  index: string | null;
+  createdAt: number;
+  executeAfter: number | null;
+};
+
+const ROLE_NAME: Record<ChangeView["role"], string> = { CLIENT: "Phantom", WEBAPP: "chave do webapp", SERVER: "chave do serviço" };
+const when = (t: number) => new Date(t * 1000).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+const fromB64 = (b: string) => VersionedTransaction.deserialize(Uint8Array.from(atob(b), (c) => c.charCodeAt(0)));
+
+/** Trocas de chave da conta. */
+export function useChanges(pollMs = 8000) {
+  const ctx = useApp();
+  const [changes, setChanges] = useState<ChangeView[]>([]);
+  const load = useCallback(async () => {
+    if (!ctx.session) return;
+    try {
+      setChanges((await api<{ changes: ChangeView[] }>("GET", `/v1/accounts/${ctx.session.accountId}/security-changes`)).changes);
+    } catch {
+      /* tenta de novo */
+    }
+  }, [ctx.session]);
+  useEffect(() => {
+    void load();
+    const i = setInterval(load, pollMs);
+    return () => clearInterval(i);
+  }, [load, pollMs]);
+  return { changes, pending: changes.filter((c) => c.status === "PENDING"), reload: load };
+}
+
+/** Conferência local: o webapp lê a multisig pela RPC dele e checa o modelo 2 de 3. */
 function useOnchainCheck(multisig: string | undefined) {
   const ctx = useApp();
   const [state, setState] = useState<MultisigState | null>(null);
-  const [checkedAt, setCheckedAt] = useState<number | null>(null);
-  const [, setTick] = useState(0);
   useEffect(() => {
     if (!multisig) return;
     let on = true;
-    const run = async () => {
-      try {
-        const s = await readMultisig(ctx.chain, new PublicKey(multisig));
-        if (on) {
-          setState(s);
-          setCheckedAt(now());
-        }
-      } catch {
-        /* mantém o último */
-      }
-    };
+    const run = () => readMultisig(ctx.chain, new PublicKey(multisig)).then((s) => on && setState(s)).catch(() => {});
     void run();
     const i = setInterval(run, 10_000);
-    const t = setInterval(() => setTick((x) => x + 1), 1000);
     return () => {
       on = false;
       clearInterval(i);
-      clearInterval(t);
     };
   }, [multisig, ctx.chain]);
-  const me = ctx.session?.publicKey;
   const voters = state?.members.filter((m) => m.vote) ?? [];
-  const ok = Boolean(state && state.threshold === 2 && voters.length === 2 && voters.some((v) => v.key === me) && state.configAuthority === PublicKey.default.toBase58());
-  return { state, ok, ago: checkedAt ? now() - checkedAt : null };
+  const ok = Boolean(state && state.threshold === 2 && voters.length === 3 && voters.every((v) => v.mask === 2) && state.members.filter((m) => m.mask & 4).length === 1 && state.configAuthority === PublicKey.default.toBase58());
+  return { state, ok };
+}
+
+function Countdown({ until }: { until: number }) {
+  const [t, setT] = useState(now());
+  useEffect(() => {
+    const i = setInterval(() => setT(now()), 1000);
+    return () => clearInterval(i);
+  }, []);
+  const left = Math.max(0, until - t);
+  return <span className="mono">{left === 0 ? "agora" : `${Math.floor(left / 3600)} h ${String(Math.floor((left % 3600) / 60)).padStart(2, "0")} min`}</span>;
+}
+
+/**
+ * Troca pendente: o que vai mudar, quando executa, "Não fui eu" (assinado pela
+ * chave que seria trocada) e "Concluir" depois do prazo.
+ */
+export function PendingChange({ c, onDone }: { c: ChangeView; onDone: () => void }) {
+  const ctx = useApp();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [pickPayer, setPickPayer] = useState(false);
+  const due = c.executeAfter !== null && now() >= c.executeAfter;
+
+  const veto = async () => {
+    setErr(null);
+    try {
+      const sec = await api("GET", `/v1/accounts/${ctx.session!.accountId}/security`);
+      const text = vetoMessage({ id: c.id, multisig: sec.account.multisig, role: c.role, newKey: c.newKey });
+      let publicKey: string;
+      let signature: string;
+      if (c.role === "CLIENT") {
+        setBusy("Assine o veto na Phantom atual…");
+        const w = await ctx.accountWallet();
+        publicKey = w.publicKey;
+        signature = await w.signMessage(text);
+      } else {
+        setBusy("Confirme com a biometria para vetar…");
+        const key = await unlockAccountKey(ctx, await accountKeyBlobs(`/v1/accounts/${ctx.session!.accountId}/webapp-keys`), "Não fui eu: cancelar a troca de chave");
+        try {
+          publicKey = key.publicKey.toBase58();
+          signature = signatureB58(key.sign(new TextEncoder().encode(text)));
+        } finally {
+          key.wipe();
+        }
+      }
+      await api("POST", `/v1/security-changes/${c.id}/veto`, { publicKey, signature }, { auth: false });
+      ctx.toast("Troca cancelada.");
+      onDone();
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const execute = async (payerWallet?: ConnectedWallet) => {
+    setErr(null);
+    try {
+      setBusy("Preparando a execução…");
+      const r = await api<{ transaction: string; payer: string }>("POST", `/v1/security-changes/${c.id}/execute-prepare`, {});
+      const w = payerWallet ?? (c.role === "CLIENT" ? null : await ctx.accountWallet());
+      if (!w || w.publicKey !== r.payer) {
+        setPickPayer(true);
+        throw new Error(`Quem paga a conclusão é a carteira ${short(r.payer)}: conecte essa carteira abaixo.`);
+      }
+      setBusy(`Confirme na ${w.name} (ela paga a taxa)…`);
+      const signed = await w.signTransaction(fromB64(r.transaction));
+      setBusy("Executando na Solana…");
+      await api("POST", `/v1/security-changes/${c.id}/execute`, { transaction: signed });
+      ctx.toast("Troca concluída.");
+      if (c.role === "CLIENT") {
+        await ctx.setSession(null);
+        ctx.go("/");
+        return;
+      }
+      onDone();
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="card" style={{ gap: 10, borderColor: "#5a4a1a" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--warn)", fontSize: 12, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+        <Icon name="clock" size={14} color="#F2B33D" /> Troca de chave pendente
+      </div>
+      <div style={{ fontSize: 15, lineHeight: 1.45 }}>
+        Trocar a <b>{ROLE_NAME[c.role]}</b> <span className="mono">{short(c.oldKey)}</span> → <span className="mono">{short(c.newKey)}</span>
+      </div>
+      <div className="muted" style={{ fontSize: 13 }}>
+        {due ? "O prazo passou: pode concluir." : (
+          <>
+            Executa em <Countdown until={c.executeAfter!} /> ({when(c.executeAfter!)}). Não foi você? Vete.
+          </>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 10 }}>
+        <button type="button" className="btn" style={{ flex: 1 }} disabled={Boolean(busy)} onClick={veto}>
+          Não fui eu
+        </button>
+        {due && (
+          <button type="button" className="btn primary" style={{ flex: 1 }} disabled={Boolean(busy)} onClick={() => execute()}>
+            Concluir troca
+          </button>
+        )}
+      </div>
+      {pickPayer && (
+        <WalletList
+          busy={Boolean(busy)}
+          onPick={async (sw: StandardWallet) => {
+            try {
+              await execute(await ctx.connect(sw));
+            } catch (e) {
+              setErr(errorText(e));
+            }
+          }}
+        />
+      )}
+      {busy && (
+        <div className="status">
+          <span className="spinner" /> {busy}
+        </div>
+      )}
+      {err && <div className="banner danger">{err}</div>}
+    </div>
+  );
 }
 
 export function Security() {
   const ctx = useApp();
   const { acc } = useAccount(8000);
-  const { state, ok, ago } = useOnchainCheck(acc?.account.multisig);
-  const roles = acc?.account.roles;
-  const s = ctx.session!;
-  const order = (k: string) => [roles?.client, roles?.server, roles?.executor, roles?.proposer].indexOf(k) + 1 || 9;
+  const { state, ok } = useOnchainCheck(acc?.account.multisig);
+  const { changes, pending, reload } = useChanges();
+  const [devices, setDevices] = useState<{ deviceName: string; createdAt: number }[]>([]);
+  useEffect(() => {
+    if (ctx.session) void api("GET", `/v1/accounts/${ctx.session.accountId}/security`).then((r) => setDevices(r.webappDevices ?? [])).catch(() => {});
+  }, [ctx.session]);
+  const roles = acc?.account.roles as unknown as { client: string; webapp: string; server: string; operator: string } | undefined;
   const label = (k: string) =>
     k === roles?.client
-      ? { icon: "key", title: `Sua carteira (${s.walletName})`, sub: "assina suas transações", role: "Aprova e executa", accent: true }
-      : k === roles?.server
-        ? { icon: "server", title: "Chave do serviço", sub: "confere a política", role: "Aprova", accent: false }
-        : k === roles?.executor
-          ? { icon: "bolt", title: "Executor do serviço", sub: "não aprova", role: "Executa", accent: false }
-          : k === roles?.proposer
-            ? { icon: "send", title: "Proponente do serviço", sub: "não aprova", role: "Propõe", accent: false }
+      ? { icon: "key", title: "Sua Phantom", sub: "vota e paga", role: "Vota", accent: true }
+      : k === roles?.webapp
+        ? { icon: "finger", title: "Chave do webapp", sub: "aberta pela biometria", role: "Vota", accent: true }
+        : k === roles?.server
+          ? { icon: "server", title: "Chave do serviço", sub: "só em recuperação, com prazo", role: "Vota", accent: false }
+          : k === roles?.operator
+            ? { icon: "bolt", title: "Operador do serviço", sub: "não vota", role: "Executa", accent: false }
             : { icon: "shieldalert", title: "Chave desconhecida", sub: "não esperada", role: "?", accent: false };
+  const order = (k: string) => [roles?.client, roles?.webapp, roles?.server, roles?.operator].indexOf(k) + 1 || 9;
+  const open = changes.some((c) => c.status === "PENDING");
 
   return (
     <>
       <TopBar title="Segurança" />
       <div className="page">
+        {pending.map((c) => (
+          <PendingChange key={c.id} c={c} onDone={reload} />
+        ))}
         <div className="card">
           <div className="row-between">
             <div className="muted" style={{ fontSize: 13 }}>
               Modo
             </div>
-            {state ? (
-              ok ? (
-                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--ok-text)" }}>
-                  <Icon name="check" size={14} color="#C8F169" sw={2.2} /> Conferido na Solana há {ago ?? 0} s
-                </div>
-              ) : (
-                <span className="pill danger">Diferente do esperado</span>
-              )
-            ) : (
-              <span className="spinner" />
-            )}
+            {state ? ok ? <span className="pill">Conferido na Solana</span> : <span className="pill danger">Diferente do esperado</span> : <span className="spinner" />}
           </div>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-            <div className="big" style={{ fontSize: 34 }}>
-              {state ? `${state.threshold} de ${state.members.filter((m) => m.vote).length}` : "—"}
-            </div>
-            <div className="muted" style={{ fontSize: 14 }}>
-              estrito
-            </div>
+          <div className="big" style={{ fontSize: 34 }}>
+            2 de 3
           </div>
-          <div style={{ fontSize: 13, color: "#b4bac4", lineHeight: 1.45 }}>Todo envio e toda troca de chave precisam da sua carteira e da aprovação do serviço. Nenhuma chave sozinha move fundos.</div>
-          {state && (
-            <div className="subtle mono" style={{ fontSize: 11 }}>
-              multisig {short(state.address)} · índice {state.transactionIndex.toString()} · sem config authority
-            </div>
-          )}
+          <div style={{ fontSize: 13, color: "#b4bac4", lineHeight: 1.45 }}>
+            Envios: sua Phantom + a chave do webapp (biometria), e só o operador do serviço executa, depois de conferir a política. Trocar qualquer chave leva 72 h e pode ser vetado.
+          </div>
         </div>
         <div>
           <div className="section-title" style={{ paddingBottom: 4 }}>
@@ -136,11 +274,16 @@ export function Security() {
               );
             })}
         </div>
-        <button type="button" className="btn" style={{ height: 52 }} onClick={() => ctx.go("/passkey?then=/security")}>
-          <Icon name="finger" size={18} /> Biometria deste aparelho
+        {devices.length > 0 && (
+          <div className="subtle" style={{ fontSize: 12 }}>
+            Chave do webapp guardada para: {devices.map((d) => d.deviceName).join(", ")}
+          </div>
+        )}
+        <button type="button" className="btn" style={{ height: 52 }} disabled={open} onClick={() => ctx.go("/change/client")}>
+          <Icon name="key" size={18} /> Trocar a Phantom
         </button>
-        <button type="button" className="btn" style={{ height: 52 }} onClick={() => ctx.go("/rotate")} disabled={Boolean(acc?.account.frozenBy)}>
-          <Icon name="key" size={18} /> Trocar a carteira da conta
+        <button type="button" className="btn" style={{ height: 52 }} disabled={open || ctx.session?.via === "webapp"} onClick={() => ctx.go("/change/webapp")}>
+          <Icon name="finger" size={18} /> Recuperar o webapp neste aparelho
         </button>
         <button
           type="button"
@@ -153,55 +296,53 @@ export function Security() {
         >
           Sair
         </button>
-        <div style={{ display: "flex", gap: 10, fontSize: 12, color: "var(--subtle)", lineHeight: 1.5 }}>
-          <Icon name="lock" size={14} />
-          <div>Perder o acesso à sua carteira (seed phrase) sem trocar antes bloqueia a conta. A recuperação ainda não está disponível neste modo.</div>
-        </div>
       </div>
       <Tabs />
     </>
   );
 }
 
-// ---------------------------------------------------------------- troca de carteira
+/** Conta: chave atual do webapp e multisig (do serviço; a conferência dos bytes usa a chain). */
+async function accountInfo(accountId: string) {
+  const sec = await api("GET", `/v1/accounts/${accountId}/security`);
+  return { multisig: sec.account.multisig as string, client: sec.account.roles.client as string, webapp: sec.account.roles.webapp as string };
+}
 
-type RotateStep = { kind: "start" } | { kind: "connect"; rotationId: string; fields: Omit<PossessionFields, "publicKey"> } | { kind: "approve"; intentId: string; newKey: string };
-
-export function RotateWallet() {
+/**
+ * Trocar a Phantom (perdeu, vazou, ou quer outra). A chave do webapp (biometria)
+ * e o serviço votam o pedido; a Phantom NOVA paga e prova que é sua assinando.
+ * Executa em 72 h, se a Phantom atual não vetar.
+ */
+export function ChangeClient() {
   const ctx = useApp();
   const s = ctx.session!;
-  const [step, setStep] = useState<RotateStep>({ kind: "start" });
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState<ChangeView | null>(null);
 
-  const start = async () => {
-    setErr(null);
-    setBusy("Pedindo a troca…");
-    try {
-      const r = await api("POST", `/v1/accounts/${s.accountId}/rotations/client`, {});
-      // Lembra que a troca foi pedida aqui: o app recusa aprovar troca que não pediu.
-      await ctx.setSession({ ...s, myRotations: [...s.myRotations, r.rotationId].slice(-20) });
-      setStep({ kind: "connect", rotationId: r.rotationId, fields: r.fields });
-    } catch (e) {
-      setErr(errorText(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const pickNew = async (w: StandardWallet) => {
-    if (step.kind !== "connect") return;
+  const pick = async (w: StandardWallet) => {
     setErr(null);
     try {
       setBusy(`Conectando à ${w.name}…`);
-      const c = await ctx.connect(w);
-      if (c.publicKey === s.publicKey) throw new Error(`Essa é a carteira atual. Na ${w.name}, troque para outra conta (ou escolha outra carteira) e tente de novo.`);
-      setBusy(`Assine na ${w.name} para provar que a carteira nova é sua…`);
-      const fields = { ...step.fields, publicKey: c.publicKey };
-      const signature = await c.signMessage(possessionMessage(fields));
-      setBusy("Preparando a troca na Solana…");
-      const r = await api("POST", `/v1/rotations/${step.rotationId}/proof`, { proof: { ...fields, signature } });
-      setStep({ kind: "approve", intentId: r.intent.id, newKey: c.publicKey });
+      const next = await ctx.connect(w);
+      if (next.publicKey === s.publicKey) throw new Error("Essa é a Phantom atual. Na Phantom, mude para a conta nova (ou use outra carteira).");
+      const info = await accountInfo(s.accountId);
+      setBusy("Preparando o pedido…");
+      const r = await api<{ change: ChangeView; desc: SecurityChangeDesc; transaction: string }>("POST", `/v1/accounts/${s.accountId}/security-changes`, { role: "CLIENT", newKey: next.publicKey });
+      const review = await reviewSecurityRequest(ctx.chain, r.desc, r.transaction, { client: new PublicKey(info.client), webapp: new PublicKey(info.webapp) });
+      setBusy("Confirme com a biometria (a chave do webapp vota o pedido)…");
+      const key = await unlockAccountKey(ctx, await accountKeyBlobs(`/v1/accounts/${s.accountId}/webapp-keys`), `Trocar a Phantom por ${short(next.publicKey)} (executa em 72 h)`);
+      let webappSignature: string;
+      try {
+        webappSignature = signatureB58(key.sign(review.message));
+      } finally {
+        key.wipe();
+      }
+      const auth = await api<{ transaction: string }>("POST", `/v1/security-changes/${r.change.id}/authorize`, { message: Buffer.from(review.message).toString("base64"), webappSignature });
+      const tx = verifyAuthorized(review, auth.transaction, [review.roles.operator, review.roles.webapp, review.roles.server]);
+      setBusy(`Confirme na ${next.name} (a Phantom nova paga ~0,006 SOL, que voltam na conclusão)…`);
+      const signed = await next.signTransaction(tx);
+      setDone(await api<ChangeView>("POST", `/v1/security-changes/${r.change.id}/submit`, { transaction: signed }));
     } catch (e) {
       setErr(errorText(e));
     } finally {
@@ -209,83 +350,101 @@ export function RotateWallet() {
     }
   };
 
-  const stepDot = (n: number, done: boolean, active: boolean) => (
-    <div className="step-n" style={{ background: done ? "var(--accent)" : active ? "var(--text)" : "var(--surface-2)", color: done || active ? "#0B0D10" : "var(--muted)" }}>
-      {done ? <Icon name="check" size={14} color="#0B0D10" sw={2.4} /> : n}
-    </div>
+  return (
+    <>
+      <TopBar title="Trocar a Phantom" back="/security" />
+      <div className="page">
+        {done ? (
+          <div className="banner ok">
+            <Icon name="check" size={18} color="var(--accent)" />
+            <div>
+              Pedido feito. A Phantom nova passa a valer em <b>{when(done.executeAfter!)}</b>, se a atual não vetar. Depois disso, toque em "Concluir troca" em Segurança.
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
+              A chave do webapp (com a sua biometria) e o serviço aprovam o pedido. A Phantom nova paga a taxa e o depósito das contas (~0,006 SOL, que voltam). A troca só executa em <b>72 h</b>: se alguém pedir no seu lugar, a Phantom atual veta.
+            </div>
+            <div className="section-title">Conecte a Phantom NOVA</div>
+            <WalletList onPick={pick} busy={Boolean(busy)} exclude={s.walletName} />
+          </>
+        )}
+        {busy && (
+          <div className="status">
+            <span className="spinner" /> {busy}
+          </div>
+        )}
+        {err && <div className="banner danger">{err}</div>}
+      </div>
+    </>
   );
-  const idx = step.kind === "start" ? 0 : step.kind === "connect" ? 1 : 2;
+}
+
+/**
+ * Recuperar o webapp neste aparelho (perdeu o aparelho ou trocou de celular):
+ * uma chave nova do webapp nasce aqui, cifrada pela biometria deste aparelho;
+ * a Phantom e o serviço votam o pedido; executa em 72 h, se a chave antiga não vetar.
+ */
+export function ChangeWebapp() {
+  const ctx = useApp();
+  const s = ctx.session!;
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [done, setDone] = useState<ChangeView | null>(null);
+
+  const run = async () => {
+    setErr(null);
+    try {
+      const w = await ctx.accountWallet();
+      const info = await accountInfo(s.accountId);
+      setBusy("Confirme a biometria deste aparelho (ela protege a chave nova)…");
+      const key = await createWebappKey({ devTools: ctx.config.devTools, confirm: ctx.biometric, what: "Criar a chave nova do webapp" });
+      try {
+        setBusy("Preparando o pedido…");
+        const r = await api<{ change: ChangeView; desc: SecurityChangeDesc; transaction: string }>("POST", `/v1/accounts/${s.accountId}/security-changes`, {
+          role: "WEBAPP",
+          newKey: key.publicKey.toBase58(),
+          newKeyBlob: { ...key.blob, deviceName: deviceName() },
+        });
+        const review = await reviewSecurityRequest(ctx.chain, r.desc, r.transaction, { client: new PublicKey(info.client), webapp: new PublicKey(info.webapp) });
+        const auth = await api<{ transaction: string }>("POST", `/v1/security-changes/${r.change.id}/authorize`, { message: Buffer.from(review.message).toString("base64") });
+        const tx = verifyAuthorized(review, auth.transaction, [review.roles.operator, review.roles.server]);
+        tx.addSignature(key.publicKey, key.sign(tx.message.serialize())); // a chave nova prova que existe (memo)
+        setBusy(`Confirme na ${w.name} (ela vota e paga)…`);
+        const signed = await w.signTransaction(tx);
+        setDone(await api<ChangeView>("POST", `/v1/security-changes/${r.change.id}/submit`, { transaction: signed }));
+      } finally {
+        key.wipe();
+      }
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
 
   return (
     <>
-      <TopBar title="Trocar carteira" back="/security" />
+      <TopBar title="Recuperar o webapp" back="/security" />
       <div className="page">
-        <div className="steps">
-          {[
-            ["Pedir a troca", "com a carteira atual conectada"],
-            ["Conectar a carteira nova", "ela assina um texto provando que é sua"],
-            ["Assinar com a carteira atual", "a troca acontece numa transação só"],
-          ].map(([t, sub], i) => (
-            <div key={t} className="step">
-              {stepDot(i + 1, i < idx, i === idx)}
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 600 }}>{t}</div>
-                <div className="muted" style={{ fontSize: 12 }}>
-                  {sub}
-                </div>
-              </div>
+        {done ? (
+          <div className="banner ok">
+            <Icon name="check" size={18} color="var(--accent)" />
+            <div>
+              Pedido feito. A chave nova (neste aparelho) passa a valer em <b>{when(done.executeAfter!)}</b>, se a antiga não vetar. Depois, toque em "Concluir troca" em Segurança.
             </div>
-          ))}
-        </div>
-
-        {step.kind === "start" && (
+          </div>
+        ) : (
           <>
             <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
-              A carteira nova entra e a atual (<span className="mono">{short(s.publicKey)}</span>, {s.walletName}) sai, na mesma transação da Solana, assinada e paga pela carteira atual (~0,000015 SOL) e aprovada pelo serviço.
+              Use quando perder o aparelho com a chave do webapp. Uma chave nova nasce aqui, protegida pela sua biometria. A sua Phantom e o serviço aprovam; a troca só executa em <b>72 h</b>. Se alguém com a sua Phantom tentar isso, a chave atual do webapp veta.
             </div>
-            <button type="button" className="btn primary" disabled={Boolean(busy)} onClick={start}>
-              Começar
+            <button type="button" className="btn primary" disabled={Boolean(busy)} onClick={run}>
+              <Icon name="finger" color="#0B0D10" sw={2} /> Criar a chave nova aqui e pedir a troca
             </button>
           </>
         )}
-
-        {step.kind === "connect" && (
-          <>
-            <div className="card">
-              <PhoneQr
-                create={() => api("POST", `/v1/rotations/${step.rotationId}/pay-proof`, {})}
-                title="Continue no celular com a carteira NOVA"
-                steps={["Na Phantom do celular, mude para a conta nova", "Aponte a câmera para o código e abra o link", "Conecte a Phantom e assine o texto: ela só prova que é sua (sem custo)"]}
-                onDone={(r: { intentId: string; newKey: string }) => setStep({ kind: "approve", intentId: r.intentId, newKey: r.newKey })}
-              />
-            </div>
-            <div className="or">ou com uma extensão deste navegador</div>
-            <WalletList onPick={pickNew} busy={Boolean(busy)} exclude={s.walletName} />
-          </>
-        )}
-
-        {step.kind === "approve" && (
-          <>
-            <div className="card" style={{ gap: 8 }}>
-              <div className="muted" style={{ fontSize: 13 }}>
-                Carteira nova (posse conferida)
-              </div>
-              <div className="big" style={{ fontSize: 22 }}>
-                {short(step.newKey)}
-              </div>
-            </div>
-            <div className="banner warn">
-              <Icon name="shieldalert" size={18} color="#F2B33D" />
-              <div>
-                Agora volte para a carteira <b>atual</b> (<span className="mono">{short(s.publicKey)}</span>) e assine a troca. O serviço já conferiu a política; a carteira atual paga a taxa.
-              </div>
-            </div>
-            <button type="button" className="btn amber" onClick={() => ctx.go(`/intent/${step.intentId}`)}>
-              <Icon name="key" color="#0B0D10" sw={2} /> Revisar e assinar a troca
-            </button>
-          </>
-        )}
-
         {busy && (
           <div className="status">
             <span className="spinner" /> {busy}

@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { PublicKey } from "@solana/web3.js";
 import { inspectPrepared, verifyAuthorized, type ApprovalRequest, type Inspection } from "@duplachave/custody/src/client";
-import { challengeFor, confirmPasskey } from "../lib/passkey";
-import { ApiError } from "../lib/api";
+import { signatureB58, type WebappKeyBlob } from "../lib/webappKey";
 import { KNOWN_PROGRAM_NAMES } from "@duplachave/solana";
-import { errorText, useApp } from "../app";
+import { accountKeyBlobs, errorText, unlockAccountKey, useApp } from "../app";
 import { api } from "../lib/api";
 import { ConnectedWallet } from "../lib/wallets";
 import { now, short, sol } from "../lib/chain";
@@ -80,7 +79,7 @@ export function Send() {
       <TopBar title="Enviar SOL" />
       <div className="page">
         <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
-          O serviço confere a sua política e assina a parte dele. Depois você revisa e assina uma vez na {ctx.session!.walletName}, que paga a taxa da rede (~0,000015 SOL).
+          O serviço confere a sua política. Depois você revisa, confirma com a biometria e assina uma vez na {ctx.session!.walletName}, que paga a taxa da rede (~0,000015 SOL).
         </div>
         <div className="field">
           <label htmlFor="dest">Endereço de destino</label>
@@ -141,14 +140,22 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
   const [handedOver, setHandedOver] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
   const viaPhone = !handoff && ctx.session?.via === "phone";
+  const keysRef = useRef<{ publicKey: string; blob: WebappKeyBlob }[] | null>(null);
+  /** As cópias cifradas da chave do webapp (a chave pública dela entra na conferência). */
+  const keys = useCallback(async () => {
+    keysRef.current ??= await accountKeyBlobs(handoff ? `${base}/key` : `/v1/accounts/${ctx.session!.accountId}/webapp-keys`, !handoff);
+    return keysRef.current;
+  }, [base]);
 
-  /** Pede a transação atômica (o serviço já assinou) e confere: o app remonta os bytes sozinho. */
+  /** Pede a transação atômica (ainda sem assinaturas) e confere: o webapp remonta os bytes sozinho. */
   const prepare = useCallback(async () => {
     const path = ctx.dev.malicious && !handoff ? `/v1/dev/intents/${id}/prepare-tampered` : `${base}/prepare`;
+    const k = await keys();
+    if (!k.length) throw new Error("Esta conta não tem a chave do webapp guardada.");
     const request = await api<ApprovalRequest>("POST", path, {}, opt);
-    const inspection = await inspectPrepared(ctx.chain, request, new PublicKey(myWallet), now(), { initiatedHere: handoff ? undefined : ctx.initiatedHere });
+    const inspection = await inspectPrepared(ctx.chain, request, { client: new PublicKey(myWallet), webapp: new PublicKey(k[0]!.publicKey) }, now());
     return { request, inspection };
-  }, [id, ctx, base, myWallet]);
+  }, [id, ctx, base, myWallet, keys]);
 
   const load = useCallback(async () => {
     try {
@@ -193,15 +200,17 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
         review = again.inspection.review;
         request = again.request;
       }
+      // A biometria abre a chave do webapp só para assinar estes bytes conferidos.
       setStepText("Confirme com a biometria…");
-      const allow = (request.passkeys ?? []).filter((p) => p.rpId === location.hostname).map((p) => p.id);
-      if (!allow.length) {
-        if (handoff) throw new Error("Esta conta ainda não tem biometria ativa neste endereço. Ative primeiro (Entrar e ativar a biometria).");
-        return ctx.go(`/passkey?then=${encodeURIComponent(`/intent/${id}`)}`);
+      const key = await unlockAccountKey(ctx, await keys(), summaryOf(request));
+      let webappSignature: string;
+      try {
+        webappSignature = signatureB58(key.sign(review.message));
+      } finally {
+        key.wipe();
       }
-      const assertion = await confirmPasskey(await challengeFor(review.message), allow, { devTools: ctx.config.devTools, confirm: ctx.biometric, what: summaryOf(request) });
       setStepText("O serviço está assinando…");
-      const auth = await api<{ transaction: string }>("POST", `${base}/authorize`, { message: Buffer.from(review.message).toString("base64"), assertion }, opt);
+      const auth = await api<{ transaction: string }>("POST", `${base}/authorize`, { message: Buffer.from(review.message).toString("base64"), webappSignature }, opt);
       const tx = verifyAuthorized(review, auth.transaction);
       setStepText(`Confirme na ${c.name}…`);
       const signed = await c.signTransaction(tx);
@@ -211,7 +220,6 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
       if (intent.type === "ROTATE_MEMBER" && intent.role === "CLIENT" && out.status === "EXECUTED") return setHandedOver(true);
       await load();
     } catch (e) {
-      if (e instanceof ApiError && e.code === "PASSKEY_REQUIRED" && !handoff) return ctx.go(`/passkey?then=${encodeURIComponent(`/intent/${id}`)}`);
       setErr(errorText(e));
     } finally {
       setBusy(null);
@@ -338,7 +346,7 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
         <div>
           <Detail label="De" value={`Seu Vault · ${short(intent.vault)}`} mono />
           <Detail label="Programa" value={intent.programs.map((p: string) => KNOWN_PROGRAM_NAMES[p] ?? short(p)).join(", ")} />
-          <Detail label="Assinaturas" value={`Serviço ✓ · você (${walletName})`} />
+          <Detail label="Assinaturas" value={`Biometria (chave do webapp) · ${walletName} · o serviço executa`} />
           <Detail label="Taxa de rede" value={`~0,000015 SOL · paga pela ${viaPhone ? "carteira" : walletName}`} />
         </div>
         <div className="banner info">

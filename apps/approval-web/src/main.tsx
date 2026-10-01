@@ -17,10 +17,9 @@ if (/Android|iPhone|iPad/i.test(navigator.userAgent)) {
 import { ed25519Supported, loadSession, type Session } from "./lib/storage";
 import { Deposit, Home } from "./screens/home";
 import { IntentScreen, Send } from "./screens/intent";
-import { Activity, RotateWallet, Security } from "./screens/security";
+import { Activity, ChangeClient, ChangeWebapp, Security } from "./screens/security";
 import { Welcome } from "./screens/welcome";
 import { MobileHandoff } from "./screens/handoff";
-import { PasskeySetup } from "./screens/passkey";
 import { PrfCheck } from "./screens/prfcheck";
 
 function Router() {
@@ -29,12 +28,12 @@ function Router() {
   if (path === "/prf") return <PrfCheck />;
   if (path?.startsWith("/m/")) return <MobileHandoff key={path} token={path.slice(3)} />;
   if (!session) return <Welcome />;
-  if (path === "/passkey") return <PasskeySetup then={new URLSearchParams(query).get("then") ?? "/"} />;
   if (path === "/send") return <Send />;
   if (path === "/deposit") return <Deposit />;
   if (path?.startsWith("/intent/")) return <IntentScreen key={path} id={path.slice("/intent/".length)} />;
   if (path === "/security") return <Security />;
-  if (path === "/rotate") return <RotateWallet />;
+  if (path === "/change/client") return <ChangeClient />;
+  if (path === "/change/webapp") return <ChangeWebapp />;
   if (path === "/activity") return <Activity />;
   return <Home />;
 }

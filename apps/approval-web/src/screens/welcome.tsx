@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { errorText, loginOrEnroll, useApp } from "../app";
+import { errorText, loginOrEnroll, loginWithBiometrics, useApp } from "../app";
 import { Icon, Logo } from "../icons";
 import { type StandardWallet, walletLabel } from "../lib/wallets";
 import { api } from "../lib/api";
@@ -74,8 +74,8 @@ export function Welcome() {
       setStep(`Conectando à ${w.name}…`);
       const c = await ctx.connect(w);
       const s = await loginOrEnroll(ctx, c, setStep);
-      ctx.go(s.created ? "/passkey" : "/");
-      ctx.toast(s.created ? "Conta 2 de 2 criada. Agora ative a biometria." : "Você entrou.");
+      ctx.go("/");
+      ctx.toast(s.created ? "Conta 2 de 3 criada: sua Phantom + a chave do webapp (biometria) + o serviço." : "Você entrou.");
     } catch (e) {
       setErr(errorText(e));
     } finally {
@@ -88,13 +88,13 @@ export function Welcome() {
       <Logo size={52} />
       <div style={{ fontSize: 30, fontWeight: 600, letterSpacing: "-0.03em", lineHeight: 1.1 }}>Seus fundos só saem com duas assinaturas.</div>
       <div className="muted" style={{ fontSize: 15, lineHeight: 1.55 }}>
-        A sua carteira e a do serviço, que confere cada pedido contra a sua política. Nenhuma das duas sozinha move nada — quem garante é o programa da Squads na Solana.
+        Três chaves: a sua Phantom, a chave do webapp (protegida pela biometria do seu aparelho) e a do serviço. Um envio precisa da Phantom e da biometria, e só o serviço executa, depois de conferir a sua política. Quem garante é o programa da Squads na Solana.
       </div>
       <div className="steps">
         {[
           ["1", "Conecte sua carteira", "Phantom, Backpack, Solflare…"],
-          ["2", "Assine a criação da conta", "a sua carteira paga ~0,003 SOL, uma vez só"],
-          ["3", "Pronto", "sua conta 2 de 2 existe na Solana; cada envio custa ~0,000015 SOL"],
+          ["2", "Biometria + Phantom", "a biometria protege a chave do webapp; a Phantom paga ~0,003 SOL, uma vez só"],
+          ["3", "Pronto", "sua conta 2 de 3 existe na Solana; cada envio custa ~0,000015 SOL"],
         ].map(([n, t, s]) => (
           <div key={n} className="step">
             <div className="step-n">{n}</div>
@@ -139,6 +139,25 @@ export function Welcome() {
         </div>
       )}
       {err && <div className="banner danger">{err}</div>}
+      <button
+        type="button"
+        className="linkbtn"
+        disabled={Boolean(step)}
+        onClick={async () => {
+          setErr(null);
+          try {
+            await loginWithBiometrics(ctx, setStep);
+            ctx.go("/security");
+            ctx.toast("Você entrou com a biometria. Para trocar a Phantom, use 'Trocar a Phantom'.");
+          } catch (e) {
+            setErr(errorText(e));
+          } finally {
+            setStep(null);
+          }
+        }}
+      >
+        Perdeu a Phantom? Entrar com a biometria
+      </button>
       <div className="subtle" style={{ fontSize: 12, lineHeight: 1.5 }}>
         Já tem conta? Escolha a mesma carteira: o app reconhece e só pede para confirmar a entrada. Todas as taxas saem da sua carteira; o serviço não paga nada.
       </div>

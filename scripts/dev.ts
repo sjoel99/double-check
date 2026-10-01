@@ -75,7 +75,8 @@ if (!(await rpcUp(rpc))) {
 }
 
 log("subindo API em http://127.0.0.1:8787");
-run("api", "pnpm", ["--filter", "@duplachave/api", "start"], { SOLANA_RPC_URL: rpc, SOLANA_CLUSTER: process.env.SOLANA_CLUSTER ?? "localnet" });
+// Em localnet o prazo das trocas de chave é 2 min (produção: 72 h), para dar para testar.
+run("api", "pnpm", ["--filter", "@duplachave/api", "start"], { SOLANA_RPC_URL: rpc, SOLANA_CLUSTER: process.env.SOLANA_CLUSTER ?? "localnet", DK_SECURITY_DELAY: process.env.DK_SECURITY_DELAY ?? "120" });
 for (let i = 0; i < 60; i++) {
   try {
     if ((await fetch("http://127.0.0.1:8787/healthz")).ok) break;
