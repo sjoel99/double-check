@@ -1,4 +1,4 @@
-import { loadDevice } from "./device";
+import { loadSession } from "./storage";
 
 export class ApiError extends Error {
   constructor(public readonly code: string, message: string, public readonly status: number) {
@@ -10,8 +10,8 @@ export async function api<T = any>(method: "GET" | "POST", path: string, body?: 
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["content-type"] = "application/json";
   if (opts.auth !== false) {
-    const d = await loadDevice();
-    if (d?.session?.token) headers.authorization = `Bearer ${d.session.token}`;
+    const s = await loadSession();
+    if (s?.token) headers.authorization = `Bearer ${s.token}`;
   }
   const r = await fetch(`/api${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   const json = await r.json().catch(() => ({}));

@@ -1,5 +1,7 @@
 # Rotação de chaves
 
+> Modelo atual: o "cliente" é a carteira comum (Phantom, Backpack…). Trocar o cliente = trocar a carteira da conta. A carteira nova prova posse assinando um texto (signMessage) que a própria carteira mostra; a carteira atual assina a troca (proposal_approve); o executor do serviço executa e o backend confere na chain.
+
 Duas rotações: a do cliente (trocar de aparelho, ou chave comprometida mas ainda disponível) e a do servidor (rotação programada ou chave do servidor comprometida). As duas exigem **CLIENT atual + SERVER atual** e são uma única ConfigTransaction `[AddMember(nova, só Vote), RemoveMember(antiga)]`.
 
 ## Regra fundamental
@@ -39,30 +41,34 @@ saídas: REJECTED · EXPIRED · FAILED · ROLLBACK_REQUIRED
 
 Qualquer transição fora da tabela lança `ROTATION_BAD_TRANSITION` (`ROTATION_TRANSITIONS` em `packages/custody/src/service.ts`). `ADDING_NEW_MEMBER` e `REMOVING_OLD_MEMBER`, do pedido original, viraram `EXECUTING`, porque as duas coisas acontecem na mesma instrução.
 
-## Passos (cliente: CLIENT_A → CLIENT_B)
+## Passos (carteira: CARTEIRA_A → CARTEIRA_B)
 
-1. **Pedido** — o app atual (CLIENT_A, com sessão) chama `POST /v1/accounts/:id/rotations/client`. O backend confere a multisig na chain, recusa se já houver rotação aberta, cria a rotação e um desafio de 32 bytes.
-2. **Pareamento** — o app atual mostra um QR/link com `rotationId + challenge`. Quem tem esse código consegue só *pedir* para entrar; a troca ainda depende da aprovação do CLIENT_A.
-3. **Prova de posse** — o aparelho novo gera CLIENT_B localmente e assina a declaração:
-   ```json
-   { "domain": "duplachave/possession/v1", "operation": "ROTATE_CLIENT_KEY", "cluster": "…",
-     "multisig": "…", "rotationId": "…", "newPublicKey": "CLIENT_B", "challenge": "…",
-     "nonce": "…", "createdAt": 0, "expiresAt": 0 }
+1. **Pedido** — o app, logado com a carteira atual (A), chama `POST /v1/accounts/:id/rotations/client`. O backend confere a multisig na chain, recusa se já houver troca aberta ou proposta aprovada pendente, e devolve os campos do texto de posse (conta, rede, desafio de 32 bytes, validade). O app guarda o id da troca na sessão: ele só aprova troca pedida por ele.
+2. **Carteira nova** — o cliente conecta a carteira B (outra conta da Phantom, ou outra carteira). B assina com `signMessage` o texto:
    ```
-   O backend confere operação, cluster, multisig, rotação, desafio, validade, assinatura **pela própria chave declarada**, nonce de uso único, que a chave não é membro e que **nunca foi revogada**. Sem isso, alguém cadastraria uma chave pública sem ter a privada (teste 13).
-4. **Congelar e drenar** — já no pedido (passo 1), uma proposta **aprovada e não executada** faz a rotação ser recusada (`APPROVED_PENDING`): ela sobreviveria à troca, então o usuário executa ou cancela antes. Depois da prova, a conta para de aceitar intenções novas (`OPERATIONS_FROZEN`) e cada proposta ativa desde o último stale é rejeitada (um voto basta). Qualquer falha a partir daqui encerra a rotação em `FAILED`, rejeita a ConfigTransaction se ela chegou a ser criada e descongela.
-5. **Proposta** — ConfigTransaction `[AddMember(CLIENT_B, Vote), RemoveMember(CLIENT_A)]` criada pelo PROPOSER, com intenção `ROTATE_MEMBER` (hash canônico). O backend relê a conta e confere que é a rotação esperada.
-6. **Aprovação do cliente** — o app de CLIENT_A lê a ConfigTransaction pela RPC dele (fixada no build), confirma que troca exatamente CLIENT_A por CLIENT_B, **confere a prova de posse** assinada por CLIENT_B, confere que a troca foi pedida neste aparelho, mostra "Substituir chave de aprovação?" com a chave nova (o aparelho novo mostra a mesma, para comparar), pede biometria/PIN e assina declaração + voto. CLIENT_B não consegue aprovar a própria entrada: ainda não é membro.
-7. **Aprovação do servidor** — política: única forma aceita é a rotação, chave nova com posse provada nesta rotação, não revogada. O servidor vota.
-8. **Execução e verificação** — executor executa (se falhar, a intenção fica `APPROVED_PENDING_EXECUTION`, a conta continua congelada e o app oferece executar de novo ou cancelar); o backend relê a multisig e confere o modelo 2-de-2 com os papéis novos. Só então: CLIENT_A vira REVOGADA (com `revokedAt`), o aparelho antigo é desativado, CLIENT_B entra como ACTIVE, a conta descongela.
-9. **Depois** — a sessão do aparelho antigo deixa de valer; o aparelho novo entra assinando um desafio com CLIENT_B. CLIENT_A, se tentar votar, recebe `NotAMember` do programa; se tentar voltar por outra rotação, recebe `REVOKED_KEY_REUSE`.
+   Dupla Chave
+   Esta carteira vai substituir a carteira atual da conta.
+
+   Carteira: <B>
+   Conta: <multisig>
+   Rede: localnet
+   Operação: ROTATE_CLIENT_KEY
+   Desafio: <hex>
+   Válido até: <ISO>
+   ```
+   O backend (com a sessão de A) remonta o texto a partir do que emitiu e confere: operação, conta, rede, desafio, validade, assinatura **pela própria B**, uso único, que B não é membro, não é chave do serviço e **nunca foi revogada**.
+3. **Congelar e drenar** — a conta para de aceitar envios (`OPERATIONS_FROZEN`) e cada proposta ativa é rejeitada (um voto basta). Qualquer falha a partir daqui encerra a troca em `FAILED`, rejeita a ConfigTransaction se ela chegou a ser criada e descongela.
+4. **Proposta + voto do serviço** — ConfigTransaction `[AddMember(B, Vote+Execute), RemoveMember(A)]` criada pelo proponente; política (só a rotação, posse provada, não revogada); o serviço vota (`AWAITING_SERVER_APPROVAL` → `AWAITING_CLIENT_APPROVAL`).
+5. **Carteira atual assina** — o app lê a ConfigTransaction pela RPC fixada no build, confirma que troca exatamente A por B, **confere a prova de posse** de B e que a troca foi pedida nesta sessão, mostra "Trocar a carteira da conta?" e pede à **carteira A** que assine `proposal_approve`. B não consegue aprovar a própria entrada: ainda não é membro.
+6. **Execução e verificação** — o executor do serviço executa (se falhar: `APPROVED_PENDING_EXECUTION`, conta continua congelada, app oferece executar de novo ou cancelar); o backend relê a multisig e confere o modelo 2-de-2 com B (máscara 6). Só então A vira REVOGADA, B entra como ACTIVE e a conta descongela.
+7. **Depois** — a sessão de A deixa de valer; B entra assinando o texto de entrada. A recebe `NotAMember` do programa se tentar votar e `KEY_REVOKED` se tentar entrar.
 
 ## Passos (servidor: SERVER_A → SERVER_B)
 
 1. Admin (`POST /v1/admin/accounts/:id/rotations/server`, com `x-admin-token`) pede a rotação com um motivo.
 2. O `ServerKeyProvider` gera SERVER_B (em produção, dentro do KMS/HSM); SERVER_B assina a prova de posse; mesmos checks do passo 3 acima. Antes de votar, o servidor confere que SERVER_B está no provedor de chaves dele (uma chave do usuário nunca vira "chave do servidor"), e uma prova `ROTATE_CLIENT_KEY` é recusada numa rotação de servidor. Se gerar a chave falhar, a rotação vai para `FAILED`.
 3. Congela, drena, cria a ConfigTransaction.
-4. **O usuário precisa aprovar no app**, que mostra "O serviço está pedindo para trocar a chave de segurança dele" e "Não reconhece este pedido? Rejeite." Sem o app, o prazo vence e a proposta é rejeitada on-chain (teste 9 e "SERVER_A → SERVER_B: o app precisa aprovar").
+4. **O cliente precisa assinar com a carteira dele**; o app mostra "O serviço está pedindo para trocar a chave de segurança dele" e "Não reconhece este pedido? Rejeite." Sem o app, o prazo vence e a proposta é rejeitada on-chain (teste 9 e "SERVER_A → SERVER_B: o app precisa aprovar").
 5. SERVER_A vota, executor executa, verificação on-chain, SERVER_A é aposentada no provedor de chaves.
 
 O token de admin só **pede** a rotação. Não aprova nada e não move nada.

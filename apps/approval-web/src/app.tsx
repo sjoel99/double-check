@@ -2,27 +2,31 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { Chain } from "@duplachave/solana";
 import type { Cluster } from "@duplachave/shared";
 import { api, ApiError } from "./lib/api";
-import { appChain } from "./lib/chain";
-import { type DeviceRecord, loadDevice, saveDevice, unlockWithBiometric, unlockWithPin, WebCryptoSigner } from "./lib/device";
+import { appChain, short } from "./lib/chain";
+import { makeDevWallet, type DevConfirm } from "./lib/devwallet";
+import { loadSession, saveSession, type Session } from "./lib/storage";
+import { ConnectedWallet, discoverWallets, registerWallet, type StandardWallet } from "./lib/wallets";
 import { Icon } from "./icons";
 
 export type Config = { cluster: Cluster; feePayer: string; mode: string; devTools: boolean };
 
-type UnlockRequest = { summary: string; resolve: () => void; reject: (e: Error) => void };
+type ConfirmReq = Parameters<DevConfirm>[0] & { resolve: (ok: boolean) => void };
 
 type Ctx = {
   config: Config;
   chain: Chain;
-  /** Esta troca de chave do cliente foi pedida neste aparelho? */
-  initiatedHere: (rotationId: string) => boolean;
-  device: DeviceRecord | null;
-  setDevice: (d: DeviceRecord | null) => Promise<void>;
+  session: Session | null;
+  setSession: (s: Session | null) => Promise<void>;
+  wallets: StandardWallet[];
+  wallet: ConnectedWallet | null;
+  /** Conecta (ou reconecta) uma carteira. */
+  connect: (w: StandardWallet) => Promise<ConnectedWallet>;
+  /** A carteira da conta, conectada e na conta certa — ou erro explicando o que fazer. */
+  accountWallet: () => Promise<ConnectedWallet>;
   route: string;
   go: (path: string) => void;
   toast: (msg: string) => void;
-  signer: () => WebCryptoSigner;
-  /** Abre a confirmação local (biometria/PIN). Resolve quando o signer está destravado. */
-  unlock: (summary: string) => Promise<void>;
+  initiatedHere: (rotationId: string) => boolean;
   dev: { malicious: boolean; setMalicious: (v: boolean) => void };
 };
 
@@ -39,22 +43,61 @@ function useHashRoute() {
   return route;
 }
 
-export function AppProvider({ config, initialDevice, children }: { config: Config; initialDevice: DeviceRecord | null; children: ReactNode }) {
-  const [device, setDeviceState] = useState(initialDevice);
+export function AppProvider({ config, initialSession, children }: { config: Config; initialSession: Session | null; children: ReactNode }) {
+  const [session, setSessionState] = useState(initialSession);
+  const [wallets, setWallets] = useState<StandardWallet[]>([]);
+  const [wallet, setWallet] = useState<ConnectedWallet | null>(null);
+  const [, bump] = useState(0);
   const route = useHashRoute();
   const [toastMsg, setToast] = useState<string | null>(null);
-  const [unlockReq, setUnlockReq] = useState<UnlockRequest | null>(null);
+  const [confirmReq, setConfirmReq] = useState<ConfirmReq | null>(null);
   const [malicious, setMalicious] = useState(false);
   const chain = useMemo(() => appChain(), []);
   const toastTimer = useRef<number>(0);
+  const devConfirm = useRef<DevConfirm>(async () => false);
+  devConfirm.current = (req) => new Promise<boolean>((resolve) => setConfirmReq({ ...req, resolve }));
+
+  useEffect(() => {
+    const stop = discoverWallets(setWallets);
+    if (config.devTools) {
+      registerWallet(makeDevWallet("Carteira de teste A", () => devConfirm.current) as unknown as StandardWallet);
+      registerWallet(makeDevWallet("Carteira de teste B", () => devConfirm.current) as unknown as StandardWallet);
+    }
+    return stop;
+  }, [config.devTools]);
+
+  const connect = useCallback(
+    async (w: StandardWallet) => {
+      const c = await ConnectedWallet.connect(w, config.cluster);
+      c.onChange(() => bump((x) => x + 1));
+      setWallet(c);
+      return c;
+    },
+    [config.cluster],
+  );
 
   const ctx: Ctx = {
     config,
     chain,
-    device,
-    setDevice: async (d) => {
-      if (d) await saveDevice(d);
-      setDeviceState(d);
+    session,
+    setSession: async (s) => {
+      await saveSession(s);
+      setSessionState(s);
+    },
+    wallets,
+    wallet,
+    connect,
+    accountWallet: async () => {
+      if (!session) throw new Error("sem sessão");
+      let c = wallet;
+      if (!c || c.name !== session.walletName) {
+        const w = wallets.find((x) => x.name === session.walletName);
+        if (!w) throw new Error(`Abra ou instale a carteira ${session.walletName} para assinar.`);
+        c = await connect(w);
+      }
+      if (c.refresh() !== session.publicKey)
+        throw new Error(`A ${c.name} está na conta ${short(c.publicKey)}, mas esta conta é da ${short(session.publicKey)}. Troque de conta na carteira e tente de novo.`);
+      return c;
     },
     route,
     go: (p) => {
@@ -63,33 +106,22 @@ export function AppProvider({ config, initialDevice, children }: { config: Confi
     toast: (m) => {
       setToast(m);
       clearTimeout(toastTimer.current);
-      toastTimer.current = window.setTimeout(() => setToast(null), 3800);
+      toastTimer.current = window.setTimeout(() => setToast(null), 4200);
     },
-    initiatedHere: (rotationId) => Boolean(device?.myRotations?.includes(rotationId)),
-    signer: () => {
-      if (!device) throw new Error("sem chave neste aparelho");
-      return new WebCryptoSigner(device);
-    },
-    unlock: (summary) => new Promise<void>((resolve, reject) => setUnlockReq({ summary, resolve, reject })),
+    initiatedHere: (rotationId) => Boolean(session?.myRotations.includes(rotationId)),
     dev: { malicious, setMalicious },
   };
 
   return (
     <AppCtx.Provider value={ctx}>
       {children}
-      {unlockReq && device && (
-        <UnlockSheet
-          device={device}
-          summary={unlockReq.summary}
-          onDone={() => {
-            unlockReq.resolve();
-            setUnlockReq(null);
+      {confirmReq && (
+        <DevWalletSheet
+          req={confirmReq}
+          onDone={(ok) => {
+            confirmReq.resolve(ok);
+            setConfirmReq(null);
           }}
-          onCancel={() => {
-            unlockReq.reject(new Error("CANCELLED"));
-            setUnlockReq(null);
-          }}
-          refresh={async () => setDeviceState(await loadDevice())}
         />
       )}
       {toastMsg && (
@@ -101,125 +133,73 @@ export function AppProvider({ config, initialDevice, children }: { config: Confi
   );
 }
 
-function UnlockSheet({ device, summary, onDone, onCancel, refresh }: { device: DeviceRecord; summary: string; onDone: () => void; onCancel: () => void; refresh: () => Promise<void> }) {
-  const [pin, setPin] = useState("");
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const isPin = device.protection.kind === "pin";
-
-  const tryPin = useCallback(
-    async (value: string) => {
-      setBusy(true);
-      try {
-        const fresh = (await loadDevice())!;
-        await unlockWithPin(fresh, value);
-        onDone();
-      } catch (e) {
-        setErr((e as Error).message);
-        setPin("");
-        await refresh();
-      } finally {
-        setBusy(false);
-      }
-    },
-    [onDone, refresh],
-  );
-
-  const press = (k: string) => {
-    if (busy) return;
-    setErr(null);
-    if (k === "del") return setPin((p) => p.slice(0, -1));
-    const next = (pin + k).slice(0, 6);
-    setPin(next);
-    if (next.length === 6) void tryPin(next);
-  };
-
-  const bio = async () => {
-    setErr(null);
-    try {
-      if (device.protection.kind !== "webauthn") return;
-      await unlockWithBiometric(device.protection);
-      onDone();
-    } catch (e) {
-      setErr((e as Error).message);
-    }
-  };
-
-  useEffect(() => {
-    if (!isPin) void bio();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
+/** Janela da carteira de teste: imita a confirmação de uma carteira de verdade. */
+function DevWalletSheet({ req, onDone }: { req: ConfirmReq; onDone: (ok: boolean) => void }) {
   return (
-    <div className="sheet-wrap" role="dialog" aria-modal="true" aria-label="Confirme que é você">
-      <div className="sheet">
-        <div className="grab" />
-        <div style={{ width: 84, height: 84, borderRadius: 28, background: "var(--surface-2)", border: "1px solid #2b313a", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--accent)" }}>
-          <Icon name={isPin ? "lock" : "finger"} size={44} sw={1.5} />
-        </div>
-        <div className="center" style={{ gap: 8 }}>
-          <div style={{ fontSize: 20, fontWeight: 600 }}>Confirme que é você</div>
-          <div className="muted" style={{ fontSize: 14, lineHeight: 1.5, maxWidth: 300 }}>
-            Sua chave de aprovação assina aqui, neste aparelho. Ela nunca sai dele.
+    <div className="sheet-wrap" role="dialog" aria-modal="true" aria-label={`${req.walletName}: confirmar assinatura`}>
+      <div className="sheet" style={{ alignItems: "stretch" }}>
+        <div className="grab" style={{ alignSelf: "center" }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div className="wallet-badge">
+            <Icon name="lock" size={18} />
           </div>
-        </div>
-        <div className="status mono" style={{ fontSize: 12, color: "var(--muted)", maxWidth: "100%" }}>
-          <Icon name="lock" size={14} />
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{summary}</span>
-        </div>
-        {isPin ? (
-          <>
-            <div className="pin" aria-label={`${pin.length} de 6 dígitos`}>
-              {Array.from({ length: 6 }, (_, i) => (
-                <span key={i} className={i < pin.length ? "on" : ""} />
-              ))}
+          <div className="grow">
+            <div style={{ fontWeight: 600 }}>{req.walletName}</div>
+            <div className="muted" style={{ fontSize: 12 }}>
+              {req.kind === "message" ? "Pedido de assinatura de mensagem" : "Pedido de assinatura de transação"}
             </div>
-            <div className="keypad">
-              {["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "del"].map((k, i) =>
-                k === "" ? (
-                  <span key={i} />
-                ) : (
-                  <button key={i} type="button" onClick={() => press(k)} aria-label={k === "del" ? "Apagar" : k} disabled={busy}>
-                    {k === "del" ? "⌫" : k}
-                  </button>
-                ),
-              )}
-            </div>
-          </>
-        ) : (
-          <button type="button" className="btn primary" style={{ width: "100%", flex: "none" }} onClick={bio}>
-            <Icon name="finger" color="#0B0D10" sw={2} /> Usar biometria
+          </div>
+          <span className="pill">localnet</span>
+        </div>
+        <pre className="wallet-text">{req.text}</pre>
+        <div style={{ display: "flex", gap: 12 }}>
+          <button type="button" className="btn" style={{ flex: 1 }} onClick={() => onDone(false)}>
+            Recusar
           </button>
-        )}
-        {err && <div className="err">{err}</div>}
-        <button type="button" className="linkbtn" onClick={onCancel}>
-          Cancelar
-        </button>
+          <button type="button" className="btn primary" style={{ flex: 1 }} onClick={() => onDone(true)}>
+            Assinar
+          </button>
+        </div>
+        <div className="subtle" style={{ fontSize: 11, textAlign: "center" }}>
+          Carteira de teste do ambiente local. Com a Phantom, esta janela é a da própria Phantom.
+        </div>
       </div>
     </div>
   );
 }
 
-/** Sessão: assina um desafio com a chave do aparelho. */
-export async function login(ctx: Ctx, device: DeviceRecord) {
-  const { signStatement, randomHex } = await import("@duplachave/crypto");
-  await ctx.unlock("Entrar na sua conta");
-  const ch = await api("POST", "/v1/auth/challenge", { publicKey: device.publicKey }, { auth: false });
-  const signed = await signStatement(new WebCryptoSigner(device), {
-    domain: "duplachave/auth/v1",
-    challenge: ch.challenge,
-    publicKey: device.publicKey,
-    cluster: ctx.config.cluster,
-    nonce: randomHex(16),
-    createdAt: Math.floor(Date.now() / 1000),
-  });
-  const r = await api("POST", "/v1/auth/verify", { challengeId: ch.challengeId, signed }, { auth: false });
-  const next = { ...device, session: { token: r.token, accountId: r.account.id } };
-  await ctx.setDevice(next);
-  return next;
+/**
+ * Entra com a carteira: se ela já tem conta, assina o texto de entrada; se não,
+ * assina o texto de vínculo e a conta 2-de-2 é criada.
+ */
+export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: string) => void): Promise<Session> {
+  const publicKey = c.publicKey;
+  const status = await api<{ enrolled: boolean; revoked: boolean }>("GET", `/v1/wallets/${publicKey}`, undefined, { auth: false });
+  if (status.revoked && !status.enrolled) throw new Error("Esta carteira foi substituída em uma conta e não volta a valer. Use outra carteira.");
+  if (status.enrolled) {
+    onStep(`Confirme a entrada na ${c.name}…`);
+    const ch = await api("POST", "/v1/auth/challenge", { publicKey }, { auth: false });
+    const signature = await c.signMessage(ch.message);
+    const r = await api("POST", "/v1/auth/verify", { challengeId: ch.challengeId, publicKey, signature }, { auth: false });
+    const s: Session = { token: r.token, accountId: r.account.id, walletName: c.name, publicKey, myRotations: [] };
+    await ctx.setSession(s);
+    return s;
+  }
+  onStep(`Assine o vínculo na ${c.name}…`);
+  const ch = await api("POST", "/v1/enrollment/challenge", { publicKey }, { auth: false });
+  const signature = await c.signMessage(ch.message);
+  onStep("Criando sua conta 2 de 2 na Solana…");
+  const r = await api("POST", "/v1/enrollment", { challengeId: ch.challengeId, publicKey, signature, walletName: c.name }, { auth: false });
+  const s: Session = { token: r.token, accountId: r.account.id, walletName: c.name, publicKey, myRotations: [] };
+  await ctx.setSession(s);
+  return s;
 }
 
 export function errorText(e: unknown): string {
-  if (e instanceof ApiError) return `${e.message}`;
-  return (e as Error)?.message ?? String(e);
+  if (e instanceof ApiError) return e.message;
+  const m = (e as Error)?.message ?? String(e);
+  if (/User rejected|rejected the request|recusad/i.test(m)) return "Assinatura recusada na carteira.";
+  return m;
 }
+
+export { loadSession };

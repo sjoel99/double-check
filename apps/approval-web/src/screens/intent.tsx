@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { PublicKey } from "@solana/web3.js";
-import { inspectOnChain, signClientDecision, type ApprovalRequest, type Inspection } from "@duplachave/custody/src/client";
+import { buildWalletTransaction, inspectOnChain, type ApprovalRequest, type Inspection } from "@duplachave/custody/src/client";
 import { KNOWN_PROGRAM_NAMES } from "@duplachave/solana";
 import { errorText, useApp } from "../app";
 import { api } from "../lib/api";
@@ -28,12 +28,10 @@ function Countdown({ until }: { until: number }) {
     return () => clearInterval(i);
   }, []);
   const left = Math.max(0, until - t);
-  const mm = String(Math.floor(left / 60)).padStart(2, "0");
-  const ss = String(left % 60).padStart(2, "0");
   return (
     <div className="pill mono" style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", border: "1px solid var(--line)", background: "var(--surface)", color: left < 60 ? "var(--warn)" : "var(--muted)", fontSize: 12 }}>
       <Icon name="clock" size={14} />
-      {mm}:{ss}
+      {String(Math.floor(left / 60)).padStart(2, "0")}:{String(left % 60).padStart(2, "0")}
     </div>
   );
 }
@@ -65,7 +63,7 @@ export function Send() {
     setBusy(true);
     setErr(null);
     try {
-      const r = await api("POST", `/v1/accounts/${ctx.device!.session!.accountId}/intents`, { type: "TRANSFER_SOL", destination: dest.trim(), amountSol: amount.trim() });
+      const r = await api("POST", `/v1/accounts/${ctx.session!.accountId}/intents`, { type: "TRANSFER_SOL", destination: dest.trim(), amountSol: amount.trim() });
       ctx.go(`/intent/${r.intent.id}`);
     } catch (e) {
       setErr(errorText(e));
@@ -78,7 +76,7 @@ export function Send() {
       <TopBar title="Enviar SOL" />
       <div className="page">
         <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
-          O serviço monta a transação e confere a política. Depois você revisa o que está na Solana e aprova.
+          O serviço monta a transação, confere a sua política e aprova. Depois você revisa e assina uma vez na {ctx.session!.walletName}.
         </div>
         <div className="field">
           <label htmlFor="dest">Endereço de destino</label>
@@ -92,22 +90,22 @@ export function Send() {
       </div>
       <div className="actions">
         <button type="button" className="btn primary" disabled={!valid || busy} onClick={submit}>
-          {busy ? <span className="spinner" /> : null} Continuar
+          {busy ? <span className="spinner" /> : null} Revisar
         </button>
       </div>
     </>
   );
 }
 
-// ---------------------------------------------------------------- Intenção
+// ---------------------------------------------------------------- Revisar e assinar
 
-type Loaded = { record: IntentView; approvalRequest: ApprovalRequest | null; tampered: boolean };
+type Loaded = { record: IntentView; request: ApprovalRequest | null };
 
 export function IntentScreen({ id }: { id: string }) {
   const ctx = useApp();
   const [data, setData] = useState<Loaded | null>(null);
   const [check, setCheck] = useState<Inspection | null>(null);
-  const [busy, setBusy] = useState<null | "APPROVE" | "REJECT">(null);
+  const [busy, setBusy] = useState<null | "sign" | "reject" | "retry">(null);
   const [err, setErr] = useState<string | null>(null);
   const [handedOver, setHandedOver] = useState(false);
 
@@ -115,16 +113,12 @@ export function IntentScreen({ id }: { id: string }) {
     try {
       const r = await api<{ record: IntentView; approvalRequest: ApprovalRequest | null }>("GET", `/v1/intents/${id}`);
       let request = r.approvalRequest;
-      let tampered = false;
-      if (request && ctx.dev.malicious && r.record.intent.type === "TRANSFER_SOL") {
+      if (request && ctx.dev.malicious && r.record.intent.type === "TRANSFER_SOL" && request.mode !== "CANCEL") {
         request = await api<ApprovalRequest>("GET", `/v1/dev/intents/${id}/tampered`);
-        tampered = true;
       }
-      setData({ record: r.record, approvalRequest: request, tampered });
-      if (request) {
-        // A conferência é do app: lê a transação pela RPC dele e compara com o que vai mostrar.
-        setCheck(await inspectOnChain(ctx.chain, request, new PublicKey(ctx.device!.publicKey), now(), { initiatedHere: ctx.initiatedHere }));
-      }
+      setData({ record: r.record, request });
+      // A conferência é do app: lê a transação pela RPC fixada no build e compara com o que vai mostrar.
+      if (request) setCheck(await inspectOnChain(ctx.chain, request, new PublicKey(ctx.session!.publicKey), now(), { initiatedHere: ctx.initiatedHere }));
     } catch (e) {
       setErr(errorText(e));
     }
@@ -134,24 +128,45 @@ export function IntentScreen({ id }: { id: string }) {
     void load();
   }, [load]);
 
-  const decide = async (decision: "APPROVE" | "REJECT") => {
-    if (!data?.approvalRequest) return;
+  const sign = async () => {
+    if (!data?.request) return;
     setErr(null);
-    const intent = data.approvalRequest.intent;
-    const summary =
-      intent.type === "ROTATE_MEMBER" ? `${decision === "APPROVE" ? "Aprovar" : "Rejeitar"} troca de chave · #${intent.transactionIndex}` : `${decision === "APPROVE" ? "Aprovar" : "Rejeitar"} ${sol(intent.type === "TRANSFER_SOL" ? intent.amountLamports : "0")} SOL · #${intent.transactionIndex}`;
+    setBusy("sign");
     try {
-      await ctx.unlock(summary);
-    } catch {
-      return;
-    }
-    setBusy(decision);
-    try {
-      const payload = await signClientDecision({ chain: ctx.chain, request: data.approvalRequest, signer: ctx.signer(), decision, now: now(), initiatedHere: ctx.initiatedHere });
-      const out = await api<IntentView>("POST", `/v1/intents/${id}/decision`, payload);
-      if (decision === "REJECT") ctx.toast("Rejeitada. A proposta foi encerrada na Solana.");
-      // Este aparelho acabou de aprovar a própria saída: a sessão dele morre aqui.
+      const c = await ctx.accountWallet();
+      const { transaction } = await buildWalletTransaction({ chain: ctx.chain, request: data.request, wallet: new PublicKey(c.publicKey), now: now(), initiatedHere: ctx.initiatedHere });
+      const signed = await c.signTransaction(transaction);
+      const out = await api<IntentView>("POST", `/v1/intents/${id}/sign`, { transaction: signed });
+      const intent = data.request.intent;
       if (intent.type === "ROTATE_MEMBER" && intent.role === "CLIENT" && out.status === "EXECUTED") return setHandedOver(true);
+      if (data.request.mode === "CANCEL") ctx.toast("Cancelada na Solana. Nada mais pode executá-la.");
+      await load();
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const reject = async () => {
+    setErr(null);
+    setBusy("reject");
+    try {
+      await api("POST", `/v1/intents/${id}/reject`);
+      ctx.toast("Recusada. A proposta foi encerrada na Solana.");
+      await load();
+    } catch (e) {
+      setErr(errorText(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const retry = async () => {
+    setErr(null);
+    setBusy("retry");
+    try {
+      await api("POST", `/v1/intents/${id}/execute`);
       await load();
     } catch (e) {
       setErr(errorText(e));
@@ -162,14 +177,37 @@ export function IntentScreen({ id }: { id: string }) {
 
   if (handedOver) return <HandedOver />;
   if (!data) return <Loading err={err} />;
-  const { record } = data;
-
-  if (record.status !== "AWAITING_CLIENT") return <Outcome record={record} reload={load} />;
+  const { record, request } = data;
+  if (!request) return <Outcome record={record} />;
   if (!check) return <Loading err={err} label="Conferindo na Solana…" />;
-  if (!check.ok) return <Blocked check={check} request={data.approvalRequest!} />;
+  if (!check.ok) return <Blocked check={check} request={request} />;
+  if (request.mode === "CANCEL") return <PendingExecution record={record} busy={busy} err={err} onRetry={retry} onCancel={sign} />;
 
-  const intent = data.approvalRequest!.intent;
-  if (intent.type === "ROTATE_MEMBER") return <RotationApproval request={data.approvalRequest!} busy={busy} err={err} onDecide={decide} />;
+  const intent = request.intent;
+  const walletName = ctx.session!.walletName;
+  const actions = (
+    <div className="actions">
+      <button type="button" className="btn" disabled={Boolean(busy)} onClick={reject}>
+        {busy === "reject" ? <span className="spinner" /> : null}Recusar
+      </button>
+      <button type="button" className={`btn ${intent.type === "ROTATE_MEMBER" ? "amber" : "primary"}`} disabled={Boolean(busy)} onClick={sign}>
+        {busy === "sign" ? <span className="spinner" /> : <Icon name="key" color="#0B0D10" sw={2} />}
+        {walletName.length <= 12 ? `Assinar na ${walletName}` : "Assinar na carteira"}
+      </button>
+    </div>
+  );
+  const serverOk = (
+    <div className="banner ok">
+      <Icon name="shieldcheck" size={18} color="var(--accent)" />
+      <div className="grow">
+        Conferido na Solana: idêntico ao que você vê.{check.serverApproved ? " O serviço já conferiu a política e aprovou." : ""}
+      </div>
+      <div className="mono" style={{ color: "#8fa36b" }}>
+        #{intent.transactionIndex}
+      </div>
+    </div>
+  );
+  if (intent.type === "ROTATE_MEMBER") return <RotationApproval request={request} header={serverOk} actions={actions} err={err} />;
   if (intent.type !== "TRANSFER_SOL") return <Loading err="tipo de intenção ainda não suportado no app" />;
 
   const flags = record.riskFlags;
@@ -178,14 +216,8 @@ export function IntentScreen({ id }: { id: string }) {
     <>
       <TopBar title="Confirmar transação" right={<Countdown until={intent.expiresAt} />} />
       <div className="page">
-        <div className="banner ok">
-          <Icon name="shieldcheck" size={18} color="var(--accent)" />
-          <div className="grow">Conferido na Solana: idêntico ao que você vê.</div>
-          <div className="mono" style={{ color: "#8fa36b" }}>
-            #{intent.transactionIndex}
-          </div>
-        </div>
-        <div className="center" style={{ gap: 6, padding: "14px 0 4px" }}>
+        {serverOk}
+        <div className="center" style={{ gap: 6, padding: "10px 0 2px" }}>
           <div className="muted" style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: "0.12em" }}>
             Enviar
           </div>
@@ -212,8 +244,12 @@ export function IntentScreen({ id }: { id: string }) {
         <div>
           <Detail label="De" value={`Seu Vault · ${short(intent.vault)}`} mono />
           <Detail label="Programa" value={intent.programs.map((p: string) => KNOWN_PROGRAM_NAMES[p] ?? short(p)).join(", ")} />
-          <Detail label="Rede" value={`Solana ${intent.cluster}`} />
+          <Detail label="Assinaturas" value={`Serviço ✓ · você (${walletName})`} />
           <Detail label="Taxa de rede" value="Paga pelo serviço" />
+        </div>
+        <div className="banner info">
+          <Icon name="key" size={18} />
+          <div>A {walletName} vai abrir uma vez. Ela assina a aprovação e a execução juntas: se a execução falhar, nada fica aprovado.</div>
         </div>
         {flags.includes("POSSIBLE_FULL_BALANCE") && (
           <div className="banner warn">
@@ -221,27 +257,15 @@ export function IntentScreen({ id }: { id: string }) {
             <div>Esta transação envia quase todo o saldo do Vault.</div>
           </div>
         )}
-        {external && (
-          <div className="banner warn">
-            <Icon name="shieldalert" size={18} color="#F2B33D" />
-            <div>Confira os últimos caracteres do endereço com quem vai receber.</div>
-          </div>
-        )}
         {err && <div className="banner danger">{err}</div>}
       </div>
-      <div className="actions">
-        <button type="button" className="btn" disabled={Boolean(busy)} onClick={() => decide("REJECT")}>
-          {busy === "REJECT" ? <span className="spinner" /> : null}Rejeitar
-        </button>
-        <button type="button" className="btn primary" disabled={Boolean(busy)} onClick={() => decide("APPROVE")}>
-          {busy === "APPROVE" ? <span className="spinner" /> : <Icon name="finger" color="#0B0D10" sw={2} />}Aprovar
-        </button>
-      </div>
+      {actions}
     </>
   );
 }
 
-function RotationApproval({ request, busy, err, onDecide }: { request: ApprovalRequest; busy: null | "APPROVE" | "REJECT"; err: string | null; onDecide: (d: "APPROVE" | "REJECT") => void }) {
+function RotationApproval({ request, header, actions, err }: { request: ApprovalRequest; header: React.ReactNode; actions: React.ReactNode; err: string | null }) {
+  const { session } = useApp();
   const intent = request.intent;
   if (intent.type !== "ROTATE_MEMBER") return null;
   const isClient = intent.role === "CLIENT";
@@ -255,17 +279,17 @@ function RotationApproval({ request, busy, err, onDecide }: { request: ApprovalR
             <Icon name="shieldalert" size={16} color="#F2B33D" /> Alteração de segurança
           </div>
           <div style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.2 }}>
-            {isClient ? "Substituir chave de aprovação?" : "O serviço está pedindo para trocar a chave de segurança dele."}
+            {isClient ? "Trocar a carteira da conta?" : "O serviço está pedindo para trocar a chave de segurança dele."}
           </div>
         </div>
         <div className="card" style={{ borderRadius: 20, padding: 16, gap: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{ width: 40, height: 40, borderRadius: 12, background: "var(--surface-2)", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--subtle)" }}>
+            <div className="key-ico">
               <Icon name="key" size={18} />
             </div>
             <div className="grow">
               <div className="muted" style={{ fontSize: 12 }}>
-                {isClient ? "Atual (este aparelho)" : "Chave atual do serviço"}
+                {isClient ? `Atual (${session!.walletName})` : "Chave atual do serviço"}
               </div>
               <div className="mono" style={{ fontSize: 17, color: "var(--muted)", textDecoration: "line-through", textDecorationColor: "#5b6270" }}>
                 {short(intent.oldKey)}
@@ -276,12 +300,12 @@ function RotationApproval({ request, busy, err, onDecide }: { request: ApprovalR
             <Icon name="arrowdown" size={18} color="#F2B33D" />
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{ width: 40, height: 40, borderRadius: 12, background: "#2a2312", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <div className="key-ico warn">
               <Icon name="key" size={18} color="#F2B33D" />
             </div>
             <div className="grow">
               <div className="muted" style={{ fontSize: 12 }}>
-                {isClient ? "Nova" : "Nova chave do serviço"}
+                {isClient ? "Carteira nova" : "Nova chave do serviço"}
               </div>
               <div className="mono" style={{ fontSize: 17, fontWeight: 600 }}>
                 {short(intent.newKey)}
@@ -289,47 +313,54 @@ function RotationApproval({ request, busy, err, onDecide }: { request: ApprovalR
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--ok-text)" }}>
               <Icon name="check" size={14} color="#C8F169" sw={2.2} />
-              posse provada
+              posse conferida
             </div>
           </div>
         </div>
-        <div className="banner ok">
-          <Icon name="shieldcheck" size={18} color="var(--accent)" />
-          <div className="grow">Conferido na Solana: a proposta troca exatamente estas chaves, numa única transação.</div>
-        </div>
-        {isClient && (
-          <div className="banner warn">
-            <Icon name="phone" size={18} color="#F2B33D" />
-            <div>
-              Confira no aparelho novo: a chave mostrada lá tem que ser <span className="mono">{short(intent.newKey)}</span>. Se não for, alguém usou o seu código — rejeite.
-            </div>
-          </div>
-        )}
+        {header}
         <div>
-          {isClient && request.deviceName && <Detail label="Dispositivo novo" value={request.deviceName} />}
           <Detail label="Solicitado" value={when} />
-          <Detail label="Quem aprova" value={isClient ? "Esta chave + serviço" : "Você + chave atual do serviço"} />
+          <Detail label="Quem aprova" value={isClient ? "Carteira atual + serviço" : "Você + chave atual do serviço"} />
         </div>
         {isClient ? (
           <div className="banner warn">
             <Icon name="shieldalert" size={18} color="#F2B33D" />
-            <div>Este aparelho perderá acesso após a conclusão. Envios ficam pausados até a troca terminar.</div>
+            <div>
+              Assine com a carteira <b>atual</b> (<span className="mono">{short(intent.oldKey)}</span>). Depois disso ela perde o acesso, e a nova passa a assinar. Envios ficam pausados até terminar.
+            </div>
           </div>
         ) : (
           <div className="banner danger" style={{ flexDirection: "column", gap: 6 }}>
-            <div style={{ fontSize: 16, fontWeight: 600 }}>Não reconhece este pedido? Rejeite.</div>
-            <div style={{ color: "#d9a69e" }}>Sem a sua aprovação a chave do serviço não muda. Rejeitar não afeta seus fundos.</div>
+            <div style={{ fontSize: 16, fontWeight: 600 }}>Não reconhece este pedido? Recuse.</div>
+            <div style={{ color: "#d9a69e" }}>Sem a sua assinatura a chave do serviço não muda. Recusar não afeta seus fundos.</div>
           </div>
         )}
         {err && <div className="banner danger">{err}</div>}
       </div>
+      {actions}
+    </>
+  );
+}
+
+function PendingExecution({ record, busy, err, onRetry, onCancel }: { record: IntentView; busy: null | string; err: string | null; onRetry: () => void; onCancel: () => void }) {
+  const { session } = useApp();
+  return (
+    <>
+      <TopBar title="Aguardando execução" />
+      <div className="page" style={{ gap: 18 }}>
+        <div className="banner warn">
+          <Icon name="shieldalert" size={18} color="#F2B33D" />
+          <div>Você e o serviço aprovaram, mas a execução falhou. A proposta continua válida na Solana: execute de novo ou cancele (o cancelamento também precisa da sua {session!.walletName} e do serviço).</div>
+        </div>
+        <Detail label="Motivo" value={record.reasons.join(" · ") || "—"} />
+        {err && <div className="banner danger">{err}</div>}
+      </div>
       <div className="actions">
-        <button type="button" className="btn" disabled={Boolean(busy)} onClick={() => onDecide("REJECT")}>
-          {busy === "REJECT" ? <span className="spinner" /> : null}Rejeitar
+        <button type="button" className="btn" disabled={Boolean(busy)} onClick={onCancel}>
+          {busy === "sign" ? <span className="spinner" /> : null}Cancelar
         </button>
-        <button type="button" className="btn amber" disabled={Boolean(busy)} onClick={() => onDecide("APPROVE")}>
-          {busy === "APPROVE" ? <span className="spinner" /> : <Icon name="finger" color="#0B0D10" sw={2} />}
-          {isClient ? "Confirmar troca" : "Aprovar"}
+        <button type="button" className="btn primary" disabled={Boolean(busy)} onClick={onRetry}>
+          {busy === "retry" ? <span className="spinner" /> : null}Executar de novo
         </button>
       </div>
     </>
@@ -348,24 +379,27 @@ function Blocked({ check, request }: { check: Extract<Inspection, { ok: false }>
   const reason: Record<string, string> = {
     INTENT_MISMATCH: "O que o servidor mostrou não é o que está na Solana.",
     INTENT_HASH_INVALID: "Os dados recebidos não batem com a assinatura da intenção.",
-    INTENT_EXPIRED: "O prazo para aprovar acabou.",
+    INTENT_EXPIRED: "O prazo para assinar acabou.",
     PROPOSAL_NOT_ACTIVE: "A proposta não está mais aberta na Solana.",
-    NOT_A_VOTER: "Esta chave não é mais votante desta conta.",
+    NOT_A_VOTER: "Esta carteira não é mais a carteira da conta.",
     PROPOSAL_STALE: "A proposta ficou obsoleta depois de uma troca de chave.",
+    ROTATION_NOT_REQUESTED_HERE: "Você não pediu esta troca de carteira neste app.",
+    ROTATION_PROOF_INVALID: "A prova de que a chave nova pertence a quem diz não confere.",
+    ROTATION_PROOF_MISSING: "Falta a prova de que a chave nova pertence a quem diz.",
   };
   return (
     <>
       <div className="page" style={{ paddingTop: 56, gap: 24 }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <div style={{ width: 64, height: 64, borderRadius: 20, background: "#2a1413", border: "1px solid var(--danger-line)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div className="danger-ico">
             <Icon name="shieldalert" size={32} color="#FF8F80" />
           </div>
           <div style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.15 }}>Transação bloqueada</div>
           <div style={{ fontSize: 15, color: "#b4bac4", lineHeight: 1.5 }}>{reason[check.code] ?? check.message} Nada foi assinado e seus fundos não se moveram.</div>
         </div>
         {rows.length > 0 && (
-          <div style={{ borderRadius: 18, background: "#170f0f", border: "1px solid #3b2220", padding: "6px 16px 4px" }}>
-            <div className="diff" style={{ borderTop: 0, fontSize: 11, color: "var(--subtle)", textTransform: "uppercase", letterSpacing: "0.1em" }}>
+          <div className="diff-box">
+            <div className="diff head">
               <div>Campo</div>
               <div>Mostrado</div>
               <div>Na Solana</div>
@@ -382,7 +416,7 @@ function Blocked({ check, request }: { check: Extract<Inspection, { ok: false }>
           </div>
         )}
         <div className="muted" style={{ fontSize: 13, lineHeight: 1.5 }}>
-          Código: <span className="mono">{check.code}</span>. Se isso se repetir, troque a chave do serviço em Segurança.
+          Código: <span className="mono">{check.code}</span>.
         </div>
       </div>
       <div className="actions">
@@ -394,63 +428,25 @@ function Blocked({ check, request }: { check: Extract<Inspection, { ok: false }>
   );
 }
 
-function Outcome({ record, reload }: { record: IntentView; reload: () => Promise<void> }) {
-  const ctx = useApp();
-  const { go, config } = ctx;
-  const [busy, setBusy] = useState<null | "retry" | "cancel">(null);
-  const [err, setErr] = useState<string | null>(null);
-  const pending = record.status === "APPROVED_PENDING_EXECUTION";
-  const retry = async () => {
-    setBusy("retry");
-    setErr(null);
-    try {
-      await api("POST", `/v1/intents/${record.intent.id}/execute`);
-      await reload();
-    } catch (e) {
-      setErr(errorText(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-  const cancel = async () => {
-    setErr(null);
-    try {
-      await ctx.unlock(`Cancelar #${record.intent.transactionIndex}`);
-    } catch {
-      return;
-    }
-    setBusy("cancel");
-    try {
-      const request = await api<ApprovalRequest>("GET", `/v1/intents/${record.intent.id}/cancel-request`);
-      const payload = await signClientDecision({ chain: ctx.chain, request, signer: ctx.signer(), decision: "CANCEL", now: now() });
-      await api("POST", `/v1/intents/${record.intent.id}/decision`, payload);
-      ctx.toast("Cancelada na Solana. Nada mais pode executá-la.");
-      await reload();
-    } catch (e) {
-      setErr(errorText(e));
-    } finally {
-      setBusy(null);
-    }
-  };
+function Outcome({ record }: { record: IntentView }) {
+  const { go, config, session } = useApp();
   const ok = record.status === "EXECUTED";
   const intent = record.intent;
   const rot = intent.type === "ROTATE_MEMBER";
   const explorer = (sig: string) => `https://explorer.solana.com/tx/${sig}?cluster=${config.cluster === "devnet" ? "devnet" : `custom&customUrl=${encodeURIComponent("http://127.0.0.1:8899")}`}`;
-  const steps: [string, string | undefined][] = [
-    ["Proposta criada na Solana", record.signatures.create],
-    ["Você aprovou", record.signatures.clientApprove],
-    ["Serviço conferiu a política e aprovou", record.signatures.serverApprove],
-    [rot ? "Chaves trocadas na Solana" : "Executada na Solana", record.signatures.execute],
-  ];
-  const label: Record<string, string> = {
-    REJECTED: "Transação rejeitada",
-    EXPIRED: "Prazo expirado",
-    FAILED: "Falhou",
-    AWAITING_SERVER: "Com o serviço",
-    EXECUTING: "Executando",
-    APPROVED_PENDING_EXECUTION: "Aprovada, aguardando execução",
-    CANCELLED: "Cancelada",
-  };
+  const steps: [string, string | undefined][] = rot
+    ? [
+        ["Proposta criada na Solana", record.signatures.create],
+        ["Serviço conferiu e aprovou", record.signatures.serverApprove],
+        [`Você aprovou na ${session?.walletName ?? "carteira"}`, record.signatures.clientApprove],
+        ["Chaves trocadas na Solana", record.signatures.execute],
+      ]
+    : [
+        ["Proposta criada na Solana", record.signatures.create],
+        ["Serviço conferiu a política e aprovou", record.signatures.serverApprove],
+        [`Você assinou na ${session?.walletName ?? "carteira"} (aprovou e executou)`, record.signatures.clientApprove],
+      ];
+  const label: Record<string, string> = { REJECTED: "Transação recusada", EXPIRED: "Prazo expirado", FAILED: "Falhou", CANCELLED: "Cancelada", EXECUTING: "Executando" };
   return (
     <>
       <div className="page" style={{ paddingTop: 56, gap: 26 }}>
@@ -489,35 +485,42 @@ function Outcome({ record, reload }: { record: IntentView; reload: () => Promise
             </div>
           ))}
         </div>
-        {record.signatures.reject && (
-          <div className="detail">
-            <div>{record.status === "CANCELLED" ? "Cancelamento on-chain" : "Rejeição on-chain"}</div>
-            <div className="mono">{short(record.signatures.reject)}</div>
-          </div>
-        )}
-        {pending && (
-          <div className="banner warn">
-            <Icon name="shieldalert" size={18} color="#F2B33D" />
-            <div>Você e o serviço aprovaram, mas a execução falhou. A proposta continua válida na Solana: execute de novo ou cancele (o cancelamento também precisa de você e do serviço).</div>
-          </div>
-        )}
-        {err && <div className="banner danger">{err}</div>}
       </div>
       <div className="actions">
-        {pending ? (
-          <>
-            <button type="button" className="btn" disabled={Boolean(busy)} onClick={cancel}>
-              {busy === "cancel" ? <span className="spinner" /> : null}Cancelar
-            </button>
-            <button type="button" className="btn primary" disabled={Boolean(busy)} onClick={retry}>
-              {busy === "retry" ? <span className="spinner" /> : null}Executar de novo
-            </button>
-          </>
-        ) : (
-          <button type="button" className="btn" onClick={() => go("/")}>
-            Voltar ao início
-          </button>
-        )}
+        <button type="button" className="btn" onClick={() => go("/")}>
+          Voltar ao início
+        </button>
+      </div>
+    </>
+  );
+}
+
+function HandedOver() {
+  const ctx = useApp();
+  return (
+    <>
+      <div className="page" style={{ paddingTop: 56, gap: 22 }}>
+        <div className="center">
+          <div className="hero-ico" style={{ background: "var(--accent)" }}>
+            <Icon name="check" size={44} color="#0B0D10" sw={2.4} />
+          </div>
+          <div style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em" }}>Carteira trocada</div>
+          <div className="muted" style={{ fontSize: 15, lineHeight: 1.5 }}>
+            A carteira nova agora assina pela conta. A antiga saiu da multisig na Solana e não volta a valer.
+          </div>
+        </div>
+      </div>
+      <div className="actions">
+        <button
+          type="button"
+          className="btn primary"
+          onClick={async () => {
+            await ctx.setSession(null);
+            ctx.go("/");
+          }}
+        >
+          Entrar com a carteira nova
+        </button>
       </div>
     </>
   );
@@ -535,39 +538,6 @@ function Loading({ err, label = "Carregando…" }: { err: string | null; label?:
             <span className="spinner" /> {label}
           </div>
         )}
-      </div>
-    </>
-  );
-}
-
-function HandedOver() {
-  const ctx = useApp();
-  return (
-    <>
-      <div className="page" style={{ paddingTop: 56, gap: 22 }}>
-        <div className="center">
-          <div className="hero-ico" style={{ background: "var(--accent)" }}>
-            <Icon name="check" size={44} color="#0B0D10" sw={2.4} />
-          </div>
-          <div style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em" }}>Chave trocada</div>
-          <div className="muted" style={{ fontSize: 15, lineHeight: 1.5 }}>
-            O aparelho novo agora aprova suas transações. A chave deste aparelho saiu da multisig na Solana e não volta a valer.
-          </div>
-        </div>
-      </div>
-      <div className="actions">
-        <button
-          type="button"
-          className="btn"
-          onClick={async () => {
-            const { wipeDevice } = await import("../lib/device");
-            await wipeDevice();
-            await ctx.setDevice(null);
-            ctx.go("/");
-          }}
-        >
-          Apagar chave deste aparelho
-        </button>
       </div>
     </>
   );

@@ -15,3 +15,10 @@
 [2026-10-01--11-05-51 INFO surfpool::cli::simnet] Account 2TNx8iRgfEU2FpN21a8QUSAfh4iwZ2wyoccNL6tFn3U6 updated.
 [2026-10-01--11-05-51 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:44606.
 [2026-10-01--11-05-52 INFO surfpool::cli::simnet] Account 8KNXe3EPpXVf21nWWrnoWgS1LhAY76MJ8Lwhk97SkfHe updated.
+[2026-10-01--11-42-00 INFO actix_server::server] SIGTERM received; starting graceful shutdown
+[2026-10-01--11-42-00 INFO actix_server::accept] accept thread stopped
+[2026-10-01--11-42-00 INFO actix_server::worker] shutting down idle worker
+[2026-10-01--11-42-00 INFO actix_server::worker] shutting down idle worker
+[2026-10-01--11-42-00 INFO actix_server::worker] shutting down idle worker
+[2026-10-01--11-42-00 INFO actix_server::worker] shutting down idle worker
+[2026-10-01--11-42-00 INFO actix_server::worker] shutting down idle worker

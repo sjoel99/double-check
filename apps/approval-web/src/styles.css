@@ -124,3 +124,21 @@ nav.tabs button.on { color: var(--accent); }
 .dev { border: 1px dashed #343a44; border-radius: 16px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
 .dev .title { font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--subtle); }
 .toggle { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--muted); cursor: pointer; }
+
+/* fluxo da carteira */
+.steps { display: flex; flex-direction: column; gap: 12px; padding: 4px 0; }
+.step { display: flex; align-items: center; gap: 12px; }
+.step-n { width: 28px; height: 28px; border-radius: 999px; background: var(--surface-2); color: var(--muted); display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 12px; flex-shrink: 0; }
+.wallet-chip { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); color: var(--text); font-size: 12px; cursor: pointer; }
+.wallet-chip:hover { border-color: #343a44; }
+.wallet-badge { width: 40px; height: 40px; border-radius: 12px; background: var(--surface-2); display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.wallet-text { margin: 0; padding: 14px; border-radius: 14px; background: var(--inset); border: 1px solid var(--line-soft); font-family: var(--mono); font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto; color: #cfd3da; }
+.banner.info { background: #0f151c; border: 1px solid #22303d; color: #b9c8d8; }
+.copy { background: none; border: 0; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; font-size: 12px; }
+.list-row.as-button { background: none; border: 0; border-top: 1px solid var(--surface-2); width: 100%; text-align: left; cursor: pointer; color: inherit; }
+.key-ico { width: 40px; height: 40px; border-radius: 12px; background: var(--surface-2); display: flex; align-items: center; justify-content: center; color: var(--subtle); }
+.key-ico.warn { background: #2a2312; }
+.danger-ico { width: 64px; height: 64px; border-radius: 20px; background: #2a1413; border: 1px solid var(--danger-line); display: flex; align-items: center; justify-content: center; }
+.diff-box { border-radius: 18px; background: #170f0f; border: 1px solid #3b2220; padding: 6px 16px 4px; }
+.diff.head { border-top: 0; font-size: 11px; color: var(--subtle); text-transform: uppercase; letter-spacing: 0.1em; }
+.item:disabled { opacity: 0.6; cursor: progress; }

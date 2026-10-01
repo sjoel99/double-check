@@ -4,37 +4,35 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { AppProvider, type Config, useApp } from "./app";
 import { api } from "./lib/api";
-import { type DeviceRecord, ed25519Supported, loadDevice } from "./lib/device";
 import { PINNED_CLUSTER } from "./lib/chain";
-import { Home } from "./screens/home";
+import { ed25519Supported, loadSession, type Session } from "./lib/storage";
+import { Deposit, Home } from "./screens/home";
 import { IntentScreen, Send } from "./screens/intent";
-import { Onboarding } from "./screens/onboarding";
-import { Activity, Login, Pair, Rotate, Security } from "./screens/security";
+import { Activity, RotateWallet, Security } from "./screens/security";
+import { Welcome } from "./screens/welcome";
 
 function Router() {
-  const { route, device } = useApp();
-  const [path, query = ""] = route.split("?");
-  const q = new URLSearchParams(query);
-  if (path === "/pair" && q.get("r") && q.get("c")) return <Pair r={q.get("r")!} c={q.get("c")!} />;
-  if (!device) return <Onboarding />;
-  if (!device.session) return <Login />;
+  const { route, session } = useApp();
+  const [path] = route.split("?");
+  if (!session) return <Welcome />;
   if (path === "/send") return <Send />;
+  if (path === "/deposit") return <Deposit />;
   if (path?.startsWith("/intent/")) return <IntentScreen key={path} id={path.slice("/intent/".length)} />;
   if (path === "/security") return <Security />;
-  if (path === "/rotate") return <Rotate />;
+  if (path === "/rotate") return <RotateWallet />;
   if (path === "/activity") return <Activity />;
   return <Home />;
 }
 
 function Boot() {
-  const [state, setState] = useState<{ config: Config; device: DeviceRecord | null } | { error: string } | null>(null);
+  const [state, setState] = useState<{ config: Config; session: Session | null } | { error: string } | null>(null);
   useEffect(() => {
     (async () => {
-      if (!(await ed25519Supported())) return setState({ error: "Este navegador não tem Ed25519 no WebCrypto (Chrome 137+, Firefox 129+, Safari 17+). Sem isso a chave não pode ficar protegida." });
       try {
-        const [config, device] = await Promise.all([api<Config>("GET", "/v1/config", undefined, { auth: false }), loadDevice()]);
+        const [config, session] = await Promise.all([api<Config>("GET", "/v1/config", undefined, { auth: false }), loadSession()]);
         if (config.cluster !== PINNED_CLUSTER) return setState({ error: `A API está em ${config.cluster}, mas este app foi feito para ${PINNED_CLUSTER}. Não continue.` });
-        setState({ config, device });
+        if (config.devTools && !(await ed25519Supported())) return setState({ error: "As carteiras de teste precisam de Ed25519 no WebCrypto (Chrome 137+, Firefox 129+, Safari 17+)." });
+        setState({ config, session });
       } catch (e) {
         setState({ error: `API indisponível: ${(e as Error).message}. Rode \`pnpm dev\` na raiz do projeto.` });
       }
@@ -43,7 +41,7 @@ function Boot() {
   if (!state) return <div className="app"><div className="page" style={{ alignItems: "center", justifyContent: "center" }}><span className="spinner" /></div></div>;
   if ("error" in state) return <div className="app"><div className="page" style={{ justifyContent: "center" }}><div className="banner danger">{state.error}</div></div></div>;
   return (
-    <AppProvider config={state.config} initialDevice={state.device}>
+    <AppProvider config={state.config} initialSession={state.session}>
       <div className="app">
         <Router />
       </div>

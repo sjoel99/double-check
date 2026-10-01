@@ -103,6 +103,12 @@ export async function buildServer(d: ApiDeps) {
     return { account, token: tokenFor(account) };
   });
 
+  /** Esta carteira já tem conta? (o app decide entre entrar e criar sem pedir duas assinaturas) */
+  app.get("/v1/wallets/:publicKey", async (req) => {
+    const { publicKey } = z.object({ publicKey: pubkey }).parse(req.params);
+    return { enrolled: Boolean(await d.store.findAccountByClientKey(publicKey)), revoked: await d.store.isRevokedKey(publicKey) };
+  });
+
   // ---------------------------------------------------------------- sessão
   app.post("/v1/auth/challenge", async (req) => {
     const { publicKey } = z.object({ publicKey: pubkey }).parse(req.body);

@@ -1,81 +1,105 @@
 # Dupla Chave
 
-Custódia na Solana em que **nenhuma chave sozinha move fundos**. Os ativos ficam no Vault de uma multisig [Squads v4](https://github.com/Squads-Protocol/v4) 2-de-2: uma chave no aparelho do usuário (CLIENT), outra no serviço (SERVER), que só assina o que passa pela política. Executor e wallet operacional não votam. Trocar qualquer uma das duas chaves também exige as duas.
+Custódia na Solana em que **nenhuma chave sozinha move fundos**. Os ativos ficam no Vault de uma multisig [Squads v4](https://github.com/Squads-Protocol/v4) 2-de-2 com dois votantes:
 
-O programa da Squads é quem impõe isso. Backend, banco e app podem falhar sem que uma chave isolada mova fundos — os testes atacam o programa direto para provar.
+- **a carteira comum do cliente** (Phantom, Backpack, Solflare… qualquer carteira do Wallet Standard);
+- **a chave do serviço**, que só aprova o que passa pela política (limites, destinos, programas, simulação).
+
+Executor e proponente do serviço não votam. Trocar a carteira ou a chave do serviço também exige as duas.
+
+Quem garante isso é o programa da Squads. Backend, banco e app podem falhar sem que uma chave isolada mova fundos. Os testes atacam o programa direto para provar.
+
+## Os dois fluxos
+
+**Cadastro**
+1. O cliente conecta a carteira que já usa.
+2. A carteira assina um texto de vínculo, que ela mesma mostra na janela dela.
+3. A conta 2-de-2 é criada na Solana: carteira do cliente + chave do serviço.
+
+**Transação**
+1. O cliente pede o envio no app.
+2. O serviço monta a transação, confere a política, simula e aprova.
+3. O cliente assina **uma vez** na carteira. Essa transação aprova e executa junto; se a execução falhar, nada fica aprovado.
 
 ## Testar agora
 
 ```bash
 cd ~/Desenvolvimento/Pessoal/duplachave
 pnpm install
-pnpm test     # 63 testes, ~4 s, sem rede: o Squads v4 da mainnet rodando no LiteSVM
-pnpm dev      # surfpool offline (Squads v4 das fixtures) + API :8787 + Approval App :5173
+pnpm test     # 69 testes, ~4 s, sem rede: o Squads v4 da mainnet rodando no LiteSVM
+pnpm dev      # surfpool offline (Squads v4 das fixtures) + API :8787 + app :5173
 ```
 
-Abra **http://127.0.0.1:5173** (Chrome 137+, Firefox 129+ ou Safari 17+: precisa de Ed25519 no WebCrypto).
+Abra **http://127.0.0.1:5173**.
 
-Roteiro no app (5 minutos):
+### Roteiro (5 minutos)
 
-1. **Criar minha chave** → PIN de 6 dígitos. A chave nasce no navegador, não exportável; a multisig 2-de-2 é criada na chain local.
-2. **Depositar 10 SOL de teste** (ferramentas de teste, no fim da tela inicial).
-3. **Enviar SOL** → cole um endereço de carteira (gere um com `solana-keygen` ou use qualquer carteira sua; **não** use endereço de programa — é recusado) → valor → Continuar. A tela diz "Conferido na Solana: idêntico ao que você vê". **Aprovar** → PIN → as quatro etapas aparecem com as assinaturas.
-4. **Servidor malicioso**: marque "Simular servidor malicioso" e faça outro envio. O servidor passa a mostrar 1/10 do valor; o app compara com a chain e mostra **Transação bloqueada** com a diferença. Nada é assinado (a proposta vence em 10 min e é rejeitada on-chain).
-5. **Trocar de aparelho**: Segurança → Trocar de aparelho → Gerar código → **Abrir como novo** (abre outra aba simulando o aparelho novo, com outra chave). No aparelho novo, crie um PIN. Volte à primeira aba → **Revisar e aprovar a troca** → PIN. O aparelho novo entra sozinho (pede o PIN dele); o antigo mostra "Chave trocada". Recarregue a aba antiga: "Esta chave foi substituída".
-6. **Troca da chave do serviço**: no aparelho novo, "Simular pedido de troca da chave do serviço" → aprove (ou rejeite: nada muda).
-7. **Atividade**: intenções e o registro de auditoria encadeado por hash.
+1. **Escolha a carteira.** Em localnet há duas **Carteiras de teste** (A e B) que imitam a janela da Phantom: dá para testar sem extensão e sem SOL de verdade. Assine o texto de vínculo e a conta é criada.
+2. **Depositar:** use "5 SOL na carteira" (ferramentas de teste) e depois **Depositar**. A carteira assina a transferência para o Vault e o serviço paga a taxa. Também dá para usar "10 SOL no Vault" direto.
+3. **Enviar:** cole um endereço de carteira e o valor, depois toque em **Revisar**. A tela mostra "Conferido na Solana… O serviço já conferiu a política e aprovou". **Assinar** abre a carteira uma vez e a transação executa.
+4. **Servidor malicioso:** marque a opção nas ferramentas de teste e faça outro envio. O servidor mostra 1/10 do valor; o app compara com a chain, mostra **Transação bloqueada** e não pede assinatura.
+5. **Trocar de carteira:** Segurança → Trocar a carteira → Começar → escolha a **Carteira de teste B** e assine o texto. Depois toque em **Revisar e assinar a troca**: a carteira **atual** (A) assina. Por fim, entre com a B.
+6. **Troca da chave do serviço:** use "Simular pedido de troca da chave do serviço" e assine (ou recuse: nada muda).
 
-O surfpool roda **offline**, com o ELF do Squads v4 carregado das fixtures: no modo fork (`SURFPOOL_FORK=1 pnpm dev`), cada conta nova vira consulta ao RPC público da mainnet, que limita por IP e fazia aprovações falharem com "Internal error". Tudo fica em memória (API e surfpool): reiniciar `pnpm dev` zera as contas, e o app mostra "Conta não encontrada" com a opção de apagar a chave e começar de novo.
+### Com a Phantom de verdade
 
-O app também abre no celular na mesma rede: `DK_WEB_HOST=0.0.0.0 pnpm dev` e acesse `http://<ip-do-notebook>:5173`. Só que o navegador do celular exige HTTPS para WebCrypto/IndexedDB fora de `localhost`, então isso precisa de um túnel HTTPS (ex.: `cloudflared tunnel --url http://localhost:5173`).
+A Phantom aparece na lista sozinha, pelo Wallet Standard. Em localnet, assinar mensagens e transações funciona. Mas a Phantom simula a transação na rede dela (mainnet/devnet), onde esta conta não existe, então ela pode mostrar um aviso de que não conseguiu simular. Para testar sem esse aviso, rode em devnet: `SOLANA_RPC_URL=https://api.devnet.solana.com SOLANA_CLUSTER=devnet pnpm dev`, com SOL de devnet no pagador e a Phantom em devnet.
 
-O design das telas está no Claude Design: https://claude.ai/artifact/TRkq2Zuv3qdEk1UicG9C5t
+Na troca de carteira com a mesma Phantom, troque de conta dentro dela entre os passos: a conta nova assina o texto e a atual assina a troca. O app avisa qual conta tem que estar ativa.
+
+### Ambiente
+
+O surfpool roda **offline**, com o ELF do Squads v4 carregado das fixtures. No modo fork (`SURFPOOL_FORK=1 pnpm dev`), cada conta nova vira uma consulta ao RPC público da mainnet, que limita por IP e fazia as aprovações falharem com "Internal error". Tudo fica em memória (API e surfpool): reiniciar `pnpm dev` zera as contas.
 
 ## O que está provado
 
-`pnpm test` roda, contra o ELF do Squads v4 baixado da mainnet (sha256 em `fixtures/ORIGEM.md`):
+`pnpm test` roda contra o ELF do Squads v4 baixado da mainnet (sha256 em `fixtures/ORIGEM.md`):
 
 ```
-CLIENT sozinho = impossível                 (Teste 1)
-SERVER sozinho = impossível                 (Teste 2)
-CLIENT + SERVER = possível                  (Teste 3)
-trocar CLIENT exige CLIENT + SERVER         (Testes 6, 8)
-trocar SERVER exige CLIENT + SERVER         (Testes 7, 9)
+carteira sozinha = impossível                (Teste 1)
+serviço sozinho = impossível                 (Teste 2)
+carteira + serviço = possível                (Teste 3)
+trocar a carteira exige carteira + serviço   (Testes 6, 8)
+trocar a chave do serviço exige os dois      (Testes 7, 9)
+aprovar + executar numa transação é atômico  (falha na execução não deixa voto)
 ```
 
-e mais: executor e wallet operacional não votam, replay, expiração, prova de posse, troca da chave nova depois da aprovação, servidor inteiro comprometido, app mostrando A com a chain tendo B, auditoria adulterada. Mapa completo em [docs/SECURITY_INVARIANTS.md](docs/SECURITY_INVARIANTS.md).
+Também estão cobertos:
+- executor e proponente não votam;
+- a carteira não cria transações no Vault;
+- replay;
+- expiração;
+- prova de posse da carteira nova;
+- trocar a chave nova depois da aprovação;
+- backend inteiro comprometido;
+- app mostrando A enquanto a chain tem B;
+- auditoria adulterada.
 
-Três descobertas no programa mudaram o desenho pedido (detalhes em [docs/RESEARCH.md](docs/RESEARCH.md)):
-
-1. **Adicionar e remover em passos separados é inseguro.** Com só a chave nova adicionada, há 3 votantes e threshold 2: as duas chaves do usuário movem fundos sem o servidor (o teste "PERIGO evitado" faz o roubo). A rotação é uma ConfigTransaction só, `[AddMember, RemoveMember]`.
-2. **VaultTransaction aprovada continua executável depois da rotação.** Por isso a rotação drena a fila e para se achar aprovada pendente.
-3. **Não há expiração on-chain**, mas em 2-de-2 um único voto de rejeição encerra a proposta. O servidor rejeita on-chain o que vence.
-
-Depois da primeira versão, uma revisão adversarial independente achou 5 bugs confirmados com teste — o mais grave: a API indicava ao app qual RPC usar, e um backend comprometido podia apontá-lo para uma RPC falsa e desviar fundos. Os 8 achados foram corrigidos e os 5 confirmados viraram testes (`tests/regressions.test.ts`). Detalhes no fim de [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+O mapa completo está em [docs/SECURITY_INVARIANTS.md](docs/SECURITY_INVARIANTS.md).
 
 ## Documentos
 
-- [docs/RESEARCH.md](docs/RESEARCH.md) — Fase 1: versões, APIs usadas e o comportamento do programa
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — diagrama, fluxo, decisões de segurança (problema, alternativas, decisão)
-- [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) — 23 ameaças com impacto, mitigação e risco residual
-- [docs/KEY_ROTATION.md](docs/KEY_ROTATION.md) — rotação do cliente e do servidor, máquina de estados
-- [docs/RECOVERY.md](docs/RECOVERY.md) — por que não há recuperação no v4 puro e os caminhos possíveis
-- [docs/SECURITY_INVARIANTS.md](docs/SECURITY_INVARIANTS.md) — invariantes ↔ testes
+- [docs/RESEARCH.md](docs/RESEARCH.md): versões, APIs usadas e o comportamento do programa.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): fluxo, membros e decisões de segurança.
+- [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md): ameaças com impacto, mitigação e risco residual.
+- [docs/KEY_ROTATION.md](docs/KEY_ROTATION.md): troca da carteira e da chave do serviço, e a máquina de estados.
+- [docs/RECOVERY.md](docs/RECOVERY.md): por que não há recuperação no v4 puro e os caminhos possíveis.
+- [docs/SECURITY_INVARIANTS.md](docs/SECURITY_INVARIANTS.md): invariantes ↔ testes.
 
 ## Estrutura
 
 ```
-apps/api              Fastify: cadastro, sessão, intenções, decisão assinada, rotação
-apps/approval-web     Approval App (React; WebCrypto Ed25519 não exportável; PIN/biometria)
-packages/shared       intenção canônica (hash), schemas, erros
-packages/crypto       Signer/ServerSigner, declarações off-chain assinadas
-packages/solana       Chain (RPC | LiteSVM), leitor de instruções
-packages/squads       estado on-chain, construtores, invariantes, derivação da intenção
+apps/api               Fastify: cadastro/login por assinatura, intenções, transação da carteira, troca de carteira
+apps/approval-web      app (React; Wallet Standard; carteiras de teste em localnet)
+packages/shared        intenção canônica (hash), schemas, erros
+packages/crypto        Signer/ServerSigner, textos que a carteira assina (vínculo, login)
+packages/solana        Chain (RPC | LiteSVM), leitor de instruções
+packages/squads        estado on-chain, construtores, invariantes, derivação da intenção
 packages/policy-engine política padrão
-packages/custody      orquestração (servidor) e revisão/assinatura (app)
-packages/database     Postgres (PgStore) + migração; PGlite nos testes
-tests/                on-chain, protocolo, banco
-fixtures/             ELF do Squads v4 e ProgramConfig da mainnet
+packages/custody       orquestração (servidor) e revisão + montagem da transação (app)
+packages/database      Postgres (PgStore) + migração
+tests/                 on-chain, protocolo, regressões, banco
+fixtures/              ELF do Squads v4 e ProgramConfig da mainnet
 ```
 
 ## Outros comandos
@@ -85,16 +109,14 @@ pnpm typecheck                     # pacotes, API e app
 pnpm smoke                         # fluxo completo via RPC (surfpool ou devnet) sem o app
 pnpm fixtures                      # baixa de novo o ELF da Squads da mainnet
 docker run -d --rm --name dk-pg -e POSTGRES_PASSWORD=dk -e POSTGRES_DB=dk -p 55432:5432 postgres:17-alpine
-pnpm test:pg                       # protocolo inteiro num Postgres real (banco novo por teste)
+pnpm test:pg                       # protocolo inteiro num Postgres real
 DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
-SOLANA_RPC_URL=https://api.devnet.solana.com SOLANA_CLUSTER=devnet pnpm dev   # devnet (o pagador precisa de SOL)
 ```
 
 ## Limites desta versão
 
-- **Mainnet bloqueada**: as chaves do serviço são de desenvolvimento (memória ou arquivo cifrado). Precisa de KMS/HSM antes.
-- **Modo estrito**: perder de vez o aparelho sem trocar a chave antes **bloqueia a conta**. Recuperação é pesquisa (RECOVERY.md), não código.
-- App web, não nativo. No navegador, a biometria/PIN é uma trava da interface; no app nativo a trava passa a ser do Keystore/Keychain.
-- Só transferência de SOL no app (o backend e o leitor já entendem TransferChecked de tokens). Swap fica para depois.
-- Notificações são um mock que registra no log.
-- O app web confere a chain pela RPC fixada no build (`VITE_RPC_URL`, padrão `/rpc` → surfpool). Em produção, use um provedor diferente do backend (e `VITE_RPC_URL_2` para quórum).
+- **Assinatura de uma vez só.** A carteira mostra uma transação técnica (aprovar + executar na Squads), não "enviar 2,5 SOL para X". O que o cliente vê é a tela do app, que confere a chain. Se o app (frontend) for adulterado, o cliente pode assinar algo que não pediu. Nesse caso, a política do serviço (limites, lista de endereços) é o que segura. Endurecimento possível: a carteira assinar também um texto com o resumo (duas janelas). Ver THREAT_MODEL #24.
+- **Mainnet bloqueada.** As chaves do serviço são de desenvolvimento; é preciso KMS/HSM antes.
+- **Modo estrito.** Perder a carteira (seed phrase) sem trocar antes **bloqueia a conta**. Recuperação ainda é pesquisa (RECOVERY.md), não código.
+- **Só transferência de SOL.** Swap fica para depois.
+- **Notificações simuladas.** São um mock que só registra no log.
