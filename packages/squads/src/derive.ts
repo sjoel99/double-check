@@ -29,7 +29,7 @@ export type NormalizedConfigAction =
   | { kind: "RemoveSpendingLimit" }
   | { kind: "SetRentCollector" };
 
-export type DerivedRotation = { role: "CLIENT" | "SERVER"; oldKey: string; newKey: string };
+export type DerivedRotation = { role: "CLIENT" | "WEBAPP" | "SERVER"; oldKey: string; newKey: string };
 
 export type ConfigView = {
   kind: "CONFIG";
@@ -97,8 +97,9 @@ export function normalizeConfigActions(actions: multisig.types.ConfigAction[]): 
 
 /**
  * Únicas ConfigTransactions aceitas (a troca de uma chave, numa transação só):
- *   carteira: [AddMember(nova, Vote+Execute), RemoveMember(atual), SetRentCollector(nova)]
- *   serviço:  [AddMember(nova, Vote), RemoveMember(atual)]
+ *   Phantom: [AddMember(nova, Vote), RemoveMember(atual), SetRentCollector(nova)]
+ *   webapp:  [AddMember(nova, Vote), RemoveMember(atual)]
+ *   serviço: [AddMember(nova, Vote), RemoveMember(atual)]
  * Qualquer outra forma devolve rotation = null e a política recusa.
  */
 export function configView(rawActions: multisig.types.ConfigAction[], state: MultisigState, roles: ExpectedRoles): ConfigView {
@@ -106,12 +107,12 @@ export function configView(rawActions: multisig.types.ConfigAction[], state: Mul
   let rotation: DerivedRotation | null = null;
   const [add, remove, third] = actions;
   if (add?.kind === "AddMember" && remove?.kind === "RemoveMember") {
-    const role = remove.key === roles.client ? "CLIENT" : remove.key === roles.server ? "SERVER" : null;
+    const role = remove.key === roles.client ? "CLIENT" : remove.key === roles.webapp ? "WEBAPP" : remove.key === roles.server ? "SERVER" : null;
     const isNew = !state.members.some((m) => m.key === add.key);
     const shapeOk =
       role === "CLIENT"
-        ? actions.length === 3 && add.mask === 6 && third?.kind === "SetRentCollector" && rawActions[2]?.__kind === "SetRentCollector" && (rawActions[2] as { newRentCollector: PublicKey | null }).newRentCollector?.toBase58() === add.key
-        : role === "SERVER"
+        ? actions.length === 3 && add.mask === 2 && third?.kind === "SetRentCollector" && rawActions[2]?.__kind === "SetRentCollector" && (rawActions[2] as { newRentCollector: PublicKey | null }).newRentCollector?.toBase58() === add.key
+        : role === "WEBAPP" || role === "SERVER"
           ? actions.length === 2 && add.mask === 2
           : false;
     if (role && isNew && shapeOk) rotation = { role, oldKey: remove.key, newKey: add.key };

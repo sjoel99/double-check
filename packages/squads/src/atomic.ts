@@ -4,30 +4,28 @@ import * as multisig from "@sqds/multisig";
 import { getProposalPda, getTransactionPda, getVaultPda } from "@sqds/multisig";
 
 /**
- * Transação atômica: criar a proposta, voto do servidor, voto da carteira e
- * execução — tudo numa transação só, paga pela carteira do cliente.
+ * Operação atômica (2 de 3, operador executa): criar a proposta, os dois votos
+ * (Phantom + webapp) e a execução pelo operador — numa transação só, paga pela
+ * Phantom.
  *
- * - O servidor (e o proponente) assinam antes; a carteira assina por último e paga
- *   taxa e rent. O sistema não gasta SOL.
- * - Nada fica pendente na chain: ou tudo acontece, ou nada. Sem proposta aberta,
- *   sem aprovada-não-executada, sem stale.
- * - A assinatura do servidor cobre os bytes exatos da transação final.
+ * - O operador (serviço) assina por último no servidor, só depois de conferir a
+ *   política e a assinatura do webapp (que só existe com a biometria).
+ * - Nada fica pendente na chain: ou tudo acontece, ou nada.
  * - Expira sozinha: o blockhash vale ~60–90 s.
  */
 export type AtomicVaultArgs = {
   multisig: PublicKey;
   index: bigint;
-  proposer: PublicKey;
-  server: PublicKey;
-  wallet: PublicKey;
+  /** Membro com criar + executar (serviço). */
+  operator: PublicKey;
+  /** Os dois votos: normalmente [Phantom, webapp]. */
+  voters: [PublicKey, PublicKey];
+  /** Paga rent e taxa (a Phantom). */
+  payer: PublicKey;
   instructions: TransactionInstruction[];
   memo?: string;
-  /**
-   * Fecha as contas no fim, devolvendo o rent para a carteira. Só quando o
-   * rent_collector da multisig é a carteira (contas antigas não têm um: o rent
-   * fica nas contas da proposta).
-   */
-  close?: boolean;
+  /** Recebe o rent ao fechar; null = não fecha (multisig sem rent_collector). */
+  rentCollector: PublicKey | null;
 };
 
 export function atomicVaultInstructions(a: AtomicVaultArgs): TransactionInstruction[] {
@@ -37,58 +35,66 @@ export function atomicVaultInstructions(a: AtomicVaultArgs): TransactionInstruct
   // O blockhash da mensagem interna não é usado pelo programa (a execução usa o da transação externa).
   const inner = new TransactionMessage({ payerKey: vault, recentBlockhash: "11111111111111111111111111111111", instructions: a.instructions });
 
-  const create = multisig.instructions.vaultTransactionCreate({
-    multisigPda: a.multisig,
-    transactionIndex: a.index,
-    creator: a.proposer,
-    rentPayer: a.wallet,
-    vaultIndex: 0,
-    ephemeralSigners: 0,
-    transactionMessage: inner,
-    memo: a.memo,
-  });
-  const proposal = multisig.instructions.proposalCreate({ multisigPda: a.multisig, transactionIndex: a.index, creator: a.proposer, rentPayer: a.wallet });
-  const approveServer = multisig.instructions.proposalApprove({ multisigPda: a.multisig, transactionIndex: a.index, member: a.server });
-  const approveWallet = multisig.instructions.proposalApprove({ multisigPda: a.multisig, transactionIndex: a.index, member: a.wallet });
+  const out: TransactionInstruction[] = [
+    multisig.instructions.vaultTransactionCreate({
+      multisigPda: a.multisig,
+      transactionIndex: a.index,
+      creator: a.operator,
+      rentPayer: a.payer,
+      vaultIndex: 0,
+      ephemeralSigners: 0,
+      transactionMessage: inner,
+      memo: a.memo,
+    }),
+    multisig.instructions.proposalCreate({ multisigPda: a.multisig, transactionIndex: a.index, creator: a.operator, rentPayer: a.payer }),
+    ...a.voters.map((member) => multisig.instructions.proposalApprove({ multisigPda: a.multisig, transactionIndex: a.index, member })),
+  ];
 
   // Contas da execução, calculadas da mensagem (a VaultTransaction ainda não existe).
   const bytes = multisig.utils.transactionMessageToMultisigTransactionMessageBytes({ message: inner, vaultPda: vault });
   const [msg] = multisig.types.transactionMessageBeet.deserialize(Buffer.from(bytes));
   const isWritable = (i: number) => (i < msg.numSigners ? i < msg.numWritableSigners : i - msg.numSigners < msg.numWritableNonSigners);
   const remaining = msg.accountKeys.map((key, i) => ({ pubkey: key, isWritable: isWritable(i), isSigner: i < msg.numSigners && !key.equals(vault) }));
-  const execute = multisig.generated.createVaultTransactionExecuteInstruction(
-    { multisig: a.multisig, member: a.wallet, proposal: proposalPda, transaction: transactionPda, anchorRemainingAccounts: remaining },
-    multisig.PROGRAM_ID,
+  out.push(
+    multisig.generated.createVaultTransactionExecuteInstruction(
+      { multisig: a.multisig, member: a.operator, proposal: proposalPda, transaction: transactionPda, anchorRemainingAccounts: remaining },
+      multisig.PROGRAM_ID,
+    ),
   );
-  // Fecha as contas da proposta já executada: o rent volta para o rent collector (a carteira).
-  const out = [create, proposal, approveServer, approveWallet, execute];
-  if (a.close !== false) out.push(multisig.instructions.vaultTransactionAccountsClose({ multisigPda: a.multisig, rentCollector: a.wallet, transactionIndex: a.index }));
+  if (a.rentCollector) out.push(multisig.instructions.vaultTransactionAccountsClose({ multisigPda: a.multisig, rentCollector: a.rentCollector, transactionIndex: a.index }));
   return out;
 }
 
-export type AtomicConfigArgs = {
+/**
+ * Pedido de troca de chave (passo 1 de 2): cria a ConfigTransaction e os dois
+ * votos agora. A execução (passo 2) só o operador faz, depois do prazo.
+ */
+export function configRequestInstructions(a: {
   multisig: PublicKey;
   index: bigint;
-  proposer: PublicKey;
-  server: PublicKey;
-  wallet: PublicKey;
+  operator: PublicKey;
+  voters: [PublicKey, PublicKey];
+  payer: PublicKey;
   actions: multisig.types.ConfigAction[];
   memo?: string;
-};
-
-/**
- * Mudança de segurança atômica: a carteira atual também executa (tem Execute).
- * `rentCollector`: quem recebe o rent ao fechar — depois da troca de carteira, a nova;
- * null = não fecha (multisig antiga sem rent_collector).
- */
-export function atomicConfigInstructions(a: AtomicConfigArgs & { rentCollector: PublicKey | null }): TransactionInstruction[] {
-  const out = [
-    multisig.instructions.configTransactionCreate({ multisigPda: a.multisig, transactionIndex: a.index, creator: a.proposer, rentPayer: a.wallet, actions: a.actions, memo: a.memo }),
-    multisig.instructions.proposalCreate({ multisigPda: a.multisig, transactionIndex: a.index, creator: a.proposer, rentPayer: a.wallet }),
-    multisig.instructions.proposalApprove({ multisigPda: a.multisig, transactionIndex: a.index, member: a.server }),
-    multisig.instructions.proposalApprove({ multisigPda: a.multisig, transactionIndex: a.index, member: a.wallet }),
-    multisig.instructions.configTransactionExecute({ multisigPda: a.multisig, transactionIndex: a.index, member: a.wallet, rentPayer: a.wallet }),
+}): TransactionInstruction[] {
+  return [
+    multisig.instructions.configTransactionCreate({ multisigPda: a.multisig, transactionIndex: a.index, creator: a.operator, rentPayer: a.payer, actions: a.actions, memo: a.memo }),
+    multisig.instructions.proposalCreate({ multisigPda: a.multisig, transactionIndex: a.index, creator: a.operator, rentPayer: a.payer }),
+    ...a.voters.map((member) => multisig.instructions.proposalApprove({ multisigPda: a.multisig, transactionIndex: a.index, member })),
   ];
+}
+
+/** Passo 2: o operador executa a troca aprovada e fecha as contas. */
+export function configExecuteInstructions(a: { multisig: PublicKey; index: bigint; operator: PublicKey; payer: PublicKey; rentCollector: PublicKey | null }): TransactionInstruction[] {
+  const out = [multisig.instructions.configTransactionExecute({ multisigPda: a.multisig, transactionIndex: a.index, member: a.operator, rentPayer: a.payer })];
+  if (a.rentCollector) out.push(multisig.instructions.configTransactionAccountsClose({ multisigPda: a.multisig, rentCollector: a.rentCollector, transactionIndex: a.index }));
+  return out;
+}
+
+/** "Não fui eu": dois votantes cancelam a troca aprovada (e o rent volta). */
+export function configCancelInstructions(a: { multisig: PublicKey; index: bigint; voters: [PublicKey, PublicKey]; rentCollector: PublicKey | null }): TransactionInstruction[] {
+  const out = a.voters.map((member) => multisig.instructions.proposalCancel({ multisigPda: a.multisig, transactionIndex: a.index, member }));
   if (a.rentCollector) out.push(multisig.instructions.configTransactionAccountsClose({ multisigPda: a.multisig, rentCollector: a.rentCollector, transactionIndex: a.index }));
   return out;
 }

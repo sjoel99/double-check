@@ -12,7 +12,6 @@
     "@duplachave/solana": "workspace:*",
     "@duplachave/squads": "workspace:*",
     "@noble/curves": "^2.4.0",
-    "@simplewebauthn/server": "14.0.3",
     "@solana/web3.js": "^1.99.0",
     "@sqds/multisig": "2.1.4",
     "bs58": "^6.0.0"

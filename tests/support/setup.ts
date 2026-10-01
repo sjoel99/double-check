@@ -14,40 +14,45 @@ import type * as multisig from "@sqds/multisig";
 import { LiteSvmChain } from "./litesvm-chain";
 
 export type Keys = {
+  /** A Phantom do usuário (vota). */
   client: DevMemorySigner;
+  /** A chave do webapp (vota). */
+  webapp: DevMemorySigner;
+  /** A chave do serviço (vota). */
   server: DevMemorySigner;
-  executor: DevMemorySigner;
-  proposer: DevMemorySigner;
-  /** Paga taxas; não é membro. */
+  /** Do serviço: cria e é o único que executa. */
+  operator: DevMemorySigner;
+  /** Paga taxas nos testes de baixo nível; não é membro. */
   relayer: DevMemorySigner;
 };
 
+/** Multisig 2 de 3 (Phantom, webapp, serviço) com o operador do serviço como único executor. */
 export async function setupStrict(depositSol = 10, opts: { rentCollector?: null } = {}) {
   const chain = new LiteSvmChain();
   const keys: Keys = {
     client: DevMemorySigner.generate("CLIENT_A"),
+    webapp: DevMemorySigner.generate("WEBAPP_A"),
     server: DevMemorySigner.generate("SERVER_A"),
-    executor: DevMemorySigner.generate("EXECUTOR"),
-    proposer: DevMemorySigner.generate("OPERATIONAL_WALLET"),
+    operator: DevMemorySigner.generate("OPERATOR"),
     relayer: DevMemorySigner.generate("RELAYER"),
   };
-  for (const s of Object.values(keys)) chain.airdrop(await s.publicKey(), 5n * BigInt(LAMPORTS_PER_SOL));
+  for (const k of [keys.client, keys.relayer]) chain.airdrop(await k.publicKey(), 5n * BigInt(LAMPORTS_PER_SOL));
 
   const createKey = DevMemorySigner.generate("createKey");
   const layout = {
     client: await keys.client.publicKey(),
+    webapp: await keys.webapp.publicKey(),
     server: await keys.server.publicKey(),
-    executor: await keys.executor.publicKey(),
-    proposer: await keys.proposer.publicKey(),
+    operator: await keys.operator.publicKey(),
   };
   const created = createStrictMultisigIx({
     createKey: await createKey.publicKey(),
-    creator: await keys.relayer.publicKey(),
+    creator: layout.client,
     treasury: chain.treasury,
     layout,
     ...(opts.rentCollector === null ? { rentCollector: null } : {}),
   });
-  await sendInstructions(chain, [created.instruction], [keys.relayer, createKey]);
+  await sendInstructions(chain, [created.instruction], [keys.client, createKey]);
   const vault = created.vault;
   chain.airdrop(vault, BigInt(depositSol * LAMPORTS_PER_SOL));
   return { chain, keys, layout, multisig: created.multisig, vault };
@@ -59,7 +64,7 @@ export async function nextIndex(ctx: Ctx) {
   return (await readMultisig(ctx.chain, ctx.multisig)).transactionIndex + 1n;
 }
 
-export async function proposeTransfer(ctx: Ctx, to: PublicKey, lamports: bigint, proposer: Signer = ctx.keys.proposer) {
+export async function proposeTransfer(ctx: Ctx, to: PublicKey, lamports: bigint, proposer: Signer = ctx.keys.operator) {
   const index = await nextIndex(ctx);
   const transfer: TransactionInstruction = SystemProgram.transfer({ fromPubkey: ctx.vault, toPubkey: to, lamports });
   const ixs = createVaultProposalIxs({
@@ -74,7 +79,7 @@ export async function proposeTransfer(ctx: Ctx, to: PublicKey, lamports: bigint,
   return index;
 }
 
-export async function proposeConfig(ctx: Ctx, actions: multisig.types.ConfigAction[], proposer: Signer = ctx.keys.proposer) {
+export async function proposeConfig(ctx: Ctx, actions: multisig.types.ConfigAction[], proposer: Signer = ctx.keys.operator) {
   const index = await nextIndex(ctx);
   const ixs = createConfigProposalIxs({
     multisig: ctx.multisig,
@@ -92,13 +97,13 @@ export async function approve(ctx: Ctx, index: bigint, member: Signer) {
   return sendInstructions(ctx.chain, [approveIx(ctx.multisig, index, await member.publicKey())], [ctx.keys.relayer, member]);
 }
 
-export async function executeVault(ctx: Ctx, index: bigint, executor: Signer = ctx.keys.executor) {
+export async function executeVault(ctx: Ctx, index: bigint, executor: Signer = ctx.keys.operator) {
   const pk = await executor.publicKey();
   const { instruction, lookupTableAccounts } = await executeVaultIx(ctx.chain, ctx.multisig, index, pk);
   return sendInstructions(ctx.chain, [instruction], [ctx.keys.relayer, executor], lookupTableAccounts);
 }
 
-export async function executeConfig(ctx: Ctx, index: bigint, executor: Signer = ctx.keys.executor) {
+export async function executeConfig(ctx: Ctx, index: bigint, executor: Signer = ctx.keys.operator) {
   const ix = executeConfigIx(ctx.multisig, index, await executor.publicKey(), await ctx.keys.relayer.publicKey());
   return sendInstructions(ctx.chain, [ix], [ctx.keys.relayer, executor]);
 }

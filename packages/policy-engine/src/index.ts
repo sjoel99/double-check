@@ -139,6 +139,6 @@ export class DefaultPolicyEngine implements PolicyEngine {
     }
     if (!ctx.verifiedNewKeys.includes(r.newKey)) reasons.push(`NO_PROOF_OF_POSSESSION: ${r.newKey}`);
     if (ctx.revokedKeys.includes(r.newKey)) reasons.push(`REVOKED_KEY_REUSE: ${r.newKey}`);
-    flags.add(r.role === "CLIENT" ? "CLIENT_KEY_ROTATION" : "SERVER_KEY_ROTATION");
+    flags.add(r.role === "CLIENT" ? "CLIENT_KEY_ROTATION" : r.role === "WEBAPP" ? "WEBAPP_KEY_ROTATION" : "SERVER_KEY_ROTATION");
   }
 }

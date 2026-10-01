@@ -10,10 +10,8 @@ const Env = z.object({
   DATABASE_URL: z.string().optional(),
   /** URL HTTPS pública do app (túnel), para o QR "continuar no celular". Também vira origem aceita da biometria. */
   DK_PUBLIC_URL: z.string().url().optional(),
-  /** Origens de onde o app pode ser aberto, separadas por vírgula (a biometria fica presa ao domínio). */
-  DK_WEBAUTHN_ORIGINS: z.string().optional(),
-  /** Segundos que uma biometria nova, sem aprovação de outra, espera para valer. Padrão 48 h. */
-  DK_PASSKEY_RESET_DELAY: z.coerce.number().int().positive().optional(),
+  /** Segundos entre o pedido de uma troca de chave e a execução. Padrão 72 h. */
+  DK_SECURITY_DELAY: z.coerce.number().int().positive().optional(),
   /** Segredo das sessões HTTP. Sessão não autoriza nada sozinha. */
   DK_SESSION_SECRET: z.string().min(32).optional(),
   /** Token do painel administrativo (só pede rotação da chave do servidor; não aprova nada). */

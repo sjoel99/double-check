@@ -3,8 +3,12 @@ import { z } from "zod";
 export const CLUSTERS = ["localnet", "devnet", "mainnet-beta"] as const;
 export type Cluster = (typeof CLUSTERS)[number];
 
-/** Papel de cada chave na multisig. Só CLIENT e SERVER votam. */
-export type MemberRole = "CLIENT" | "SERVER" | "EXECUTOR" | "PROPOSER";
+/**
+ * Papel de cada chave na multisig (2 de 3). Votam: CLIENT (Phantom), WEBAPP
+ * (chave do webapp, destravada pela biometria) e SERVER (serviço). Só o
+ * OPERATOR (serviço) cria e executa. EXECUTOR/PROPOSER: modelo anterior.
+ */
+export type MemberRole = "CLIENT" | "WEBAPP" | "SERVER" | "OPERATOR" | "EXECUTOR" | "PROPOSER";
 
 const base58 = z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, "endereço base58 inválido");
 const decimal = z.string().regex(/^(0|[1-9][0-9]*)$/, "inteiro decimal em string");
@@ -56,7 +60,7 @@ export const RotateMemberIntentSchema = z.object({
   ...intentCommon,
   kind: z.literal("CONFIG"),
   type: z.literal("ROTATE_MEMBER"),
-  role: z.enum(["CLIENT", "SERVER"]),
+  role: z.enum(["CLIENT", "WEBAPP", "SERVER"]),
   oldKey: base58,
   newKey: base58,
   rotationId: z.string().uuid(),

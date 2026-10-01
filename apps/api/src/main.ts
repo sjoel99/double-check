@@ -27,7 +27,8 @@ const keyStore = cfg.DK_KEY_ENCRYPTION_KEY ? new DevFileKeyStore(cfg.DK_KEYS_DIR
 if (!keyStore) log("chaves de serviço só em memória (defina DK_KEY_ENCRYPTION_KEY para persistir em DK_KEYS_DIR)");
 const svc = (label: string) => keyStore?.loadOrCreate(label) ?? DevMemorySigner.generate(label, cfg.SOLANA_CLUSTER);
 // Nenhuma chave do serviço tem SOL: a carteira do cliente paga taxa e rent.
-const service = { executor: svc("executor"), proposer: svc("proposer") };
+// Operador: cria e é o único que executa; não vota e não tem SOL.
+const service = { operator: svc("operator") };
 const serverKeys = await FileServerKeyProvider.open(keyStore, cfg.SOLANA_CLUSTER);
 
 const conn = chain.connection;
@@ -38,11 +39,6 @@ const airdrop = async (address: PublicKey, lamports: number) => {
 const programConfig = await multisig.accounts.ProgramConfig.fromAccountAddress(conn, multisig.getProgramConfigPda({})[0]);
 
 const notifications = new LogNotificationService(log);
-// De onde o app pode ser aberto (a biometria fica presa ao domínio). 127.0.0.1 só serve à biometria de teste.
-const webauthnOrigins = [
-  ...new Set([...(cfg.DK_WEBAUTHN_ORIGINS?.split(",").map((s) => s.trim()).filter(Boolean) ?? ["http://127.0.0.1:5173", "http://localhost:5173"]), ...(cfg.DK_PUBLIC_URL ? [cfg.DK_PUBLIC_URL.replace(/\/$/, "")] : [])]),
-];
-log(`biometria aceita nas origens: ${webauthnOrigins.join(", ")}`);
 const custody = new CustodyService({
   cluster: cfg.SOLANA_CLUSTER,
   chain,
@@ -52,7 +48,7 @@ const custody = new CustodyService({
   service,
   notifications,
   squadsTreasury: programConfig.treasury,
-  passkeys: { origins: webauthnOrigins, resetDelay: cfg.DK_PASSKEY_RESET_DELAY },
+  securityDelay: cfg.DK_SECURITY_DELAY,
   log,
 });
 

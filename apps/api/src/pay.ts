@@ -2,7 +2,6 @@ import { randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { SecurityError } from "@duplachave/shared";
-import type { WalletProof } from "@duplachave/crypto";
 import { type CustodyService, qrLabel, renderIntent, type Store } from "@duplachave/custody";
 
 /**
@@ -16,7 +15,7 @@ import { type CustodyService, qrLabel, renderIntent, type Store } from "@duplach
  * (o celular entra com ela) e a biometria. O computador acompanha por GET /v1/pay/:token.
  */
 
-type Kind = "CONNECT" | "SIGN_INTENT" | "ROTATION_PROOF";
+type Kind = "CONNECT" | "SIGN_INTENT";
 
 type Handoff = {
   token: string;
@@ -44,15 +43,6 @@ export type PayDeps = {
   ownAccount: (req: FastifyRequest, accountId: string) => Promise<unknown>;
 };
 
-const proofSchema = z.object({
-  operation: z.literal("ROTATE_CLIENT_KEY"),
-  publicKey: z.string().min(32).max(44),
-  account: z.string(),
-  cluster: z.string(),
-  challenge: z.string().regex(/^[0-9a-f]{64}$/),
-  expiresAt: z.number().int(),
-  signature: z.string().min(64).max(100),
-});
 
 export function registerPay(app: FastifyInstance, d: PayDeps) {
   const handoffs = new Map<string, Handoff>();
@@ -97,14 +87,6 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
     return create("SIGN_INTENT", id, rec.accountId, qrLabel(rec.intent).replace(/^Dupla Chave · /, ""));
   });
 
-  app.post("/v1/rotations/:id/pay-proof", async (req) => {
-    const { id } = req.params as { id: string };
-    const rot = await d.store.getRotation(id);
-    if (!rot) throw new SecurityError("ROTATION_NOT_FOUND", id);
-    await d.ownAccount(req, rot.accountId);
-    return create("ROTATION_PROOF", id, rot.accountId, "Provar que a carteira nova é sua");
-  });
-
   /** Quem criou o pedido acompanha. O token é segredo do QR que o computador mostra. */
   app.get("/v1/pay/:token", async (req) => view(get((req.params as { token: string }).token)));
 
@@ -113,13 +95,7 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
   app.get("/v1/handoff/:token", async (req) => {
     const h = get((req.params as { token: string }).token);
     if (h.status !== "WAITING") throw new SecurityError("PAY_USED", "este QR já foi usado ou expirou");
-    let fields: unknown = null;
-    if (h.kind === "ROTATION_PROOF") {
-      const rot = await d.store.getRotation(h.subject!);
-      const acc = rot && (await d.store.getAccount(rot.accountId));
-      if (!rot || !acc || rot.status !== "REQUESTED") throw new SecurityError("ROTATION_BAD_STATE", rot?.status ?? "inexistente");
-      fields = d.custody.possessionFieldsFor(rot, acc.multisig);
-    }
+    const fields: unknown = null;
     const wallet = h.kind === "SIGN_INTENT" && h.accountId ? ((await d.store.getAccount(h.accountId))?.roles.client ?? null) : null;
     return { kind: h.kind, label: h.label, intentId: h.kind === "SIGN_INTENT" ? h.subject : null, accountId: h.accountId, wallet, fields };
   });
@@ -153,8 +129,8 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
 
   app.post("/v1/handoff/:token/authorize", async (req) => {
     const h = signHandoff(req);
-    const body = z.object({ message: z.string().min(100).max(4096), assertion: z.object({ id: z.string() }).passthrough() }).parse(req.body);
-    return d.custody.authorizeIntent(h.subject!, body as never);
+    const body = z.object({ message: z.string().min(100).max(4096), webappSignature: z.string().min(64).max(100) }).parse(req.body);
+    return d.custody.authorizeIntent(h.subject!, body);
   });
 
   app.post("/v1/handoff/:token/submit", async (req) => {
@@ -162,6 +138,12 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
     const { transaction } = z.object({ transaction: z.string().min(100).max(4096) }).parse(req.body);
     await d.custody.submitIntent(h.subject!, transaction);
     return intentView(h.subject!);
+  });
+
+  /** As cópias cifradas da chave do webapp desta conta (só a biometria do aparelho abre). */
+  app.get("/v1/handoff/:token/key", async (req) => {
+    const h = signHandoff(req);
+    return { keys: (await d.custody.webappKeys(h.accountId!)).map((k) => ({ publicKey: k.publicKey, blob: k.blob, deviceName: k.deviceName })) };
   });
 
   app.post("/v1/handoff/:token/reject", async (req) => {
@@ -182,22 +164,6 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
     h.status = "DONE";
     h.result = { accountId, sessionToken: d.issueToken(acc), walletName: "Carteira do celular", publicKey: acc.roles.client };
     return { ok: true };
-  });
-
-  /** A carteira nova (no celular) prova posse; o token autoriza só esta rotação. */
-  app.post("/v1/handoff/:token/proof", async (req) => {
-    const h = get((req.params as { token: string }).token);
-    if (h.kind !== "ROTATION_PROOF" || h.status !== "WAITING") throw new SecurityError("PAY_USED", "este QR já foi usado ou expirou");
-    const proof = proofSchema.parse((req.body as { proof?: unknown })?.proof);
-    try {
-      const out = await d.custody.proveClientRotationKey(h.subject!, proof as WalletProof);
-      h.status = "DONE";
-      h.result = { intentId: out.intent.id, newKey: proof.publicKey };
-      return { ok: true };
-    } catch (e) {
-      h.error = e instanceof SecurityError ? e.message : String(e);
-      throw e;
-    }
   });
 
   return { handoffs };

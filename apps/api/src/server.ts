@@ -92,21 +92,25 @@ export async function buildServer(d: ApiDeps) {
   });
 
   // A RPC que o app usa para conferir NÃO vem daqui: é fixada no build do app.
-  app.get("/v1/config", async () => ({ cluster: d.cluster, mode: "STRICT_2_OF_2", devTools: Boolean(d.airdrop) }));
+  app.get("/v1/config", async () => ({ cluster: d.cluster, mode: "2_DE_3_OPERADOR", securityDelay: d.custody.securityDelaySeconds, devTools: Boolean(d.airdrop) }));
 
   // ---------------------------------------------------------------- cadastro
   // A carteira paga a criação da multisig; o limite por IP segura a geração de chaves do servidor.
   const enrollLimit = { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } };
 
   /** Monta a criação da conta 2-de-2, paga pela carteira. Ela assina e o app devolve em /submit. */
+  const keyBlob = z.object({ credentialId: z.string().min(8).max(512), salt: z.string().max(128), iv: z.string().max(64), ciphertext: z.string().max(512), deviceName: z.string().min(1).max(40) });
+
+  /** Monta a criação da conta 2 de 3 (Phantom + chave do webapp + serviço), paga pela Phantom. */
   app.post("/v1/enrollment/prepare", enrollLimit, async (req) => {
-    const body = z.object({ publicKey: pubkey, walletName: z.string().min(1).max(40) }).parse(req.body);
+    const body = z.object({ publicKey: pubkey, webappPublicKey: pubkey, walletName: z.string().min(1).max(40) }).parse(req.body);
     return d.custody.prepareEnrollment(body);
   });
 
+  /** Transação assinada pela chave do webapp e pela Phantom + a chave do webapp cifrada pela biometria. */
   app.post("/v1/enrollment/submit", enrollLimit, async (req) => {
-    const { enrollmentId, transaction } = z.object({ enrollmentId: z.string().uuid(), transaction: txB64 }).parse(req.body);
-    const { account } = await d.custody.submitEnrollment(enrollmentId, transaction);
+    const { enrollmentId, transaction, keyBlob: blob } = z.object({ enrollmentId: z.string().uuid(), transaction: txB64, keyBlob }).parse(req.body);
+    const { account } = await d.custody.submitEnrollment(enrollmentId, transaction, blob);
     return { account, token: tokenFor(account) };
   });
 
@@ -127,6 +131,22 @@ export async function buildServer(d: ApiDeps) {
     const body = z.object({ challengeId: z.string().uuid(), publicKey: pubkey, signature }).parse(req.body);
     const acc = await d.custody.login(body);
     return { token: tokenFor(acc), account: acc };
+  });
+
+  /** Entrar com a chave do webapp (biometria), para quem perdeu a Phantom. */
+  app.post("/v1/auth/webapp", async (req) => {
+    const body = z.object({ challengeId: z.string().uuid(), publicKey: pubkey, signature }).parse(req.body);
+    const acc = await d.custody.loginWithWebapp(body);
+    return { token: tokenFor(acc), account: acc };
+  });
+
+  /**
+   * A cópia cifrada da chave do webapp pela passkey (o aparelho descobre a
+   * passkey e pede a cópia dela). Só texto cifrado: sem a biometria, não abre.
+   */
+  app.post("/v1/webapp-keys/lookup", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req) => {
+    const { credentialId } = z.object({ credentialId: z.string().min(8).max(512) }).parse(req.body);
+    return d.custody.webappKeyByCredential(credentialId);
   });
 
   // ---------------------------------------------------------------- conta
@@ -179,8 +199,8 @@ export async function buildServer(d: ApiDeps) {
   app.post("/v1/intents/:id/authorize", async (req) => {
     const { id } = req.params as { id: string };
     await ownIntent(req, id);
-    const body = z.object({ message: txB64, assertion: z.object({ id: z.string() }).passthrough() }).parse(req.body);
-    return d.custody.authorizeIntent(id, body as never);
+    const body = z.object({ message: txB64, webappSignature: signature }).parse(req.body);
+    return d.custody.authorizeIntent(id, body);
   });
 
   /** A transação assinada pela carteira: o backend confere que é a preparada e envia. */
@@ -197,74 +217,88 @@ export async function buildServer(d: ApiDeps) {
     return view(await d.custody.rejectByClient(id));
   });
 
-  // ---------------------------------------------------------------- biometria
-  app.post("/v1/accounts/:id/passkeys/options", async (req) => {
+  // ---------------------------------------------------------------- chave do webapp (cifrada)
+  app.get("/v1/accounts/:id/webapp-keys", async (req) => {
     const { id } = req.params as { id: string };
     await ownAccount(req, id);
-    const { deviceName } = z.object({ deviceName: z.string().min(1).max(40) }).parse(req.body);
-    return d.custody.passkeyRegistrationOptions(id, req.headers.origin, deviceName);
+    return { keys: (await d.custody.webappKeys(id)).map((k) => ({ publicKey: k.publicKey, blob: k.blob, deviceName: k.deviceName })) };
   });
 
-  app.post("/v1/accounts/:id/passkeys", async (req) => {
+  app.post("/v1/accounts/:id/webapp-keys", async (req) => {
     const { id } = req.params as { id: string };
     await ownAccount(req, id);
-    const body = z
-      .object({ challengeId: z.string().uuid(), response: z.object({ id: z.string() }).passthrough(), walletSignature: signature, approval: z.object({ id: z.string() }).passthrough().nullish() })
-      .parse(req.body);
-    const out = await d.custody.registerPasskey(id, body as never);
-    return { status: out.status, activeAt: out.activeAt, deviceName: out.passkey.deviceName };
+    const { blob, deviceName, signature: sig } = z.object({ blob: keyBlob.omit({ deviceName: true }), deviceName: z.string().min(1).max(40), signature }).parse(req.body);
+    await d.custody.addWebappKeyCopy(id, { blob, deviceName, signature: sig });
+    return { ok: true };
   });
 
-  app.get("/v1/accounts/:id/passkeys", async (req) => {
+  // ---------------------------------------------------------------- trocas de chave (72 h)
+  const changeView = (c: Awaited<ReturnType<CustodyService["listSecurityChanges"]>>[number]) => {
+    const { prepared: _p, newKeyBlob: _b, ...rest } = c;
+    return rest;
+  };
+  const ownChange = async (req: FastifyRequest, id: string) => {
+    const c = (await d.custody.listSecurityChangesById(id))!;
+    if (!c) throw new SecurityError("CHANGE_NOT_FOUND", id);
+    await ownAccount(req, c.accountId);
+    return c;
+  };
+
+  app.get("/v1/accounts/:id/security-changes", async (req) => {
     const { id } = req.params as { id: string };
     await ownAccount(req, id);
-    const list = await d.custody.listPasskeys(id);
-    return { passkeys: list.map(({ publicKey: _k, counter: _c, ...p }) => p) };
+    return { changes: (await d.custody.listSecurityChanges(id)).map(changeView) };
   });
 
-  // ---------------------------------------------------------------- troca de carteira
-  app.post("/v1/accounts/:id/rotations/client", async (req) => {
+  /** Pede uma troca: CLIENT (trocar a Phantom) ou WEBAPP (recuperar o webapp). SERVER só pelo admin. */
+  app.post("/v1/accounts/:id/security-changes", async (req) => {
     const { id } = req.params as { id: string };
     await ownAccount(req, id);
-    const { newWalletName } = z.object({ newWalletName: z.string().min(1).max(40).optional() }).parse(req.body ?? {});
-    const { rotation, fields } = await d.custody.requestClientRotation(id, { newWalletName });
-    // fields inclui o desafio: só a sessão da carteira atual o recebe, uma vez.
-    return { rotationId: rotation.id, status: rotation.status, expiresAt: rotation.expiresAt, fields };
+    const body = z.object({ role: z.enum(["CLIENT", "WEBAPP"]), newKey: pubkey, newKeyBlob: keyBlob.nullish() }).parse(req.body);
+    const r = await d.custody.requestSecurityChange(id, body);
+    return { change: changeView(r.change), desc: r.desc, transaction: r.transaction };
   });
 
-  /** A carteira nova prova posse (o app está logado com a carteira atual da mesma conta). */
-  app.post("/v1/rotations/:id/proof", async (req) => {
+  app.post("/v1/security-changes/:id/authorize", async (req) => {
     const { id } = req.params as { id: string };
-    const rot = await d.store.getRotation(id);
-    if (!rot) throw new SecurityError("ROTATION_NOT_FOUND", id);
-    await ownAccount(req, rot.accountId);
-    const proof = z
-      .object({
-        operation: z.literal("ROTATE_CLIENT_KEY"),
-        publicKey: pubkey,
-        account: z.string(),
-        cluster: z.string(),
-        challenge: z.string().regex(/^[0-9a-f]{64}$/),
-        expiresAt: z.number().int(),
-        signature,
-      })
-      .parse((req.body as { proof?: unknown })?.proof);
-    return d.custody.proveClientRotationKey(id, proof as WalletProof);
+    await ownChange(req, id);
+    const body = z.object({ message: txB64, webappSignature: signature.optional() }).parse(req.body);
+    return d.custody.authorizeSecurityRequest(id, body);
   });
 
-  app.get("/v1/accounts/:id/rotations", async (req) => {
+  app.post("/v1/security-changes/:id/submit", async (req) => {
     const { id } = req.params as { id: string };
-    await ownAccount(req, id);
-    const list = await d.store.listRotations(id);
-    return { rotations: list.map(({ challenge: _c, possession: _p, ...r }) => r) };
+    await ownChange(req, id);
+    const { transaction } = z.object({ transaction: txB64 }).parse(req.body);
+    return changeView(await d.custody.submitSecurityRequest(id, transaction));
   });
 
-  app.post("/v1/admin/accounts/:id/rotations/server", async (req, reply: FastifyReply) => {
+  /** "Não fui eu": a assinatura da chave que seria trocada é a autorização (vale sem sessão). */
+  app.post("/v1/security-changes/:id/veto", { config: { rateLimit: { max: 20, timeWindow: "1 minute" } } }, async (req) => {
+    const { id } = req.params as { id: string };
+    const body = z.object({ publicKey: pubkey, signature }).parse(req.body);
+    return changeView(await d.custody.vetoSecurityChange(id, body));
+  });
+
+  app.post("/v1/security-changes/:id/execute-prepare", async (req) => {
+    const { id } = req.params as { id: string };
+    await ownChange(req, id);
+    return d.custody.prepareSecurityExecute(id);
+  });
+
+  app.post("/v1/security-changes/:id/execute", async (req) => {
+    const { id } = req.params as { id: string };
+    await ownChange(req, id);
+    const { transaction } = z.object({ transaction: txB64 }).parse(req.body);
+    return changeView(await d.custody.submitSecurityExecute(id, transaction));
+  });
+
+  app.post("/v1/admin/accounts/:id/security-changes/server", async (req, reply: FastifyReply) => {
     const { id } = req.params as { id: string };
     const tok = req.headers["x-admin-token"];
     if (!d.adminToken || tok !== d.adminToken) return reply.status(401).send({ error: "UNAUTHORIZED" });
-    const { reason } = z.object({ reason: z.string().min(1).max(200) }).parse(req.body);
-    return d.custody.requestServerRotation(id, reason);
+    const r = await d.custody.requestSecurityChange(id, { role: "SERVER" });
+    return { change: changeView(r.change), desc: r.desc, transaction: r.transaction };
   });
 
   // ---------------------------------------------------------------- dev
@@ -274,11 +308,12 @@ export async function buildServer(d: ApiDeps) {
       await d.airdrop!(new PublicKey(address), Math.round(sol * LAMPORTS_PER_SOL));
       return { ok: true };
     });
-    // Atalho de dev para o pedido de rotação do servidor (continua exigindo a carteira do cliente).
-    app.post("/v1/dev/accounts/:id/rotations/server", async (req) => {
+    // Atalho de dev para o pedido de troca da chave do serviço (continua exigindo a Phantom e o prazo).
+    app.post("/v1/dev/accounts/:id/security-changes/server", async (req) => {
       const { id } = req.params as { id: string };
       await ownAccount(req, id);
-      return d.custody.requestServerRotation(id, "rotação programada (simulada)");
+      const r = await d.custody.requestSecurityChange(id, { role: "SERVER" });
+      return { change: changeView(r.change), desc: r.desc, transaction: r.transaction };
     });
     // Simula um servidor malicioso para ver o app recusar (só dev).
     app.post("/v1/dev/intents/:id/prepare-tampered", async (req) => {

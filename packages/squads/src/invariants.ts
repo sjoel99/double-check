@@ -4,49 +4,50 @@ import type { MultisigState } from "./state";
 
 export type ExpectedRoles = {
   client: string;
+  webapp: string;
   server: string;
-  executor: string;
-  proposer: string;
+  operator: string;
   timeLock?: number;
 };
 
 const DEFAULT_KEY = PublicKey.default.toBase58();
 
 /**
- * Confere na chain o modelo STRICT_2_OF_2. Roda antes de qualquer aprovação do
- * servidor e depois de cada rotação. Falha fechado em qualquer desvio.
+ * Confere na chain o modelo 2 de 3: threshold 2; votam exatamente client,
+ * webapp e server, cada um só com Vote (2); o operator só cria e executa (5);
+ * sem config authority; sem time lock. Falha fechado em qualquer desvio.
  */
-export function assertStrictTwoOfTwo(state: MultisigState, expected: ExpectedRoles): void {
+export function assertAccountModel(state: MultisigState, expected: ExpectedRoles): void {
   if (state.configAuthority !== DEFAULT_KEY)
     deny("CONFIG_AUTHORITY_SET", `multisig controlada por ${state.configAuthority}: uma chave sozinha mudaria membros`);
   if (state.threshold !== 2) deny("THRESHOLD_NOT_2", `threshold on-chain = ${state.threshold}`);
 
   const voters = state.members.filter((m) => m.vote).map((m) => m.key).sort();
-  const expectedVoters = [expected.client, expected.server].sort();
-  if (voters.length !== 2 || voters[0] !== expectedVoters[0] || voters[1] !== expectedVoters[1])
+  const expectedVoters = [expected.client, expected.webapp, expected.server].sort();
+  if (voters.length !== 3 || voters.some((v, i) => v !== expectedVoters[i]))
     deny("VOTERS_MISMATCH", `votantes on-chain ${voters.join(",")} ≠ esperados ${expectedVoters.join(",")}`);
 
   const byKey = new Map(state.members.map((m) => [m.key, m]));
-  const client = byKey.get(expected.client)!;
-  const server = byKey.get(expected.server)!;
-  // Carteira do cliente: Vote + Execute (6). Servidor: só Vote (2). Ninguém mais vota.
-  if (client.mask !== 6 || server.mask !== 2) deny("VOTER_PERMISSIONS", `permissões inesperadas: cliente ${client.mask}, servidor ${server.mask}`);
-
-  const executor = byKey.get(expected.executor);
-  if (!executor || executor.mask !== 4) deny("EXECUTOR_MISMATCH", "executor ausente ou com permissões além de Execute");
-  const proposer = byKey.get(expected.proposer);
-  if (!proposer || proposer.mask !== 1) deny("PROPOSER_MISMATCH", "proposer ausente ou com permissões além de Initiate");
+  for (const k of [expected.client, expected.webapp, expected.server])
+    if (byKey.get(k)!.mask !== 2) deny("VOTER_PERMISSIONS", `votante ${k} com permissões ${byKey.get(k)!.mask} (esperado só Vote)`);
+  const operator = byKey.get(expected.operator);
+  if (!operator || operator.mask !== 5) deny("OPERATOR_MISMATCH", "operador ausente ou com permissões além de criar e executar");
+  // Só o operador executa: nenhum votante pode rodar o que foi aprovado sem o serviço.
+  if (state.members.filter((m) => m.mask & 4).length !== 1) deny("EXECUTOR_NOT_UNIQUE", "mais de um membro pode executar");
 
   if (state.members.length !== 4) deny("UNEXPECTED_MEMBERS", `${state.members.length} membros on-chain; esperado 4`);
   if ((expected.timeLock ?? 0) !== state.timeLock) deny("TIMELOCK_MISMATCH", `time lock on-chain = ${state.timeLock}`);
 }
 
+/** Nome antigo, mantido nos chamadores. */
+export const assertStrictTwoOfTwo = assertAccountModel;
+
 /** Papel de uma chave segundo a chain (não o banco). */
 export function roleOf(state: MultisigState, key: string, expected: ExpectedRoles) {
   if (!state.members.some((m) => m.key === key)) return null;
   if (key === expected.client) return "CLIENT" as const;
+  if (key === expected.webapp) return "WEBAPP" as const;
   if (key === expected.server) return "SERVER" as const;
-  if (key === expected.executor) return "EXECUTOR" as const;
-  if (key === expected.proposer) return "PROPOSER" as const;
+  if (key === expected.operator) return "OPERATOR" as const;
   return null;
 }

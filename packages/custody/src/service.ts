@@ -1,45 +1,41 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Keypair, PublicKey, SystemProgram, TransactionInstruction, VersionedMessage, VersionedTransaction } from "@solana/web3.js";
-import { generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } from "@simplewebauthn/server";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import bs58 from "bs58";
-import { type Cluster, deny, type IntentBody, intentBody, SecurityError, sealIntent, type TransactionIntent, type TransferSolIntent } from "@duplachave/shared";
-import {
-  type AuthenticationJSON,
-  b64url,
-  fromB64url,
-  loginMessage,
-  MEMO_PROGRAM_ID,
-  passkeyBindingMessage,
-  possessionMessage,
-  type PossessionOperation,
-  randomHex,
-  type Signer,
-  verifyEd25519,
-  verifyWalletMessage,
-  verifyWalletProof,
-  type RegistrationJSON,
-  type WalletProof,
-} from "@duplachave/crypto";
+import { type Cluster, deny, type IntentBody, intentBody, SecurityError, sealIntent, type TransferSolIntent } from "@duplachave/shared";
+import { loginMessage, randomHex, type Signer, verifyEd25519, verifyWalletMessage } from "@duplachave/crypto";
 import { ChainTxError, type Chain, parseInstruction, programErrorFromLogs, type RawInstruction, SYSTEM_PROGRAM } from "@duplachave/solana";
 import {
-  assertStrictTwoOfTwo,
-  CLIENT_MASK,
+  assertAccountModel,
+  configExecuteInstructions,
   configView,
   createStrictMultisigIx,
   type ExpectedRoles,
+  OPERATOR_MASK,
   readMultisig,
+  readProposal,
   rotationActions,
   type MultisigState,
-  SERVER_MASK,
   transactionPda,
   vaultPda,
+  VOTER_MASK,
 } from "@duplachave/squads";
 import { DEFAULT_POLICY, type PolicyEngine, type User } from "@duplachave/policy-engine";
-import { type ApprovalRequest, atomicInstructionsFor, compileAtomic } from "./client";
+import {
+  type AccountRoles,
+  type ApprovalRequest,
+  atomicInstructionsFor,
+  compileAtomic,
+  memoIx,
+  securityChangeParties,
+  type SecurityChangeDesc,
+  type SecurityChangeRole,
+  securityRequestInstructionsFor,
+  vetoMessage,
+} from "./client";
 import type { ServerKeyProvider, ServiceKeys } from "./keys";
 import type { NotificationService } from "./notifications";
-import type { AuditInput, ChallengeStore, IntentRecord, PasskeyRecord, PreparedEntry, RotationRecord, RotationStatus, SmartAccountRecord, Store } from "./store";
+import type { AuditInput, ChallengeStore, IntentRecord, PreparedEntry, SecurityChangeRecord, SecurityChangeStatus, SmartAccountRecord, Store, WebappKeyBlob, WebappKeyRecord } from "./store";
 import { renderIntent } from "./display";
 
 const utf8 = (s: string) => new TextEncoder().encode(s);
@@ -53,8 +49,8 @@ const sha256 = (u: Uint8Array) => createHash("sha256").update(u).digest("hex");
  */
 export const PREPARED_WINDOW = 180;
 
-/** Primeiros 16 hex do sha256 do id da credencial: o que a carteira vê no texto de vínculo. */
-export const credentialTag = (credentialId: string) => createHash("sha256").update(credentialId).digest("hex").slice(0, 16);
+/** Prazo padrão das trocas de chave: 72 h. */
+export const SECURITY_DELAY = 72 * 3600;
 
 export type CustodyConfig = {
   cluster: Cluster;
@@ -69,42 +65,16 @@ export type CustodyConfig = {
   /** Tesouraria da Squads (ProgramConfig) para multisig_create_v2. */
   squadsTreasury: PublicKey;
   intentTtl?: number;
-  rotationTtl?: number;
-  /**
-   * Biometria (passkey). `origins`: de onde o app pode ser aberto (o RP ID é o
-   * host). `resetDelay`: quanto espera uma biometria vinculada sem aprovação de
-   * outra já ativa (padrão 48 h).
-   */
-  passkeys: { origins: string[]; resetDelay?: number };
+  /** Prazo entre o pedido de uma troca de chave e a execução (padrão 72 h). */
+  securityDelay?: number;
   log?: (msg: string) => void;
 };
-
-/**
- * Transições da rotação. Sem congelamento: no modelo atômico nada fica pendente
- * na chain, então não há fila para drenar antes de trocar uma chave.
- */
-const ROTATION_TRANSITIONS: Record<RotationStatus, RotationStatus[]> = {
-  REQUESTED: ["NEW_KEY_VERIFIED", "REJECTED", "EXPIRED", "FAILED"],
-  NEW_KEY_VERIFIED: ["AWAITING_CLIENT_APPROVAL", "EXPIRED", "FAILED"],
-  AWAITING_CLIENT_APPROVAL: ["VERIFIED", "REJECTED", "EXPIRED", "FAILED", "ROLLBACK_REQUIRED"],
-  VERIFIED: ["COMPLETED", "ROLLBACK_REQUIRED"],
-  // Estados do modelo anterior (proposta pendente na chain); não são mais alcançados.
-  OPERATIONS_FROZEN: [],
-  AWAITING_SERVER_APPROVAL: [],
-  EXECUTING: [],
-  COMPLETED: [],
-  REJECTED: [],
-  EXPIRED: [],
-  FAILED: [],
-  ROLLBACK_REQUIRED: [],
-};
-
-const TERMINAL: RotationStatus[] = ["COMPLETED", "REJECTED", "EXPIRED", "FAILED", "ROLLBACK_REQUIRED"];
 
 /** Cadastro preparado: a carteira assina e paga a criação da multisig. */
 type PendingEnrollment = {
   id: string;
   wallet: string;
+  webapp: string;
   walletName: string;
   plan: EnrollmentPlan;
   message: string;
@@ -135,7 +105,7 @@ export class CustodyService {
   private readonly store: Store & ChallengeStore;
   private readonly now: () => number;
   private readonly intentTtl: number;
-  private readonly rotationTtl: number;
+  private readonly securityDelay: number;
   private locks = new Map<string, Promise<unknown>>();
   /** Cadastros preparados e ainda não confirmados. Duram minutos; em memória basta. */
   private enrollments = new Map<string, PendingEnrollment>();
@@ -145,7 +115,7 @@ export class CustodyService {
     this.store = cfg.store;
     this.now = cfg.now ?? (() => Math.floor(Date.now() / 1000));
     this.intentTtl = cfg.intentTtl ?? 10 * 60;
-    this.rotationTtl = cfg.rotationTtl ?? 30 * 60;
+    this.securityDelay = cfg.securityDelay ?? SECURITY_DELAY;
   }
 
   // -------------------------------------------------------------------------
@@ -193,7 +163,7 @@ export class CustodyService {
   async verifiedState(acc: SmartAccountRecord): Promise<MultisigState> {
     const state = await readMultisig(this.chain, new PublicKey(acc.multisig));
     try {
-      assertStrictTwoOfTwo(state, acc.roles);
+      assertAccountModel(state, acc.roles);
     } catch (e) {
       await this.audit({ type: "INVARIANT_VIOLATION", accountId: acc.id, multisig: acc.multisig, details: { error: String(e) } });
       await this.store.saveSecurityEvent({ id: randomUUID(), accountId: acc.id, code: "INVARIANT_VIOLATION", message: String(e), at: this.now() });
@@ -276,8 +246,16 @@ export class CustodyService {
     return null;
   }
 
-  private memoIx(text: string, signer: PublicKey) {
-    return new TransactionInstruction({ programId: MEMO_PROGRAM_ID, keys: [{ pubkey: signer, isSigner: true, isWritable: false }], data: Buffer.from(text, "utf8") });
+  /** A transação traz uma assinatura válida desta chave. */
+  private requireSignature(tx: VersionedTransaction, key: string, code: string, msg: string) {
+    const signers = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
+    const i = signers.findIndex((k) => k.toBase58() === key);
+    if (i < 0 || !verifyEd25519(tx.message.serialize(), tx.signatures[i]!, new PublicKey(key))) deny(code, msg);
+  }
+
+  /** Papéis da conta como chaves públicas (o serviço sabe todos). */
+  private rolesOf(acc: SmartAccountRecord): AccountRoles {
+    return { client: new PublicKey(acc.roles.client), webapp: new PublicKey(acc.roles.webapp), server: new PublicKey(acc.roles.server), operator: new PublicKey(acc.roles.operator) };
   }
 
   // -------------------------------------------------------------------------
@@ -292,79 +270,62 @@ export class CustodyService {
     return { ...c, message: loginMessage({ publicKey, cluster: this.cfg.cluster, challenge: c.challenge, expiresAt: c.expiresAt }) };
   }
 
-  /** Prova de posse: o texto é remontado aqui a partir do que o servidor emitiu. */
-  private async checkWalletProof(
-    proof: WalletProof,
-    expected: { operation: PossessionOperation; account: string; challenge: string; expiresAt: number; publicKey?: string },
-  ) {
-    if (!proof || typeof proof !== "object") deny("POSSESSION_MALFORMED", "prova ausente");
-    if (proof.operation !== expected.operation) deny("POSSESSION_WRONG_OPERATION", String(proof.operation));
-    if (proof.cluster !== this.cfg.cluster) deny("POSSESSION_WRONG_CLUSTER", String(proof.cluster));
-    if (proof.account !== expected.account) deny("POSSESSION_WRONG_ACCOUNT", String(proof.account));
-    if (proof.challenge !== expected.challenge) deny("POSSESSION_WRONG_CHALLENGE", "desafio diferente do emitido");
-    if (proof.expiresAt !== expected.expiresAt) deny("POSSESSION_WRONG_EXPIRY", "validade diferente da emitida");
-    if (expected.publicKey && proof.publicKey !== expected.publicKey) deny("POSSESSION_WRONG_KEY", String(proof.publicKey));
-    try {
-      new PublicKey(proof.publicKey);
-    } catch {
-      deny("POSSESSION_MALFORMED", "chave pública inválida");
-    }
-    if (this.now() > proof.expiresAt) deny("POSSESSION_EXPIRED", "prova fora da validade");
-    if (!verifyWalletProof(proof)) deny("POSSESSION_BAD_SIGNATURE", "assinatura não é da carteira declarada");
-    if (!(await this.store.consumeNonce("possession", proof.signature, proof.expiresAt))) deny("REPLAY", "prova de posse já usada");
-    if (await this.store.isRevokedKey(proof.publicKey)) deny("REVOKED_KEY_REUSE", "chave revogada não volta");
-    return proof;
-  }
-
   /**
-   * Cadastro, passo 1: monta a criação da multisig 2-de-2 (carteira + chave nova
-   * do servidor; executor e proponente do serviço) PAGA PELA CARTEIRA, com um
-   * memo de vínculo assinado por ela. A assinatura da carteira nessa transação
-   * é a prova de posse: sem ela a conta não existe.
+   * Cadastro, passo 1: monta a criação da multisig 2 de 3 — a Phantom e a
+   * chave do webapp (gerada no aparelho e cifrada pela biometria) votam, mais
+   * uma chave nova do serviço; o operador do serviço cria e executa. Paga pela
+   * Phantom. O memo é assinado pela Phantom E pela chave do webapp: prova de
+   * posse das duas, na própria transação que cria a conta.
    */
-  async prepareEnrollment(args: { publicKey: string; walletName: string }): Promise<PreparedEnrollment> {
+  async prepareEnrollment(args: { publicKey: string; walletName: string; webappPublicKey: string }): Promise<PreparedEnrollment> {
     const wallet = new PublicKey(args.publicKey);
-    if (await this.store.isRevokedKey(args.publicKey)) deny("KEY_REVOKED", "esta carteira foi substituída e não volta a valer");
+    const webapp = new PublicKey(args.webappPublicKey);
+    if (wallet.equals(webapp)) deny("WEBAPP_IS_WALLET", "a chave do webapp não pode ser a Phantom");
+    for (const k of [args.publicKey, args.webappPublicKey]) {
+      if (await this.store.isRevokedKey(k)) deny("KEY_REVOKED", "chave substituída não volta a valer");
+      if (await this.cfg.serverKeys.get(k)) deny("CLIENT_KEY_IS_SERVER_KEY", "chave do servidor não pode ser do usuário");
+    }
     if (await this.store.findAccountByClientKey(args.publicKey)) deny("WALLET_ALREADY_ENROLLED", "esta carteira já tem uma conta");
-    if (await this.cfg.serverKeys.get(args.publicKey)) deny("CLIENT_KEY_IS_SERVER_KEY", "chave do servidor não pode ser a carteira do cliente");
     await this.pruneEnrollments();
 
     const userId = randomUUID();
     const server = await this.cfg.serverKeys.create(`server:${userId}`);
-    const roles: ExpectedRoles = {
-      client: args.publicKey,
-      server: (await server.publicKey()).toBase58(),
-      executor: (await this.cfg.service.executor.publicKey()).toBase58(),
-      proposer: (await this.cfg.service.proposer.publicKey()).toBase58(),
-    };
+    const operator = await this.cfg.service.operator.publicKey();
+    const roles: ExpectedRoles = { client: args.publicKey, webapp: args.webappPublicKey, server: (await server.publicKey()).toBase58(), operator: operator.toBase58() };
     const createKey = randomCreateKey();
     const created = createStrictMultisigIx({
       createKey: await createKey.publicKey(),
       creator: wallet,
       treasury: this.cfg.squadsTreasury,
-      layout: { client: wallet, server: new PublicKey(roles.server), executor: new PublicKey(roles.executor), proposer: new PublicKey(roles.proposer) },
+      layout: { client: wallet, webapp, server: new PublicKey(roles.server), operator },
       rentCollector: wallet,
     });
     const id = randomUUID();
-    const memo = `Dupla Chave: criar sua conta 2 de 2 (esta carteira + a chave do serviço). Ref ${id.slice(0, 8)}`;
-    const instructions = [this.memoIx(memo, wallet), created.instruction];
+    const memo = `Dupla Chave: criar sua conta 2 de 3 (sua Phantom + a chave do webapp + o serviço). Ref ${id.slice(0, 8)}`;
+    const instructions = [memoIx(memo, [wallet, webapp]), created.instruction];
     await this.simulateWalletPaid(wallet, instructions, "~0,003 SOL para criar a conta");
     const built = await this.walletPaid(wallet, instructions, [createKey]);
     const plan: EnrollmentPlan = { userId, roles, multisig: created.multisig.toBase58(), vault: created.vault.toBase58() };
-    this.enrollments.set(id, { id, wallet: args.publicKey, walletName: args.walletName, plan, message: built.message, createdAt: this.now() });
+    this.enrollments.set(id, { id, wallet: args.publicKey, webapp: args.webappPublicKey, walletName: args.walletName, plan, message: built.message, createdAt: this.now() });
     return { enrollmentId: id, transaction: built.transaction, multisig: plan.multisig, vault: plan.vault, memo };
   }
 
-  /** Cadastro, passo 2 (extensão): recebe a transação assinada, envia e grava a conta. */
-  async submitEnrollment(enrollmentId: string, transactionB64: string) {
+  /**
+   * Cadastro, passo 2: a transação assinada pela chave do webapp e pela
+   * Phantom, mais a chave do webapp cifrada (só o aparelho, com a biometria,
+   * consegue abrir). Envia e grava a conta.
+   */
+  async submitEnrollment(enrollmentId: string, transactionB64: string, keyBlob: WebappKeyBlob & { deviceName: string }) {
     const p = this.enrollments.get(enrollmentId);
     if (!p) deny("ENROLLMENT_NOT_FOUND", "cadastro não existe ou expirou; comece de novo");
     const { tx } = this.parseSigned(transactionB64, [p.message], p.wallet);
+    this.requireSignature(tx, p.webapp, "WEBAPP_BAD_SIGNATURE", "falta a assinatura da chave do webapp");
+    if (!keyBlob?.credentialId || !keyBlob.ciphertext || !keyBlob.iv || !keyBlob.salt) deny("WEBAPP_KEY_MISSING", "falta a chave do webapp cifrada");
     const sig = await this.sendSigned(tx);
-    return this.finishEnrollment(p, sig);
+    return this.finishEnrollment(p, sig, keyBlob);
   }
 
-  private async finishEnrollment(p: PendingEnrollment, sig: string) {
+  private async finishEnrollment(p: PendingEnrollment, sig: string, keyBlob: (WebappKeyBlob & { deviceName: string }) | null) {
     this.enrollments.delete(p.id);
     const { userId, roles } = p.plan;
     const now = this.now();
@@ -374,13 +335,17 @@ export class CustodyService {
     const acc: SmartAccountRecord = { id: randomUUID(), userId, cluster: this.cfg.cluster, multisig: p.plan.multisig, vault: p.plan.vault, roles, frozenBy: null, createdAt: now };
     await this.store.saveAccount(acc);
     await this.verifiedState(acc);
-    const member = (publicKey: string, role: "CLIENT" | "SERVER" | "EXECUTOR" | "PROPOSER", permissions: number, dev: string | null = null) =>
+    const member = (publicKey: string, role: "CLIENT" | "WEBAPP" | "SERVER" | "OPERATOR", permissions: number, dev: string | null = null) =>
       this.store.saveMember({ accountId: acc.id, publicKey, role, permissions, status: "ACTIVE", deviceId: dev, createdAt: now, revokedAt: null });
-    await member(roles.client, "CLIENT", CLIENT_MASK, deviceId);
-    await member(roles.server, "SERVER", SERVER_MASK);
-    await member(roles.executor, "EXECUTOR", 4);
-    await member(roles.proposer, "PROPOSER", 1);
-    await this.audit({ type: "SMART_ACCOUNT_CREATED", accountId: acc.id, userId, deviceId, multisig: acc.multisig, txSignature: sig, publicKey: roles.client, details: { wallet: p.walletName, paidBy: "wallet" } });
+    await member(roles.client, "CLIENT", VOTER_MASK, deviceId);
+    await member(roles.webapp, "WEBAPP", VOTER_MASK);
+    await member(roles.server, "SERVER", VOTER_MASK);
+    await member(roles.operator, "OPERATOR", OPERATOR_MASK);
+    if (keyBlob) {
+      const { deviceName, ...blob } = keyBlob;
+      await this.store.saveWebappKey({ accountId: acc.id, publicKey: roles.webapp, blob, deviceName, createdAt: now, revokedAt: null });
+    }
+    await this.audit({ type: "SMART_ACCOUNT_CREATED", accountId: acc.id, userId, deviceId, multisig: acc.multisig, txSignature: sig, publicKey: roles.client, details: { wallet: p.walletName, webapp: roles.webapp, paidBy: "wallet", model: "2-de-3" } });
     return { account: acc, deviceId, created: true as const };
   }
 
@@ -397,7 +362,7 @@ export class CustodyService {
         if (await this.chain.getAccountInfo(new PublicKey(p.plan.multisig))) {
           const landed = await this.findLanded(new PublicKey(p.plan.multisig), [p.message]);
           if (landed?.ok) {
-            await this.finishEnrollment(p, landed.signature);
+            await this.finishEnrollment(p, landed.signature, null);
             continue;
           }
         }
@@ -416,6 +381,30 @@ export class CustodyService {
     const text = loginMessage({ publicKey: args.publicKey, cluster: this.cfg.cluster, challenge: ch.challenge, expiresAt: ch.expiresAt });
     if (!verifyWalletMessage(text, args.signature, args.publicKey)) deny("BAD_SIGNATURE", "assinatura inválida");
     return this.accountOfWallet(args.publicKey);
+  }
+
+  /**
+   * Entrada com a chave do webapp (destravada pela biometria), para quem perdeu
+   * a Phantom e precisa pedir a troca dela. Também só identifica.
+   */
+  async loginWithWebapp(args: { challengeId: string; publicKey: string; signature: string }) {
+    const ch = await this.store.takeChallenge(args.challengeId);
+    if (!ch || ch.purpose !== "AUTH" || ch.subject !== args.publicKey || ch.expiresAt < this.now()) deny("CHALLENGE_INVALID", "desafio inválido");
+    const text = loginMessage({ publicKey: args.publicKey, cluster: this.cfg.cluster, challenge: ch.challenge, expiresAt: ch.expiresAt });
+    if (!verifyWalletMessage(text, args.signature, args.publicKey)) deny("BAD_SIGNATURE", "assinatura inválida");
+    const acc = await this.store.findAccountByWebappKey(args.publicKey);
+    if (!acc) deny("NOT_A_WEBAPP_KEY", "esta chave não é a chave do webapp de nenhuma conta");
+    return acc;
+  }
+
+  /** Cópia cifrada da chave do webapp pela passkey (só texto cifrado; a passkey é quem abre). */
+  async webappKeyByCredential(credentialId: string) {
+    for (const id of await this.store.listAccountIds()) {
+      const acc = await this.store.getAccount(id);
+      const k = (await this.store.listWebappKeys(id)).find((x) => x.blob.credentialId === credentialId && !x.revokedAt && x.publicKey === acc?.roles.webapp);
+      if (k && acc) return { accountId: acc.id, publicKey: k.publicKey, blob: k.blob, client: acc.roles.client, multisig: acc.multisig };
+    }
+    deny("WEBAPP_KEY_NOT_FOUND", "nenhuma conta com esta biometria");
   }
 
   private async accountOfWallet(publicKey: string) {
@@ -506,26 +495,6 @@ export class CustodyService {
     });
   }
 
-  /** Política da troca de chave, contra o estado de agora. */
-  private async checkRotation(acc: SmartAccountRecord, state: MultisigState, intent: TransactionIntent) {
-    if (intent.type !== "ROTATE_MEMBER") return;
-    const rot = await this.store.getRotation(intent.rotationId);
-    if (!rot || rot.status !== "AWAITING_CLIENT_APPROVAL" || rot.newKey !== intent.newKey || rot.oldKey !== intent.oldKey || rot.role !== intent.role)
-      deny("ROTATION_BAD_STATE", "a troca não está aguardando aprovação");
-    const view = configView(rotationActions(new PublicKey(intent.oldKey), new PublicKey(intent.newKey), intent.role), state, acc.roles);
-    const user = await this.user(acc.userId);
-    const decision = await this.cfg.policy.validate(user, intent, view, {
-      vaultLamports: 0n,
-      verifiedNewKeys: [rot.newKey!],
-      revokedKeys: (await this.store.isRevokedKey(rot.newKey!)) ? [rot.newKey!] : [],
-    });
-    if (state.members.some((m) => m.key === intent.newKey)) decision.reasons.push("KEY_ALREADY_MEMBER");
-    const serverControls = Boolean(await this.cfg.serverKeys.get(intent.newKey));
-    if (intent.role === "SERVER" && !serverControls) decision.reasons.push("SERVER_KEY_NOT_CONTROLLED");
-    if (intent.role === "CLIENT" && serverControls) decision.reasons.push("CLIENT_KEY_IS_SERVER_KEY");
-    if (decision.reasons.length) deny("POLICY_DENIED", decision.reasons.join("; "));
-  }
-
   /**
    * Prepara a transação atômica que a carteira vai assinar: índice de agora,
    * política e simulação de novo, assinatura do servidor (o voto dele) e do
@@ -549,36 +518,31 @@ export class CustodyService {
       let intent = rec.intent;
       if (intent.transactionIndex !== index.toString()) intent = sealIntent({ ...intentBody(intent), transactionIndex: index.toString() } as IntentBody);
 
-      let riskFlags = rec.riskFlags;
-      if (intent.type === "TRANSFER_SOL") riskFlags = await this.checkTransfer(acc, await this.user(acc.userId), intent);
-      else await this.checkRotation(acc, state, intent);
+      if (intent.type !== "TRANSFER_SOL") deny("UNSUPPORTED", `tipo ${intent.type} não é operação`);
+      const riskFlags = await this.checkTransfer(acc, await this.user(acc.userId), intent);
 
-      const wallet = new PublicKey(acc.roles.client);
-      const server = await this.serverSigner(acc);
-      const roles = { proposer: await this.cfg.service.proposer.publicKey(), server: await server.publicKey(), wallet };
+      const roles = this.rolesOf(acc);
       const instructions = atomicInstructionsFor(intent, roles, state);
-      await this.simulateWalletPaid(wallet, instructions, "tenha ~0,007 SOL: o depósito das contas volta na mesma transação e o custo real é ~0,000015 SOL");
-      // Ainda sem a assinatura do serviço: ela só sai depois da biometria (authorizeIntent).
-      const built = await this.walletPaid(wallet, instructions);
+      await this.simulateWalletPaid(roles.client, instructions, "tenha ~0,007 SOL: o depósito das contas volta na mesma transação e o custo real é ~0,000015 SOL");
+      // Sem assinatura nenhuma: o operador só assina depois da chave do webapp (authorizeIntent).
+      const built = await this.walletPaid(roles.client, instructions);
 
       const now = this.now();
       const live = (rec.prepared ?? []).filter((e) => e.preparedAt > now - PREPARED_WINDOW);
       rec = { ...rec, intent, riskFlags, transactionHash: sha256(Buffer.from(built.message, "base64")), prepared: [...live, { index: index.toString(), message: built.message, preparedAt: now }], updatedAt: now };
       await this.store.saveIntent(rec);
 
-      let possession: WalletProof | null = null;
-      if (intent.type === "ROTATE_MEMBER") possession = ((await this.store.getRotation(intent.rotationId))?.possession as WalletProof | null) ?? null;
-      const passkeys = await this.activePasskeys(acc.id);
-      return { intent, riskFlags, transaction: built.transaction, possession, passkeys: passkeys.map((p) => ({ id: p.id, rpId: p.rpId })) };
+      return { intent, riskFlags, transaction: built.transaction };
     });
   }
 
   /**
-   * A biometria confirmou exatamente esta transação (o desafio é o sha256 dos
-   * bytes da mensagem): o serviço assina a parte dele — o voto dele — e o
-   * proponente assina a criação. Só para mensagens que o próprio serviço preparou.
+   * A chave do webapp assinou exatamente esta transação — e ela só abre com a
+   * biometria do aparelho. O operador (o único executor) assina a criação e a
+   * execução. Só para mensagens que o próprio serviço preparou, ainda válidas.
+   * O voto do serviço NÃO entra em operações: só Phantom + webapp votam.
    */
-  async authorizeIntent(intentId: string, args: { message: string; assertion: AuthenticationJSON }) {
+  async authorizeIntent(intentId: string, args: { message: string; webappSignature: string }) {
     const first = await this.intentRecord(intentId);
     return this.withLock(first.accountId, async () => {
       const rec = await this.intentRecord(intentId);
@@ -590,138 +554,15 @@ export class CustodyService {
       const entry = entries.find((e) => e.message === args.message);
       if (!entry) deny("TX_NOT_EXPECTED", "esta transação não foi preparada pelo serviço");
       if (entry.preparedAt <= now - PREPARED_WINDOW) deny("PREPARED_EXPIRED", "a transação preparada venceu; prepare de novo");
-      const bytes = Buffer.from(args.message, "base64");
-      const passkey = await this.verifyAssertion(acc, args.assertion, createHash("sha256").update(bytes).digest());
-
-      const tx = new VersionedTransaction(VersionedMessage.deserialize(bytes));
-      const server = await this.serverSigner(acc);
-      for (const s of [this.cfg.service.proposer, server]) tx.addSignature(await s.publicKey(), await s.sign(tx.message.serialize()));
+      const tx = new VersionedTransaction(VersionedMessage.deserialize(Buffer.from(args.message, "base64")));
+      const webappSig = decodeSignature(args.webappSignature);
+      if (!verifyEd25519(tx.message.serialize(), webappSig, new PublicKey(acc.roles.webapp))) deny("WEBAPP_BAD_SIGNATURE", "a assinatura não é da chave do webapp desta conta");
+      tx.addSignature(new PublicKey(acc.roles.webapp), webappSig);
+      tx.addSignature(await this.cfg.service.operator.publicKey(), await this.cfg.service.operator.sign(tx.message.serialize()));
       await this.store.saveIntent({ ...rec, prepared: entries.map((e) => (e === entry ? { ...e, authorizedAt: now } : e)), updatedAt: now });
-      await this.audit({
-        type: "SERVER_APPROVED",
-        accountId: acc.id,
-        publicKey: acc.roles.server,
-        multisig: acc.multisig,
-        transactionIndex: entry.index,
-        intentId,
-        intentHash: rec.intent.intentHash,
-        details: { passkey: credentialTag(passkey.id), device: passkey.deviceName, riskFlags: rec.riskFlags },
-      });
+      await this.audit({ type: "SERVER_APPROVED", accountId: acc.id, publicKey: acc.roles.operator, multisig: acc.multisig, transactionIndex: entry.index, intentId, intentHash: rec.intent.intentHash, details: { by: "operator", webapp: acc.roles.webapp, riskFlags: rec.riskFlags } });
       return { transaction: b64(tx.serialize()) };
     });
-  }
-
-  // -------------------------------------------------------------------------
-  // biometria (passkey / WebAuthn)
-  // -------------------------------------------------------------------------
-
-  private rpIdFor(origin: string | undefined) {
-    if (!origin || !this.cfg.passkeys.origins.includes(origin)) deny("ORIGIN_NOT_ALLOWED", `o app foi aberto de uma origem não permitida (${origin ?? "?"})`);
-    return new URL(origin).hostname;
-  }
-
-  async activePasskeys(accountId: string): Promise<PasskeyRecord[]> {
-    const now = this.now();
-    return (await this.store.listPasskeys(accountId)).filter((p) => p.revokedAt === null && p.activeAt <= now);
-  }
-
-  async listPasskeys(accountId: string) {
-    return this.store.listPasskeys(accountId);
-  }
-
-  /** Confere uma confirmação biométrica de uma passkey ativa da conta sobre o desafio dado. */
-  private async verifyAssertion(acc: SmartAccountRecord, assertion: AuthenticationJSON, challenge: Uint8Array): Promise<PasskeyRecord> {
-    const active = await this.activePasskeys(acc.id);
-    if (!active.length) deny("PASSKEY_REQUIRED", "ative a confirmação por biometria antes de assinar");
-    const cred = active.find((p) => p.id === assertion?.id);
-    if (!cred) deny("PASSKEY_UNKNOWN", "esta biometria não está ativa nesta conta");
-    let verified = false;
-    let newCounter = cred.counter;
-    try {
-      const v = await verifyAuthenticationResponse({
-        response: assertion as never,
-        expectedChallenge: b64url(challenge),
-        expectedOrigin: this.cfg.passkeys.origins,
-        expectedRPID: cred.rpId,
-        credential: { id: cred.id, publicKey: fromB64url(cred.publicKey), counter: cred.counter },
-        requireUserVerification: true,
-      });
-      verified = v.verified;
-      newCounter = v.authenticationInfo.newCounter;
-    } catch (e) {
-      await this.audit({ type: "PASSKEY_REFUSED", accountId: acc.id, details: { passkey: credentialTag(cred.id), error: String(e) } });
-      deny("PASSKEY_INVALID", `confirmação biométrica inválida: ${(e as Error).message}`);
-    }
-    if (!verified) deny("PASSKEY_INVALID", "confirmação biométrica inválida");
-    const updated = { ...cred, counter: newCounter };
-    await this.store.savePasskey(updated);
-    return updated;
-  }
-
-  /** Opções para criar a passkey deste aparelho (navigator.credentials.create). */
-  async passkeyRegistrationOptions(accountId: string, origin: string | undefined, deviceName: string) {
-    const acc = await this.account(accountId);
-    const rpId = this.rpIdFor(origin);
-    const all = await this.store.listPasskeys(acc.id);
-    const options = await generateRegistrationOptions({
-      rpName: "Dupla Chave",
-      rpID: rpId,
-      userName: `${acc.roles.client.slice(0, 4)}…${acc.roles.client.slice(-4)}`,
-      userDisplayName: "Conta Dupla Chave",
-      userID: new TextEncoder().encode(acc.id),
-      attestationType: "none",
-      authenticatorSelection: { residentKey: "preferred", userVerification: "required" },
-      excludeCredentials: all.filter((p) => p.rpId === rpId && p.revokedAt === null).map((p) => ({ id: p.id })),
-      timeout: 120_000,
-    });
-    const id = randomUUID();
-    await this.store.putChallenge({ id, purpose: "PASSKEY_REG", subject: JSON.stringify({ accountId, origin, rpId, deviceName }), challenge: options.challenge, expiresAt: this.now() + 300 });
-    const active = (await this.activePasskeys(acc.id)).filter((p) => p.rpId === rpId);
-    return { challengeId: id, options, existing: active.map((p) => p.id), firstPasskey: all.length === 0 };
-  }
-
-  /**
-   * Vincula a passkey: a carteira atual assina o texto de vínculo. A primeira
-   * vale na hora. As seguintes valem na hora se uma biometria ativa aprovar;
-   * senão esperam `resetDelay` (quem só tem a carteira não troca a biometria de surpresa).
-   */
-  async registerPasskey(accountId: string, args: { challengeId: string; response: RegistrationJSON; walletSignature: string; approval?: AuthenticationJSON | null }) {
-    const ch = await this.store.takeChallenge(args.challengeId);
-    if (!ch || ch.purpose !== "PASSKEY_REG" || ch.expiresAt < this.now()) deny("CHALLENGE_INVALID", "desafio inexistente, usado ou vencido");
-    const ctx = JSON.parse(ch.subject) as { accountId: string; origin: string; rpId: string; deviceName: string };
-    if (ctx.accountId !== accountId) deny("CHALLENGE_INVALID", "desafio de outra conta");
-    const acc = await this.account(accountId);
-    let reg;
-    try {
-      reg = await verifyRegistrationResponse({ response: args.response as never, expectedChallenge: ch.challenge, expectedOrigin: ctx.origin, expectedRPID: ctx.rpId, requireUserVerification: true });
-    } catch (e) {
-      deny("PASSKEY_INVALID", `biometria inválida: ${(e as Error).message}`);
-    }
-    if (!reg.verified || !reg.registrationInfo) deny("PASSKEY_INVALID", "biometria inválida");
-    const cred = reg.registrationInfo.credential;
-    const text = passkeyBindingMessage({ publicKey: acc.roles.client, account: acc.multisig, cluster: this.cfg.cluster, credential: credentialTag(cred.id), device: ctx.deviceName, challenge: ch.challenge });
-    if (!verifyWalletMessage(text, args.walletSignature, acc.roles.client)) deny("BAD_SIGNATURE", "o vínculo não foi assinado pela carteira da conta");
-
-    const now = this.now();
-    const all = await this.store.listPasskeys(acc.id);
-    if (all.some((p) => p.id === cred.id)) deny("PASSKEY_EXISTS", "esta biometria já está vinculada");
-    let activeAt = now;
-    let how: "FIRST" | "APPROVED" | "DELAYED" = "FIRST";
-    if (all.length) {
-      if (args.approval) {
-        await this.verifyAssertion(acc, args.approval, createHash("sha256").update(text).digest());
-        how = "APPROVED";
-      } else {
-        activeAt = now + (this.cfg.passkeys.resetDelay ?? 48 * 3600);
-        how = "DELAYED";
-      }
-    }
-    const rec: PasskeyRecord = { id: cred.id, accountId, publicKey: b64url(cred.publicKey), counter: cred.counter, rpId: ctx.rpId, deviceName: ctx.deviceName, createdAt: now, activeAt, revokedAt: null };
-    await this.store.savePasskey(rec);
-    await this.audit({ type: how === "DELAYED" ? "PASSKEY_PENDING" : "PASSKEY_ADDED", accountId, publicKey: acc.roles.client, details: { passkey: credentialTag(cred.id), device: ctx.deviceName, rpId: ctx.rpId, how, activeAt } });
-    if (how === "DELAYED")
-      await this.cfg.notifications.securityAlert({ userId: acc.userId, accountId }, { code: "PASSKEY_PENDING", message: `Biometria nova (${ctx.deviceName}) vinculada sem aprovação de outra: vale a partir de ${new Date(activeAt * 1000).toISOString()}` });
-    return { passkey: rec, status: activeAt <= now ? ("ACTIVE" as const) : ("PENDING" as const), activeAt };
   }
 
   /** Extensão: recebe a transação assinada pela carteira, confere que é a preparada e envia. */
@@ -805,12 +646,11 @@ export class CustodyService {
       createSignature: txid,
       createdAt: now,
     });
-    for (const [role, publicKey] of [["SERVER", acc.roles.server], ["CLIENT", acc.roles.client]] as const)
+    for (const [role, publicKey] of [["WEBAPP", acc.roles.webapp], ["CLIENT", acc.roles.client]] as const)
       await this.store.saveApproval({ id: randomUUID(), intentId: intent.id, accountId: acc.id, publicKey, role, decision: "APPROVE", statement: { atomic: true }, txSignature: txid, createdAt: now });
     const common = { accountId: acc.id, multisig: acc.multisig, transactionIndex: entry.index, intentId: intent.id, intentHash: intent.intentHash, txSignature: txid };
     await this.audit({ type: "CLIENT_APPROVED", publicKey: acc.roles.client, ...common });
     await this.audit({ type: "TRANSACTION_EXECUTED", ...common, details: { atomic: true, paidBy: "wallet", late } });
-    if (intent.type === "ROTATE_MEMBER") await this.finalizeRotation(acc.id, done, txid);
     return (await this.store.getIntent(intent.id))!;
   }
 
@@ -857,7 +697,6 @@ export class CustodyService {
       const out: IntentRecord = { ...rec, status: "REJECTED", reasons: ["recusada pelo cliente"], updatedAt: this.now() };
       await this.store.saveIntent(out);
       await this.audit({ type: "CLIENT_REJECTED", accountId: acc.id, multisig: acc.multisig, intentId, intentHash: rec.intent.intentHash });
-      if (rec.intent.type === "ROTATE_MEMBER") await this.finishRotation(rec.intent.rotationId, "REJECTED", "cliente recusou");
       return out;
     });
   }
@@ -866,7 +705,6 @@ export class CustodyService {
     const out: IntentRecord = { ...rec, status: "EXPIRED", updatedAt: this.now() };
     await this.store.saveIntent(out);
     await this.audit({ type: "TRANSACTION_EXPIRED", accountId: rec.accountId, multisig: rec.intent.multisig, intentId: rec.intent.id, intentHash: rec.intent.intentHash });
-    if (rec.intent.type === "ROTATE_MEMBER") await this.finishRotation(rec.intent.rotationId, "EXPIRED", "aprovação não chegou a tempo");
   }
 
   /**
@@ -886,225 +724,286 @@ export class CustodyService {
       for (const rec of await this.store.listIntents(accountId)) {
         if (rec.status === "AWAITING_CLIENT" && now > rec.intent.expiresAt && !this.hasLivePrepared(rec)) await this.expireIntent(rec);
       }
-      for (const rot of await this.store.listRotations(accountId)) {
-        if (TERMINAL.includes(rot.status) || now <= rot.expiresAt) continue;
-        const rec = rot.intentId ? await this.store.getIntent(rot.intentId) : null;
-        if (rec && rec.status === "AWAITING_CLIENT" && this.hasLivePrepared(rec)) continue;
-        await this.finishRotation(rot.id, "EXPIRED", "prazo da troca venceu");
+      // Pedido de troca preparado e não enviado: depois da janela, não entra mais.
+      for (const c of await this.store.listSecurityChanges(accountId)) {
+        if (c.status === "PREPARED" && (c.prepared ?? []).every((e) => e.preparedAt <= now - PREPARED_WINDOW)) await this.setChange(c, "FAILED", "pedido não foi assinado a tempo");
       }
     });
   }
 
   // -------------------------------------------------------------------------
-  // troca de carteira / chave do servidor (ConfigTransaction atômica)
+  // troca de votante em dois passos: pedido agora (dois votos na chain), execução
+  // pelo operador só depois do prazo. "Não fui eu" para tudo antes disso.
   // -------------------------------------------------------------------------
 
-  private async advanceRotation(id: string, to: RotationStatus, note?: string, patch: Partial<RotationRecord> = {}) {
-    const rot = await this.store.getRotation(id);
-    if (!rot) deny("ROTATION_NOT_FOUND", id);
-    if (!ROTATION_TRANSITIONS[rot.status].includes(to)) deny("ROTATION_BAD_TRANSITION", `${rot.status} → ${to}`);
-    const next: RotationRecord = { ...rot, ...patch, status: to, history: [...rot.history, { status: to, at: this.now(), note }] };
-    await this.store.saveRotation(next);
+  private async setChange(c: SecurityChangeRecord, status: SecurityChangeStatus, note?: string, patch: Partial<SecurityChangeRecord> = {}) {
+    const next: SecurityChangeRecord = { ...c, ...patch, status, history: [...c.history, { status, at: this.now(), note }] };
+    await this.store.saveSecurityChange(next);
     return next;
   }
 
-  /** Encerra uma rotação sem sucesso. Nada na chain: a transação só existe se a carteira assinar. */
-  private async finishRotation(id: string, to: "REJECTED" | "EXPIRED" | "FAILED", note: string) {
-    const rot = await this.store.getRotation(id);
-    if (!rot || TERMINAL.includes(rot.status)) return;
-    if (rot.intentId) {
-      const rec = await this.store.getIntent(rot.intentId);
-      if (rec?.status === "AWAITING_CLIENT") await this.store.saveIntent({ ...rec, status: to, updatedAt: this.now() });
-    }
-    if (ROTATION_TRANSITIONS[rot.status].includes(to)) await this.advanceRotation(id, to, note);
-    else await this.store.saveRotation({ ...rot, status: "FAILED", history: [...rot.history, { status: "FAILED", at: this.now(), note: `${note} (de ${rot.status})` }] });
-    const type = to === "REJECTED" ? "ROTATION_REJECTED" : to === "EXPIRED" ? "ROTATION_EXPIRED" : "ROTATION_FAILED";
-    await this.audit({ type, accountId: rot.accountId, details: { rotationId: id, note } });
+  private async changeRecord(id: string) {
+    const c = await this.store.getSecurityChange(id);
+    if (!c) deny("CHANGE_NOT_FOUND", id);
+    return c;
   }
 
-  private newRotation(acc: SmartAccountRecord, role: "CLIENT" | "SERVER", note?: string): RotationRecord {
-    const now = this.now();
-    return {
-      id: randomUUID(),
-      accountId: acc.id,
-      role,
-      oldKey: role === "CLIENT" ? acc.roles.client : acc.roles.server,
-      newKey: null,
-      newDeviceName: null,
-      status: "REQUESTED",
-      challenge: randomHex(32),
-      createdAt: now,
-      expiresAt: now + this.rotationTtl,
-      intentId: null,
-      possession: null,
-      history: [{ status: "REQUESTED", at: now, note }],
-    };
+  changeDesc(c: SecurityChangeRecord, acc: SmartAccountRecord): SecurityChangeDesc {
+    return { id: c.id, role: c.role, oldKey: c.oldKey, newKey: c.newKey, multisig: acc.multisig, index: c.index!, cluster: this.cfg.cluster, delaySeconds: this.securityDelay };
   }
 
-  /** Campos que a carteira nova assina (falta só a chave pública dela). */
-  possessionFieldsFor(rot: RotationRecord, multisig: string) {
-    return {
-      operation: (rot.role === "CLIENT" ? "ROTATE_CLIENT_KEY" : "ROTATE_SERVER_KEY") as PossessionOperation,
-      account: multisig,
-      cluster: this.cfg.cluster,
-      challenge: rot.challenge,
-      expiresAt: rot.expiresAt,
-    };
-  }
-
-  private async openRotation(accountId: string) {
-    return (await this.store.listRotations(accountId)).find((r) => !TERMINAL.includes(r.status));
-  }
-
-  /** Passo 1: a carteira atual (com sessão) pede a troca. */
-  async requestClientRotation(accountId: string, args: { newWalletName?: string } = {}) {
+  /**
+   * Pede uma troca:
+   * - CLIENT (trocar a Phantom): webapp + serviço votam; a Phantom nova paga;
+   * - WEBAPP (recuperar o webapp, ex. perdeu o aparelho): Phantom + serviço votam;
+   *   a chave nova vem cifrada para a biometria do aparelho novo;
+   * - SERVER (chave do serviço): o serviço gera a nova; Phantom + serviço votam.
+   * Uma troca aberta por vez.
+   */
+  async requestSecurityChange(accountId: string, args: { role: SecurityChangeRole; newKey?: string; newKeyBlob?: (WebappKeyBlob & { deviceName: string }) | null }) {
     return this.withLock(accountId, async () => {
       const acc = await this.account(accountId);
-      await this.verifiedState(acc);
-      const open = await this.openRotation(accountId);
-      if (open) deny("ROTATION_IN_PROGRESS", open.id);
-      const rot = { ...this.newRotation(acc, "CLIENT"), newDeviceName: args.newWalletName ?? null };
-      await this.store.saveRotation(rot);
-      await this.audit({ type: "CLIENT_KEY_ROTATION_REQUESTED", accountId, multisig: acc.multisig, publicKey: acc.roles.client, details: { rotationId: rot.id } });
-      return { rotation: rot, fields: this.possessionFieldsFor(rot, acc.multisig) };
-    });
-  }
-
-  /** Passo 2: a carteira nova prova posse; vira uma intenção que a carteira atual assina. */
-  async proveClientRotationKey(rotationId: string, proof: WalletProof) {
-    const rot0 = await this.store.getRotation(rotationId);
-    if (!rot0) deny("ROTATION_NOT_FOUND", rotationId);
-    return this.withLock(rot0.accountId, async () => {
-      const rot = (await this.store.getRotation(rotationId))!;
-      const acc = await this.account(rot.accountId);
-      if (rot.role !== "CLIENT") deny("ROTATION_WRONG_ROLE", "esta rotação não é da carteira do cliente");
-      if (rot.status !== "REQUESTED") deny("ROTATION_BAD_STATE", rot.status);
-      if (this.now() > rot.expiresAt) {
-        await this.finishRotation(rot.id, "EXPIRED", "prova chegou depois do prazo");
-        deny("ROTATION_EXPIRED", "troca expirada");
-      }
-      try {
-        await this.checkWalletProof(proof, { operation: "ROTATE_CLIENT_KEY", account: acc.multisig, challenge: rot.challenge, expiresAt: rot.expiresAt });
-      } catch (e) {
-        await this.audit({ type: "NEW_KEY_PROOF_REFUSED", accountId: acc.id, multisig: acc.multisig, details: { rotationId, error: String(e) } });
-        throw e;
-      }
       const state = await this.verifiedState(acc);
-      if (state.members.some((m) => m.key === proof.publicKey)) deny("KEY_ALREADY_MEMBER", "essa carteira já é membro");
-      if (await this.cfg.serverKeys.get(proof.publicKey)) deny("CLIENT_KEY_IS_SERVER_KEY", "chave do servidor não pode virar carteira do cliente");
-      await this.advanceRotation(rotationId, "NEW_KEY_VERIFIED", undefined, { newKey: proof.publicKey, possession: proof });
-      await this.audit({ type: "NEW_KEY_PROOF_VERIFIED", accountId: acc.id, multisig: acc.multisig, publicKey: proof.publicKey, details: { rotationId } });
-      return this.proposeRotation(rotationId);
-    });
-  }
+      const open = (await this.store.listSecurityChanges(accountId)).find((c) => c.status === "PENDING" || (c.status === "PREPARED" && (c.prepared ?? []).some((e) => e.preparedAt > this.now() - PREPARED_WINDOW)));
+      if (open) deny("CHANGE_IN_PROGRESS", "já existe uma troca de chave em andamento");
+      let newKey = args.newKey;
+      if (args.role === "SERVER") newKey = (await (await this.cfg.serverKeys.create(`server:${acc.userId}:troca:${randomUUID()}`)).publicKey()).toBase58();
+      if (!newKey) deny("NEW_KEY_MISSING", "falta a chave nova");
+      new PublicKey(newKey);
+      if (state.members.some((m) => m.key === newKey)) deny("KEY_ALREADY_MEMBER", "essa chave já é membro");
+      if (await this.store.isRevokedKey(newKey)) deny("REVOKED_KEY_REUSE", "chave revogada não volta");
+      if (args.role !== "SERVER" && (await this.cfg.serverKeys.get(newKey))) deny("CLIENT_KEY_IS_SERVER_KEY", "chave do servidor não pode ser do usuário");
+      if (args.role === "WEBAPP" && !args.newKeyBlob?.ciphertext) deny("WEBAPP_KEY_MISSING", "falta a chave nova do webapp cifrada");
 
-  /** Rotação da chave do servidor: o backend gera e prova a nova; a carteira do cliente precisa assinar. */
-  async requestServerRotation(accountId: string, reason: string) {
-    return this.withLock(accountId, async () => {
-      const acc = await this.account(accountId);
-      await this.verifiedState(acc);
-      const open = await this.openRotation(accountId);
-      if (open) deny("ROTATION_IN_PROGRESS", open.id);
-      const rot = this.newRotation(acc, "SERVER", reason);
-      await this.store.saveRotation(rot);
-      await this.audit({ type: "SERVER_KEY_ROTATION_REQUESTED", accountId, multisig: acc.multisig, publicKey: acc.roles.server, details: { rotationId: rot.id, reason } });
-      try {
-        const newKey = await this.cfg.serverKeys.create(`server:${acc.userId}:rot:${rot.id}`);
-        const fields = { ...this.possessionFieldsFor(rot, acc.multisig), publicKey: (await newKey.publicKey()).toBase58() };
-        const proof: WalletProof = { ...fields, signature: bs58.encode(await newKey.sign(utf8(possessionMessage(fields)))) };
-        await this.checkWalletProof(proof, { operation: "ROTATE_SERVER_KEY", account: acc.multisig, challenge: rot.challenge, expiresAt: rot.expiresAt });
-        await this.advanceRotation(rot.id, "NEW_KEY_VERIFIED", undefined, { newKey: proof.publicKey, possession: proof });
-        await this.audit({ type: "NEW_KEY_PROOF_VERIFIED", accountId, multisig: acc.multisig, publicKey: proof.publicKey, details: { rotationId: rot.id } });
-      } catch (e) {
-        await this.finishRotation(rot.id, "FAILED", `pedido do servidor falhou: ${String(e)}`);
-        throw e;
-      }
-      return this.proposeRotation(rot.id);
-    });
-  }
-
-  /** Cria a intenção da troca (rascunho) e confere a política. A chain só muda quando a carteira assinar. */
-  private async proposeRotation(rotationId: string) {
-    try {
-      const rot = (await this.store.getRotation(rotationId))!;
-      const acc = await this.account(rot.accountId);
-      const state = await this.verifiedState(acc);
+      const oldKey = args.role === "CLIENT" ? acc.roles.client : args.role === "WEBAPP" ? acc.roles.webapp : acc.roles.server;
       const now = this.now();
-      const body: IntentBody = {
-        version: 1,
-        id: randomUUID(),
-        cluster: this.cfg.cluster,
-        multisig: acc.multisig,
-        transactionIndex: (state.transactionIndex + 1n).toString(),
+      const id = randomUUID();
+      // A política confere a troca como uma intenção de rotação: só [Add(nova, Vote), Remove(atual)(, SetRentCollector)].
+      const view = configView(rotationActions(new PublicKey(oldKey), new PublicKey(newKey), args.role), state, acc.roles);
+      const asIntent = sealIntent({
+        version: 1, id, cluster: this.cfg.cluster, multisig: acc.multisig, transactionIndex: (state.transactionIndex + 1n).toString(),
+        createdAt: now, expiresAt: now + 600, kind: "CONFIG", type: "ROTATE_MEMBER", role: args.role, oldKey, newKey, rotationId: id,
+      } as IntentBody);
+      const decision = await this.cfg.policy.validate(await this.user(acc.userId), asIntent, view, { vaultLamports: 0n, verifiedNewKeys: [newKey], revokedKeys: [] });
+      if (decision.reasons.length) deny("POLICY_DENIED", decision.reasons.join("; "));
+
+      const c: SecurityChangeRecord = {
+        id,
+        accountId,
+        role: args.role,
+        oldKey,
+        newKey,
+        status: "PREPARED",
+        index: (state.transactionIndex + 1n).toString(),
         createdAt: now,
-        expiresAt: Math.min(rot.expiresAt, now + this.rotationTtl),
-        kind: "CONFIG",
-        type: "ROTATE_MEMBER",
-        role: rot.role,
-        oldKey: rot.oldKey,
-        newKey: rot.newKey!,
-        rotationId: rot.id,
+        executeAfter: null,
+        prepared: null,
+        newKeyBlob: args.role === "WEBAPP" ? args.newKeyBlob! : null,
+        signatures: {},
+        history: [{ status: "PREPARED", at: now }],
       };
-      const intent = sealIntent(body);
-      const rotation = await this.advanceRotation(rotationId, "AWAITING_CLIENT_APPROVAL", undefined, { intentId: intent.id });
-      await this.checkRotation(acc, state, intent);
-      const flags = ["SECURITY_CHANGE", rot.role === "CLIENT" ? "CLIENT_KEY_ROTATION" : "SERVER_KEY_ROTATION"];
-      await this.store.saveIntent({ intent, accountId: acc.id, transactionHash: "", status: "AWAITING_CLIENT", riskFlags: flags, reasons: [], signatures: {}, updatedAt: now, prepared: null });
-      await this.audit({ type: "TRANSACTION_PROPOSED", accountId: acc.id, multisig: acc.multisig, intentId: intent.id, intentHash: intent.intentHash, details: { stage: "draft", rotationId } });
-      await this.cfg.notifications.keyRotationRequested(
-        { userId: acc.userId, accountId: acc.id },
-        { rotationId, role: rot.role, summary: rot.role === "CLIENT" ? "Troca da carteira da conta" : "O serviço pede atualização da chave de segurança" },
-      );
-      return { rotation, intent };
-    } catch (e) {
-      await this.finishRotation(rotationId, "FAILED", String(e)).catch(() => {});
-      throw e;
-    }
+      const roles = this.rolesOf(acc);
+      const desc = this.changeDesc(c, acc);
+      const { payer } = securityChangeParties(c.role, roles, new PublicKey(newKey));
+      const instructions = securityRequestInstructionsFor(desc, roles);
+      await this.simulateWalletPaid(payer, instructions, "a carteira que paga precisa de ~0,006 SOL (volta quando a troca executar)");
+      const built = await this.walletPaid(payer, instructions);
+      c.prepared = [{ index: c.index!, message: built.message, preparedAt: now }];
+      await this.store.saveSecurityChange(c);
+      return { change: c, desc, transaction: built.transaction };
+    });
   }
 
-  /** A troca entrou na chain: confere o 2-de-2 com a chave nova e atualiza os registros. */
-  private async finalizeRotation(accountId: string, rec: IntentRecord, sig: string) {
-    const intent = rec.intent;
-    if (intent.type !== "ROTATE_MEMBER") return;
-    const acc = await this.account(accountId);
-    const roles: ExpectedRoles = { ...acc.roles, [intent.role === "CLIENT" ? "client" : "server"]: intent.newKey };
+  /**
+   * O serviço assina o pedido: voto do serviço + criação pelo operador (+ o memo,
+   * quando a chave nova é do serviço). Na troca da Phantom, só depois de a chave
+   * do webapp (biometria) ter assinado — é ela o outro voto.
+   */
+  async authorizeSecurityRequest(changeId: string, args: { message: string; webappSignature?: string }) {
+    const c0 = await this.changeRecord(changeId);
+    return this.withLock(c0.accountId, async () => {
+      const c = await this.changeRecord(changeId);
+      const acc = await this.account(c.accountId);
+      if (c.status !== "PREPARED") deny("CHANGE_NOT_PREPARED", `troca em ${c.status}`);
+      const entry = (c.prepared ?? []).find((e) => e.message === args.message);
+      if (!entry) deny("TX_NOT_EXPECTED", "esta transação não foi preparada pelo serviço");
+      if (entry.preparedAt <= this.now() - PREPARED_WINDOW) deny("PREPARED_EXPIRED", "o pedido venceu; peça de novo");
+      const tx = new VersionedTransaction(VersionedMessage.deserialize(Buffer.from(args.message, "base64")));
+      if (c.role === "CLIENT") {
+        if (!args.webappSignature) deny("WEBAPP_SIGNATURE_MISSING", "trocar a Phantom exige a chave do webapp (biometria)");
+        const sig = decodeSignature(args.webappSignature);
+        if (!verifyEd25519(tx.message.serialize(), sig, new PublicKey(acc.roles.webapp))) deny("WEBAPP_BAD_SIGNATURE", "a assinatura não é da chave do webapp desta conta");
+        tx.addSignature(new PublicKey(acc.roles.webapp), sig);
+      }
+      const server = await this.serverSigner(acc);
+      const signers: Signer[] = [this.cfg.service.operator, server];
+      if (c.role === "SERVER") {
+        const fresh = await this.cfg.serverKeys.get(c.newKey);
+        if (!fresh) deny("SERVER_KEY_UNAVAILABLE", "chave nova do serviço indisponível");
+        signers.push(fresh);
+      }
+      for (const s of signers) tx.addSignature(await s.publicKey(), await s.sign(tx.message.serialize()));
+      return { transaction: b64(tx.serialize()) };
+    });
+  }
+
+  /** O pedido assinado (pela carteira que paga) entra na chain: começa o prazo. */
+  async submitSecurityRequest(changeId: string, transactionB64: string) {
+    const c0 = await this.changeRecord(changeId);
+    return this.withLock(c0.accountId, async () => {
+      const c = await this.changeRecord(changeId);
+      const acc = await this.account(c.accountId);
+      if (c.status !== "PREPARED") deny("CHANGE_NOT_PREPARED", `troca em ${c.status}`);
+      const { payer } = securityChangeParties(c.role, this.rolesOf(acc), new PublicKey(c.newKey));
+      const { tx } = this.parseSigned(transactionB64, (c.prepared ?? []).map((e) => e.message), payer.toBase58());
+      const sig = await this.sendSigned(tx);
+      const p = await readProposal(this.chain, new PublicKey(acc.multisig), BigInt(c.index!));
+      if (p?.status !== "Approved") deny("CHANGE_NOT_APPROVED", `pedido na chain em ${p?.status ?? "inexistente"}`);
+      const executeAfter = this.now() + this.securityDelay;
+      const out = await this.setChange(c, "PENDING", undefined, { executeAfter, prepared: null, signatures: { ...c.signatures, request: sig } });
+      await this.audit({ type: "SECURITY_CHANGE_REQUESTED", accountId: acc.id, multisig: acc.multisig, transactionIndex: c.index, txSignature: sig, publicKey: c.newKey, details: { changeId: c.id, role: c.role, oldKey: c.oldKey, executeAfter } });
+      await this.cfg.notifications.securityAlert(
+        { userId: acc.userId, accountId: acc.id },
+        { code: "SECURITY_CHANGE_REQUESTED", message: `Pedido de troca (${c.role}) para ${c.newKey}. Executa em ${new Date(executeAfter * 1000).toISOString()} se ninguém vetar. Não foi você? Abra o app e toque em "Não fui eu".` },
+      );
+      return out;
+    });
+  }
+
+  /**
+   * "Não fui eu": quem ainda tem a chave que estaria sendo trocada prova isso
+   * assinando o veto — então ela não está perdida e a troca morre. Na chave do
+   * serviço, qualquer votante do usuário veta. Como só o operador executa, o
+   * veto vale na hora (e a proposta aprovada fica stale na próxima troca).
+   */
+  async vetoSecurityChange(changeId: string, args: { publicKey: string; signature: string }) {
+    const c0 = await this.changeRecord(changeId);
+    return this.withLock(c0.accountId, async () => {
+      const c = await this.changeRecord(changeId);
+      const acc = await this.account(c.accountId);
+      if (c.status !== "PENDING" && c.status !== "PREPARED") deny("CHANGE_NOT_OPEN", `troca em ${c.status}`);
+      const allowed = c.role === "SERVER" ? [acc.roles.client, acc.roles.webapp] : [c.oldKey];
+      if (!allowed.includes(args.publicKey)) deny("VETO_NOT_ALLOWED", c.role === "CLIENT" ? "só a Phantom atual veta a troca dela" : c.role === "WEBAPP" ? "só a chave atual do webapp veta a troca dela" : "só uma chave do usuário veta");
+      const text = vetoMessage({ id: c.id, multisig: acc.multisig, role: c.role, newKey: c.newKey });
+      if (!verifyEd25519(utf8(text), decodeSignature(args.signature), new PublicKey(args.publicKey))) deny("BAD_SIGNATURE", "veto não assinado por essa chave");
+      const out = await this.setChange(c, "VETOED", `vetada por ${args.publicKey}`);
+      if (c.role === "SERVER") await this.cfg.serverKeys.retire(c.newKey);
+      await this.audit({ type: "SECURITY_CHANGE_VETOED", accountId: acc.id, multisig: acc.multisig, transactionIndex: c.index, publicKey: args.publicKey, details: { changeId: c.id, role: c.role, newKey: c.newKey } });
+      await this.cfg.notifications.securityAlert({ userId: acc.userId, accountId: acc.id }, { code: "SECURITY_CHANGE_VETOED", message: `Troca de chave (${c.role}) cancelada.` });
+      return out;
+    });
+  }
+
+  /** Passado o prazo: o operador assina a execução; quem paga assina por último. */
+  async prepareSecurityExecute(changeId: string) {
+    const c0 = await this.changeRecord(changeId);
+    return this.withLock(c0.accountId, async () => {
+      const c = await this.changeRecord(changeId);
+      const acc = await this.account(c.accountId);
+      if (c.status !== "PENDING") deny("CHANGE_NOT_PENDING", `troca em ${c.status}`);
+      if (this.now() < c.executeAfter!) deny("CHANGE_NOT_DUE", `a troca só pode executar a partir de ${new Date(c.executeAfter! * 1000).toISOString()}`);
+      const ms = new PublicKey(acc.multisig);
+      const p = await readProposal(this.chain, ms, BigInt(c.index!));
+      if (p?.status !== "Approved") {
+        await this.setChange(c, "FAILED", `pedido na chain em ${p?.status ?? "inexistente"}`);
+        deny("CHANGE_NOT_APPROVED", "o pedido não está mais aprovado na chain");
+      }
+      const state = await readMultisig(this.chain, ms);
+      const payer = c.role === "CLIENT" ? new PublicKey(c.newKey) : new PublicKey(acc.roles.client);
+      // O rent volta para a Phantom (na troca dela, para a nova: SetRentCollector roda antes do fechamento).
+      const rentCollector = c.role === "CLIENT" ? new PublicKey(c.newKey) : state.rentCollector === acc.roles.client ? new PublicKey(acc.roles.client) : null;
+      const instructions = configExecuteInstructions({ multisig: ms, index: BigInt(c.index!), operator: await this.cfg.service.operator.publicKey(), payer, rentCollector });
+      const built = await this.walletPaid(payer, instructions, [this.cfg.service.operator]);
+      await this.store.saveSecurityChange({ ...c, prepared: [{ index: c.index!, message: built.message, preparedAt: this.now() }] });
+      return { transaction: built.transaction, payer: payer.toBase58() };
+    });
+  }
+
+  async submitSecurityExecute(changeId: string, transactionB64: string) {
+    const c0 = await this.changeRecord(changeId);
+    return this.withLock(c0.accountId, async () => {
+      const c = await this.changeRecord(changeId);
+      const acc = await this.account(c.accountId);
+      if (c.status !== "PENDING") deny("CHANGE_NOT_PENDING", `troca em ${c.status}`);
+      const payer = c.role === "CLIENT" ? c.newKey : acc.roles.client;
+      const { tx } = this.parseSigned(transactionB64, (c.prepared ?? []).map((e) => e.message), payer);
+      const sig = await this.sendSigned(tx);
+      return this.finalizeSecurityChange(acc, c, sig);
+    });
+  }
+
+  /** A troca executou: confere o 2 de 3 com a chave nova na chain e atualiza os registros. */
+  private async finalizeSecurityChange(acc: SmartAccountRecord, c: SecurityChangeRecord, sig: string) {
+    const key = c.role === "CLIENT" ? "client" : c.role === "WEBAPP" ? "webapp" : "server";
+    const roles: ExpectedRoles = { ...acc.roles, [key]: c.newKey };
     const state = await readMultisig(this.chain, new PublicKey(acc.multisig));
-    const rot0 = (await this.store.getRotation(intent.rotationId))!;
-    const force = async (status: RotationStatus, note?: string) => {
-      const r = (await this.store.getRotation(intent.rotationId))!;
-      await this.store.saveRotation({ ...r, status, history: [...r.history, { status, at: this.now(), note }] });
-    };
     try {
-      assertStrictTwoOfTwo(state, roles);
+      assertAccountModel(state, roles);
     } catch (e) {
-      await force("ROLLBACK_REQUIRED", String(e));
+      await this.setChange(c, "FAILED", String(e));
       await this.audit({ type: "INVARIANT_VIOLATION", accountId: acc.id, multisig: acc.multisig, details: { error: String(e) } });
       throw e;
     }
-    // A chain manda: se aqui a troca já tinha sido encerrada, ela aconteceu mesmo assim.
-    await force("VERIFIED", TERMINAL.includes(rot0.status) ? `executada na chain depois de ${rot0.status}` : undefined);
-    await this.audit({ type: "NEW_MEMBER_ADDED", accountId: acc.id, multisig: acc.multisig, publicKey: intent.newKey, transactionIndex: intent.transactionIndex, intentId: intent.id, intentHash: intent.intentHash, txSignature: sig });
-    await this.audit({ type: "OLD_MEMBER_REMOVED", accountId: acc.id, multisig: acc.multisig, publicKey: intent.oldKey, transactionIndex: intent.transactionIndex, intentId: intent.id, intentHash: intent.intentHash, txSignature: sig });
-
     const now = this.now();
     const members = await this.store.listMembers(acc.id);
-    const old = members.find((m) => m.publicKey === intent.oldKey);
+    const old = members.find((m) => m.publicKey === c.oldKey);
     if (old) await this.store.saveMember({ ...old, status: "REVOKED", revokedAt: now });
     let deviceId: string | null = null;
-    if (intent.role === "CLIENT") {
+    if (c.role === "CLIENT") {
       deviceId = randomUUID();
-      await this.store.saveDevice({ id: deviceId, userId: acc.userId, name: rot0.newDeviceName ?? "carteira nova", publicKey: intent.newKey, createdAt: now, revokedAt: null });
+      await this.store.saveDevice({ id: deviceId, userId: acc.userId, name: "Phantom nova", publicKey: c.newKey, createdAt: now, revokedAt: null });
       if (old?.deviceId) {
         const dev = await this.store.getDevice(old.deviceId);
         if (dev) await this.store.saveDevice({ ...dev, revokedAt: now });
       }
+    } else if (c.role === "WEBAPP") {
+      for (const k of await this.store.listWebappKeys(acc.id)) if (k.publicKey === c.oldKey && !k.revokedAt) await this.store.saveWebappKey({ ...k, revokedAt: now });
+      if (c.newKeyBlob) {
+        const { deviceName, ...blob } = c.newKeyBlob;
+        await this.store.saveWebappKey({ accountId: acc.id, publicKey: c.newKey, blob, deviceName, createdAt: now, revokedAt: null });
+      }
     } else {
-      await this.cfg.serverKeys.retire(intent.oldKey);
+      await this.cfg.serverKeys.retire(c.oldKey);
     }
-    await this.store.saveMember({ accountId: acc.id, publicKey: intent.newKey, role: intent.role, permissions: intent.role === "CLIENT" ? CLIENT_MASK : SERVER_MASK, status: "ACTIVE", deviceId, createdAt: now, revokedAt: null });
+    await this.store.saveMember({ accountId: acc.id, publicKey: c.newKey, role: c.role, permissions: VOTER_MASK, status: "ACTIVE", deviceId, createdAt: now, revokedAt: null });
     await this.store.saveAccount({ ...acc, roles, frozenBy: null });
-    await force("COMPLETED");
-    await this.audit({ type: "ROTATION_COMPLETED", accountId: acc.id, multisig: acc.multisig, publicKey: intent.newKey, intentId: intent.id, txSignature: sig, details: { rotationId: intent.rotationId, role: intent.role } });
+    const out = await this.setChange(c, "EXECUTED", undefined, { prepared: null, signatures: { ...c.signatures, execute: sig } });
+    await this.audit({ type: "SECURITY_CHANGE_EXECUTED", accountId: acc.id, multisig: acc.multisig, transactionIndex: c.index, txSignature: sig, publicKey: c.newKey, details: { changeId: c.id, role: c.role, oldKey: c.oldKey } });
+    return out;
+  }
+
+  async listSecurityChanges(accountId: string) {
+    return this.store.listSecurityChanges(accountId);
+  }
+
+  async listSecurityChangesById(id: string) {
+    return this.store.getSecurityChange(id);
+  }
+
+  get securityDelaySeconds() {
+    return this.securityDelay;
+  }
+
+  // -------------------------------------------------------------------------
+  // chave do webapp cifrada (o serviço só guarda o texto cifrado)
+  // -------------------------------------------------------------------------
+
+  /** As cópias cifradas da chave atual do webapp (uma por passkey/aparelho). */
+  async webappKeys(accountId: string): Promise<WebappKeyRecord[]> {
+    const acc = await this.account(accountId);
+    return (await this.store.listWebappKeys(accountId)).filter((k) => k.publicKey === acc.roles.webapp && !k.revokedAt);
+  }
+
+  /**
+   * Mais uma cópia da chave do webapp, cifrada para outra passkey: só quem já
+   * abriu a chave (com a biometria) consegue assinar este pedido.
+   */
+  async addWebappKeyCopy(accountId: string, args: { blob: WebappKeyBlob; deviceName: string; signature: string }) {
+    const acc = await this.account(accountId);
+    const text = webappCopyMessage(acc.multisig, args.blob.credentialId);
+    if (!verifyEd25519(utf8(text), decodeSignature(args.signature), new PublicKey(acc.roles.webapp))) deny("WEBAPP_BAD_SIGNATURE", "a cópia não foi assinada pela chave do webapp");
+    await this.store.saveWebappKey({ accountId, publicKey: acc.roles.webapp, blob: args.blob, deviceName: args.deviceName, createdAt: this.now(), revokedAt: null });
+    await this.audit({ type: "PASSKEY_ADDED", accountId, publicKey: acc.roles.webapp, details: { device: args.deviceName } });
   }
 
   // -------------------------------------------------------------------------
@@ -1117,7 +1016,7 @@ export class CustodyService {
     let invariantOk = true;
     let invariantError: string | null = null;
     try {
-      assertStrictTwoOfTwo(state, acc.roles);
+      assertAccountModel(state, acc.roles);
     } catch (e) {
       invariantOk = false;
       invariantError = String(e);
@@ -1125,14 +1024,36 @@ export class CustodyService {
     return {
       account: acc,
       onchain: { ...state, transactionIndex: state.transactionIndex.toString(), staleTransactionIndex: state.staleTransactionIndex.toString() },
-      mode: "STRICT_2_OF_2" as const,
+      mode: "2_DE_3_OPERADOR" as const,
       invariantOk,
       invariantError,
       vaultLamports: (await this.chain.getBalance(new PublicKey(acc.vault)).catch(() => 0n)).toString(),
       walletLamports: (await this.chain.getBalance(new PublicKey(acc.roles.client)).catch(() => 0n)).toString(),
       members: await this.store.listMembers(accountId),
+      securityChanges: (await this.store.listSecurityChanges(accountId)).slice(0, 10).map(({ prepared: _p, newKeyBlob: _b, ...c }) => c),
+      webappDevices: (await this.store.listWebappKeys(accountId)).filter((k) => !k.revokedAt && k.publicKey === acc.roles.webapp).map((k) => ({ deviceName: k.deviceName, createdAt: k.createdAt })),
     };
   }
+}
+
+/** Texto que a chave do webapp assina para guardar mais uma cópia cifrada. */
+export function webappCopyMessage(multisig: string, credentialId: string) {
+  return `Dupla Chave: guardar a chave do webapp cifrada para outra biometria. Conta ${multisig}. Credencial ${credentialId}`;
+}
+
+/** Assinatura em base64 ou base58. */
+function decodeSignature(s: string): Uint8Array {
+  // O alfabeto base58 também é base64 válido: tenta base58 primeiro (64 bytes), depois base64.
+  if (typeof s !== "string") deny("BAD_SIGNATURE", "assinatura ausente");
+  try {
+    const b = bs58.decode(s);
+    if (b.length === 64) return b;
+  } catch {
+    /* não é base58 */
+  }
+  const b = Buffer.from(s, "base64");
+  if (b.length !== 64) deny("BAD_SIGNATURE", "assinatura com tamanho inválido");
+  return new Uint8Array(b);
 }
 
 /** createKey só semeia o PDA da multisig e assina a criação; não tem poder nenhum depois. */

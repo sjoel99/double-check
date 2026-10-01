@@ -1,307 +1,183 @@
 /**
- * Provas on-chain do modelo STRICT_2_OF_2, executadas contra o ELF do Squads v4
- * da mainnet (LiteSVM, sigverify ligado). Aqui não há backend nem política: o
- * atacante fala direto com o programa. O que falha aqui falha na rede.
+ * Modelo 2 de 3 no programa real da Squads v4 (ELF da mainnet no LiteSVM, com
+ * verificação de assinatura): votam a Phantom (CLIENT), a chave do webapp
+ * (WEBAPP) e o serviço (SERVER); só o operador do serviço cria e executa.
+ * O atacante fala direto com o programa, sem passar pelo backend.
  */
 import { describe, expect, it } from "vitest";
 import { LAMPORTS_PER_SOL } from "@solana/web3.js";
 import { DevMemorySigner } from "@duplachave/crypto";
-import { assertStrictTwoOfTwo, readMultisig, readProposal, rotationActions } from "@duplachave/squads";
+import { sendInstructions } from "@duplachave/solana";
+import { assertAccountModel, cancelIx, executeConfigIx, readMultisig, readProposal, rotationActions, VOTER_MASK } from "@duplachave/squads";
 import * as multisig from "@sqds/multisig";
-import {
-  approve,
-  attacker,
-  chainError,
-  executeConfig,
-  executeVault,
-  proposeConfig,
-  proposeTransfer,
-  setupStrict,
-} from "./support/setup";
+import { approve, attacker, chainError, executeConfig, executeVault, proposeConfig, proposeTransfer, setupStrict } from "./support/setup";
 
 const SOL = BigInt(LAMPORTS_PER_SOL);
+const roles = async (ctx: Awaited<ReturnType<typeof setupStrict>>) => ({
+  client: ctx.layout.client.toBase58(),
+  webapp: ctx.layout.webapp.toBase58(),
+  server: ctx.layout.server.toBase58(),
+  operator: ctx.layout.operator.toBase58(),
+});
 
-describe("STRICT_2_OF_2 on-chain", () => {
-  it("estado inicial: threshold 2, só CLIENT e SERVER votam, sem config authority", async () => {
+describe("2 de 3 com executor único, na chain", () => {
+  it("estado inicial: threshold 2; votam Phantom, webapp e serviço (só Vote); o operador só cria e executa", async () => {
     const ctx = await setupStrict();
-    const state = await readMultisig(ctx.chain, ctx.multisig);
-    expect(() =>
-      assertStrictTwoOfTwo(state, {
-        client: ctx.layout.client.toBase58(),
-        server: ctx.layout.server.toBase58(),
-        executor: ctx.layout.executor.toBase58(),
-        proposer: ctx.layout.proposer.toBase58(),
-      }),
-    ).not.toThrow();
-    expect(state.threshold).toBe(2);
-    expect(state.members.filter((m) => m.vote)).toHaveLength(2);
+    const s = await readMultisig(ctx.chain, ctx.multisig);
+    expect(s.threshold).toBe(2);
+    expect(s.members.filter((m) => m.vote).map((m) => m.mask)).toEqual([VOTER_MASK, VOTER_MASK, VOTER_MASK]);
+    expect(s.members.find((m) => m.key === ctx.layout.operator.toBase58())?.mask).toBe(5);
+    expect(() => assertAccountModel(s, {} as never)).toThrow();
+    assertAccountModel(s, await roles(ctx));
   });
 
-  it("Teste 1 — só a CLIENT_KEY não movimenta fundos", async () => {
+  it("Teste 1 — só a Phantom não movimenta fundos", async () => {
     const ctx = await setupStrict();
-    const thief = attacker();
-    const index = await proposeTransfer(ctx, thief, 9n * SOL);
-    await approve(ctx, index, ctx.keys.client);
-    expect((await readProposal(ctx.chain, ctx.multisig, index))?.status).toBe("Active");
-    // Executor honesto ou não: proposta com 1 de 2 não executa.
-    expect(await chainError(executeVault(ctx, index))).toBe("InvalidProposalStatus");
-    // A carteira do cliente tem Execute, mas executar exige 2 votos.
-    expect(await chainError(executeVault(ctx, index, ctx.keys.client))).toBe("InvalidProposalStatus");
-    // Votar de novo não conta duas vezes.
-    expect(await chainError(approve(ctx, index, ctx.keys.client))).toBe("AlreadyApproved");
-    expect(await ctx.chain.getBalance(thief)).toBe(0n);
+    const to = attacker();
+    const i = await proposeTransfer(ctx, to, SOL);
+    await approve(ctx, i, ctx.keys.client);
+    expect(await chainError(executeVault(ctx, i))).toBe("InvalidProposalStatus");
+    expect(await ctx.chain.getBalance(to)).toBe(0n);
   });
 
-  it("Teste 2 — só a SERVER_KEY não movimenta fundos", async () => {
+  it("Teste 2 — o serviço inteiro (voto + operador) não movimenta fundos", async () => {
     const ctx = await setupStrict();
-    const thief = attacker();
-    const index = await proposeTransfer(ctx, thief, 9n * SOL);
-    await approve(ctx, index, ctx.keys.server);
-    expect(await chainError(executeVault(ctx, index))).toBe("InvalidProposalStatus");
-    expect(await chainError(executeVault(ctx, index, ctx.keys.server))).toBe("Unauthorized");
-    expect(await ctx.chain.getBalance(thief)).toBe(0n);
+    const to = attacker();
+    const i = await proposeTransfer(ctx, to, SOL);
+    await approve(ctx, i, ctx.keys.server);
+    expect(await chainError(executeVault(ctx, i))).toBe("InvalidProposalStatus");
+    expect(await chainError(approve(ctx, i, ctx.keys.operator))).toBe("Unauthorized"); // operador não vota
   });
 
-  it("Teste 3 — CLIENT + SERVER movimentam", async () => {
+  it("Teste 3 — Phantom + webapp aprovam e o operador executa", async () => {
     const ctx = await setupStrict();
-    const dest = attacker();
-    const index = await proposeTransfer(ctx, dest, 2n * SOL);
-    await approve(ctx, index, ctx.keys.client);
-    await approve(ctx, index, ctx.keys.server);
-    expect((await readProposal(ctx.chain, ctx.multisig, index))?.status).toBe("Approved");
-    await executeVault(ctx, index);
-    expect(await ctx.chain.getBalance(dest)).toBe(2n * SOL);
-    expect((await readProposal(ctx.chain, ctx.multisig, index))?.status).toBe("Executed");
+    const to = attacker();
+    const i = await proposeTransfer(ctx, to, 2n * SOL);
+    await approve(ctx, i, ctx.keys.client);
+    await approve(ctx, i, ctx.keys.webapp);
+    await executeVault(ctx, i);
+    expect(await ctx.chain.getBalance(to)).toBe(2n * SOL);
   });
 
-  it("Teste 4 — o EXECUTOR não vota", async () => {
+  it("NOVO — com os dois votos do usuário, nem a Phantom nem o webapp executam: só o operador (a política do serviço é o portão)", async () => {
     const ctx = await setupStrict();
-    const index = await proposeTransfer(ctx, attacker(), SOL);
-    expect(await chainError(approve(ctx, index, ctx.keys.executor))).toBe("Unauthorized");
-    // Nem completando o quórum com um votante.
-    await approve(ctx, index, ctx.keys.client);
-    expect(await chainError(approve(ctx, index, ctx.keys.executor))).toBe("Unauthorized");
-    expect(await chainError(executeVault(ctx, index))).toBe("InvalidProposalStatus");
+    const to = attacker();
+    const i = await proposeTransfer(ctx, to, SOL);
+    await approve(ctx, i, ctx.keys.client);
+    await approve(ctx, i, ctx.keys.webapp);
+    expect(await chainError(executeVault(ctx, i, ctx.keys.client))).toBe("Unauthorized");
+    expect(await chainError(executeVault(ctx, i, ctx.keys.webapp))).toBe("Unauthorized");
+    expect(await ctx.chain.getBalance(to)).toBe(0n);
   });
 
-  it("Teste 5 — a OPERATIONAL_WALLET não vota", async () => {
+  it("Testes 4/5 — o operador não vota; a Phantom não cria transações no Vault", async () => {
     const ctx = await setupStrict();
-    const index = await proposeTransfer(ctx, attacker(), SOL);
-    expect(await chainError(approve(ctx, index, ctx.keys.proposer))).toBe("Unauthorized");
-    await approve(ctx, index, ctx.keys.server);
-    expect(await chainError(approve(ctx, index, ctx.keys.proposer))).toBe("Unauthorized");
-    expect(await chainError(executeVault(ctx, index))).toBe("InvalidProposalStatus");
+    const i = await proposeTransfer(ctx, attacker(), SOL);
+    expect(await chainError(approve(ctx, i, ctx.keys.operator))).toBe("Unauthorized");
+    expect(await chainError(proposeTransfer(ctx, attacker(), SOL, ctx.keys.client))).toBe("Unauthorized");
   });
 
-  it("Teste 6 — CLIENT comprometida não remove a SERVER_KEY", async () => {
+  it("Teste 6 — Phantom comprometida não remove o serviço", async () => {
     const ctx = await setupStrict();
-    // Pior caso: o atacante tem a CLIENT_KEY *e* a wallet operacional (propõe).
-    const evil = DevMemorySigner.generate("EVIL");
-    const index = await proposeConfig(ctx, [
-      { __kind: "AddMember", newMember: { key: await evil.publicKey(), permissions: multisig.types.Permissions.fromPermissions([multisig.types.Permission.Vote]) } },
-      { __kind: "RemoveMember", oldMember: ctx.layout.server },
-    ]);
-    await approve(ctx, index, ctx.keys.client);
-    expect(await chainError(executeConfig(ctx, index))).toBe("InvalidProposalStatus");
-    const state = await readMultisig(ctx.chain, ctx.multisig);
-    expect(state.members.some((m) => m.key === ctx.layout.server.toBase58())).toBe(true);
-    expect(state.members.some((m) => m.key === (evil as unknown as { toJSON(): { publicKey: string } }).toJSON().publicKey)).toBe(false);
+    const i = await proposeConfig(ctx, [{ __kind: "RemoveMember", oldMember: ctx.layout.server }]);
+    await approve(ctx, i, ctx.keys.client);
+    expect(await chainError(executeConfig(ctx, i))).toBe("InvalidProposalStatus");
+    expect((await readMultisig(ctx.chain, ctx.multisig)).members.some((m) => m.key === ctx.layout.server.toBase58())).toBe(true);
   });
 
-  it("Teste 7 — SERVER comprometida não remove a CLIENT_KEY (nem baixa o threshold)", async () => {
+  it("Teste 7 — serviço comprometido não remove a Phantom nem baixa o threshold", async () => {
     const ctx = await setupStrict();
-    const index = await proposeConfig(ctx, [
-      { __kind: "ChangeThreshold", newThreshold: 1 },
-      { __kind: "RemoveMember", oldMember: ctx.layout.client },
-    ]);
-    await approve(ctx, index, ctx.keys.server);
-    expect(await chainError(executeConfig(ctx, index))).toBe("InvalidProposalStatus");
-    const state = await readMultisig(ctx.chain, ctx.multisig);
-    expect(state.threshold).toBe(2);
-    expect(state.members.some((m) => m.key === ctx.layout.client.toBase58())).toBe(true);
+    const i = await proposeConfig(ctx, [{ __kind: "RemoveMember", oldMember: ctx.layout.client }, { __kind: "ChangeThreshold", newThreshold: 1 }]);
+    await approve(ctx, i, ctx.keys.server);
+    expect(await chainError(executeConfig(ctx, i))).toBe("InvalidProposalStatus");
+    expect((await readMultisig(ctx.chain, ctx.multisig)).threshold).toBe(2);
   });
 
-  it("Teste 8 — rotação CLIENT_A → CLIENT_B exige CLIENT_A + SERVER; depois CLIENT_A não vota", async () => {
+  it("Teste 8 — trocar a Phantom: webapp + serviço aprovam, só o operador executa; a Phantom antiga não vota mais", async () => {
     const ctx = await setupStrict();
-    const clientB = DevMemorySigner.generate("CLIENT_B");
-    const b = await clientB.publicKey();
-    const index = await proposeConfig(ctx, rotationActions(ctx.layout.client, b));
-
-    await approve(ctx, index, ctx.keys.client);
-    expect(await chainError(executeConfig(ctx, index))).toBe("InvalidProposalStatus");
-
-    await approve(ctx, index, ctx.keys.server);
-    await executeConfig(ctx, index);
-
-    const state = await readMultisig(ctx.chain, ctx.multisig);
-    assertStrictTwoOfTwo(state, {
-      client: b.toBase58(),
-      server: ctx.layout.server.toBase58(),
-      executor: ctx.layout.executor.toBase58(),
-      proposer: ctx.layout.proposer.toBase58(),
-    });
-
-    // CLIENT_A deixou de ser membro.
-    const next = await proposeTransfer(ctx, attacker(), SOL);
-    expect(await chainError(approve(ctx, next, ctx.keys.client))).toBe("NotAMember");
-    // CLIENT_B + SERVER funcionam.
-    await approve(ctx, next, clientB);
-    await approve(ctx, next, ctx.keys.server);
-    await executeVault(ctx, next);
+    const next = DevMemorySigner.generate("CLIENT_B");
+    const i = await proposeConfig(ctx, rotationActions(ctx.layout.client, await next.publicKey(), "CLIENT"));
+    await approve(ctx, i, ctx.keys.webapp);
+    await approve(ctx, i, ctx.keys.server);
+    expect(await chainError(executeConfig(ctx, i, ctx.keys.webapp))).toBe("Unauthorized"); // aprovada, mas só o operador executa
+    await executeConfig(ctx, i);
+    const s = await readMultisig(ctx.chain, ctx.multisig);
+    assertAccountModel(s, { ...(await roles(ctx)), client: (await next.publicKey()).toBase58() });
+    expect(s.rentCollector).toBe((await next.publicKey()).toBase58());
+    const j = await proposeTransfer(ctx, attacker(), SOL);
+    expect(await chainError(approve(ctx, j, ctx.keys.client))).toBe("NotAMember");
   });
 
-  it("Teste 9 — rotação SERVER_A → SERVER_B exige o Approval App (CLIENT) + SERVER_A", async () => {
+  it("Teste 9 — recuperar o webapp: Phantom + serviço aprovam, o operador executa", async () => {
     const ctx = await setupStrict();
-    const serverB = DevMemorySigner.generate("SERVER_B");
-    const b = await serverB.publicKey();
-    const index = await proposeConfig(ctx, rotationActions(ctx.layout.server, b, "SERVER"));
+    const next = DevMemorySigner.generate("WEBAPP_B");
+    const i = await proposeConfig(ctx, rotationActions(ctx.layout.webapp, await next.publicKey(), "WEBAPP"));
+    await approve(ctx, i, ctx.keys.client);
+    await approve(ctx, i, ctx.keys.server);
+    await executeConfig(ctx, i);
+    assertAccountModel(await readMultisig(ctx.chain, ctx.multisig), { ...(await roles(ctx)), webapp: (await next.publicKey()).toBase58() });
+  });
 
-    // Sem o cliente: falha. Nem a chave nova ajuda — ainda não é membro.
-    await approve(ctx, index, ctx.keys.server);
-    expect(await chainError(approve(ctx, index, serverB))).toBe("NotAMember");
-    expect(await chainError(executeConfig(ctx, index))).toBe("InvalidProposalStatus");
+  it("'Não fui eu' — a troca aprovada é cancelada por dois votantes e o operador não consegue mais executar", async () => {
+    const ctx = await setupStrict();
+    const thief = DevMemorySigner.generate("WEBAPP_DO_LADRAO");
+    const i = await proposeConfig(ctx, rotationActions(ctx.layout.webapp, await thief.publicKey(), "WEBAPP"));
+    await approve(ctx, i, ctx.keys.client); // seed vazada
+    await approve(ctx, i, ctx.keys.server); // serviço aprovou e esperaria o prazo
+    expect((await readProposal(ctx.chain, ctx.multisig, i))?.status).toBe("Approved");
+    for (const k of [ctx.keys.webapp, ctx.keys.server]) await sendInstructions(ctx.chain, [cancelIx(ctx.multisig, i, await k.publicKey())], [ctx.keys.relayer, k]);
+    expect((await readProposal(ctx.chain, ctx.multisig, i))?.status).toBe("Cancelled");
+    expect(await chainError(executeConfig(ctx, i))).toBe("InvalidProposalStatus");
+  });
 
-    await approve(ctx, index, ctx.keys.client);
-    await executeConfig(ctx, index);
-
-    const state = await readMultisig(ctx.chain, ctx.multisig);
-    expect(state.members.some((m) => m.key === ctx.layout.server.toBase58())).toBe(false);
-    expect(state.members.find((m) => m.key === b.toBase58())?.mask).toBe(2); // servidor: só Vote
-    expect(state.threshold).toBe(2);
-
-    const next = await proposeTransfer(ctx, attacker(), SOL);
-    expect(await chainError(approve(ctx, next, ctx.keys.server))).toBe("NotAMember");
+  it("CONFIANÇA no serviço — webapp + serviço aprovam um envio sem a Phantom: o programa aceita, por isso o serviço nunca vota em envios", async () => {
+    const ctx = await setupStrict();
+    const to = attacker();
+    const i = await proposeTransfer(ctx, to, SOL);
+    await approve(ctx, i, ctx.keys.webapp);
+    await approve(ctx, i, ctx.keys.server);
+    await executeVault(ctx, i);
+    expect(await ctx.chain.getBalance(to)).toBe(SOL);
   });
 });
 
-describe("aprovar e executar numa transação (fluxo da carteira comum)", () => {
-  it("servidor aprova antes; a carteira aprova + executa num clique", async () => {
+describe("comportamentos da Squads v4 que o desenho usa", () => {
+  it("troca executada torna stale as propostas abertas", async () => {
     const ctx = await setupStrict();
-    const dest = attacker();
-    const index = await proposeTransfer(ctx, dest, 3n * SOL);
-    await approve(ctx, index, ctx.keys.server);
-    const { sendInstructions } = await import("@duplachave/solana");
-    const { approveIx, executeVaultIx } = await import("@duplachave/squads");
-    const wallet = await ctx.keys.client.publicKey();
-    const exec = await executeVaultIx(ctx.chain, ctx.multisig, index, wallet);
-    await sendInstructions(ctx.chain, [approveIx(ctx.multisig, index, wallet), exec.instruction], [ctx.keys.relayer, ctx.keys.client]);
-    expect(await ctx.chain.getBalance(dest)).toBe(3n * SOL);
-    expect((await readProposal(ctx.chain, ctx.multisig, index))?.status).toBe("Executed");
+    const open = await proposeTransfer(ctx, attacker(), SOL);
+    const i = await proposeConfig(ctx, rotationActions(ctx.layout.server, await DevMemorySigner.generate("S2").publicKey(), "SERVER"));
+    await approve(ctx, i, ctx.keys.client);
+    await approve(ctx, i, ctx.keys.server);
+    await executeConfig(ctx, i);
+    expect(await chainError(approve(ctx, open, ctx.keys.client))).toBe("StaleProposal");
   });
 
-  it("se a execução falha, o voto da carteira também não fica (transação atômica)", async () => {
-    const ctx = await setupStrict(1);
-    const index = await proposeTransfer(ctx, attacker(), 5n * SOL); // mais que o saldo
-    await approve(ctx, index, ctx.keys.server);
-    const { sendInstructions } = await import("@duplachave/solana");
-    const { approveIx, executeVaultIx } = await import("@duplachave/squads");
-    const wallet = await ctx.keys.client.publicKey();
-    const exec = await executeVaultIx(ctx.chain, ctx.multisig, index, wallet);
-    await expect(sendInstructions(ctx.chain, [approveIx(ctx.multisig, index, wallet), exec.instruction], [ctx.keys.relayer, ctx.keys.client])).rejects.toThrow();
-    const p = await readProposal(ctx.chain, ctx.multisig, index);
-    expect(p?.status).toBe("Active");
-    expect(p?.approved).toEqual([ctx.layout.server.toBase58()]);
+  it("troca APROVADA mais antiga: depois de outra troca executada, não executa mais (stale)", async () => {
+    const ctx = await setupStrict();
+    const a = await proposeConfig(ctx, rotationActions(ctx.layout.webapp, await DevMemorySigner.generate("W2").publicKey(), "WEBAPP"));
+    await approve(ctx, a, ctx.keys.client);
+    await approve(ctx, a, ctx.keys.server);
+    const b = await proposeConfig(ctx, rotationActions(ctx.layout.server, await DevMemorySigner.generate("S2").publicKey(), "SERVER"));
+    await approve(ctx, b, ctx.keys.client);
+    await approve(ctx, b, ctx.keys.webapp);
+    await executeConfig(ctx, b);
+    const err = await chainError(sendInstructions(ctx.chain, [executeConfigIx(ctx.multisig, a, ctx.layout.operator, await ctx.keys.relayer.publicKey())], [ctx.keys.relayer, ctx.keys.operator]));
+    expect(err).toBe("StaleProposal");
   });
 
-  it("servidor troca o voto para rejeição: a proposta morre (expiração depois de pré-aprovar)", async () => {
+  it("PERIGO evitado: adicionar e remover em transações separadas daria 3 votantes do lado do usuário", async () => {
     const ctx = await setupStrict();
-    const index = await proposeTransfer(ctx, attacker(), SOL);
-    await approve(ctx, index, ctx.keys.server);
-    const { sendInstructions } = await import("@duplachave/solana");
-    const { rejectIx } = await import("@duplachave/squads");
-    await sendInstructions(ctx.chain, [rejectIx(ctx.multisig, index, ctx.layout.server)], [ctx.keys.relayer, ctx.keys.server]);
-    expect((await readProposal(ctx.chain, ctx.multisig, index))?.status).toBe("Rejected");
-    expect(await chainError(approve(ctx, index, ctx.keys.client))).toBe("InvalidProposalStatus");
-  });
-});
-
-describe("comportamentos do Squads v4 que definem o desenho", () => {
-  it("rotação torna stale as propostas abertas: ninguém mais vota nelas", async () => {
-    const ctx = await setupStrict();
-    const pending = await proposeTransfer(ctx, attacker(), SOL);
-    await approve(ctx, pending, ctx.keys.client);
-
-    const clientB = DevMemorySigner.generate("CLIENT_B");
-    const rot = await proposeConfig(ctx, rotationActions(ctx.layout.client, await clientB.publicKey()));
-    await approve(ctx, rot, ctx.keys.client);
-    await approve(ctx, rot, ctx.keys.server);
-    await executeConfig(ctx, rot);
-
-    expect(await chainError(approve(ctx, pending, ctx.keys.server))).toBe("StaleProposal");
-  });
-
-  it("ATENÇÃO: vault transaction já APROVADA continua executável depois da rotação", async () => {
-    // Por isso a rotação drena a fila antes (KEY_ROTATION.md, passo 3).
-    const ctx = await setupStrict();
-    const dest = attacker();
-    const approved = await proposeTransfer(ctx, dest, SOL);
-    await approve(ctx, approved, ctx.keys.client);
-    await approve(ctx, approved, ctx.keys.server);
-
-    const clientB = DevMemorySigner.generate("CLIENT_B");
-    const rot = await proposeConfig(ctx, rotationActions(ctx.layout.client, await clientB.publicKey()));
-    await approve(ctx, rot, ctx.keys.client);
-    await approve(ctx, rot, ctx.keys.server);
-    await executeConfig(ctx, rot);
-
-    await executeVault(ctx, approved); // o programa não checa stale no execute de vault
-    expect(await ctx.chain.getBalance(dest)).toBe(SOL);
-  });
-
-  it("depois da rotação, CLIENT_B + SERVER cancelam a aprovada antiga", async () => {
-    const ctx = await setupStrict();
-    const approved = await proposeTransfer(ctx, attacker(), SOL);
-    await approve(ctx, approved, ctx.keys.client);
-    await approve(ctx, approved, ctx.keys.server);
-    const clientB = DevMemorySigner.generate("CLIENT_B");
-    const rot = await proposeConfig(ctx, rotationActions(ctx.layout.client, await clientB.publicKey()));
-    await approve(ctx, rot, ctx.keys.client);
-    await approve(ctx, rot, ctx.keys.server);
-    await executeConfig(ctx, rot);
-
-    const { sendInstructions } = await import("@duplachave/solana");
-    const { cancelIx } = await import("@duplachave/squads");
-    for (const m of [clientB, ctx.keys.server]) {
-      await sendInstructions(ctx.chain, [cancelIx(ctx.multisig, approved, await m.publicKey())], [ctx.keys.relayer, m]);
-    }
-    expect((await readProposal(ctx.chain, ctx.multisig, approved))?.status).toBe("Cancelled");
-    expect(await chainError(executeVault(ctx, approved))).toBe("InvalidProposalStatus");
-  });
-
-  it("PERIGO evitado: adicionar e remover em transações separadas abre janela sem o servidor", async () => {
-    // Com só AddMember(CLIENT_B) executado, há 3 votantes e threshold 2:
-    // CLIENT_A + CLIENT_B (os dois do lado do usuário) movem fundos sem o servidor.
-    const ctx = await setupStrict();
-    const clientB = DevMemorySigner.generate("CLIENT_B");
-    const add = await proposeConfig(ctx, [rotationActions(ctx.layout.client, await clientB.publicKey())[0]!]);
-    await approve(ctx, add, ctx.keys.client);
-    await approve(ctx, add, ctx.keys.server);
-    await executeConfig(ctx, add);
-
-    const dest = attacker();
-    const theft = await proposeTransfer(ctx, dest, 5n * SOL);
-    await approve(ctx, theft, ctx.keys.client);
-    await approve(ctx, theft, clientB);
-    await executeVault(ctx, theft);
-    expect(await ctx.chain.getBalance(dest)).toBe(5n * SOL); // por isso a rotação é atômica
-  });
-
-  it("um único voto de rejeição encerra a proposta (cutoff = 1 em 2 de 2)", async () => {
-    const ctx = await setupStrict();
-    const { sendInstructions } = await import("@duplachave/solana");
-    const { rejectIx } = await import("@duplachave/squads");
-    const index = await proposeTransfer(ctx, attacker(), SOL);
-    await sendInstructions(ctx.chain, [rejectIx(ctx.multisig, index, ctx.layout.server)], [ctx.keys.relayer, ctx.keys.server]);
-    expect((await readProposal(ctx.chain, ctx.multisig, index))?.status).toBe("Rejected");
-    expect(await chainError(approve(ctx, index, ctx.keys.client))).toBe("InvalidProposalStatus");
-  });
-
-  it("threshold acima do número de votantes é recusado pelo programa", async () => {
-    const ctx = await setupStrict();
-    const index = await proposeConfig(ctx, [{ __kind: "RemoveMember", oldMember: ctx.layout.client }]);
-    await approve(ctx, index, ctx.keys.client);
-    await approve(ctx, index, ctx.keys.server);
-    // 1 votante restante com threshold 2: o invariant do programa barra.
-    expect(await chainError(executeConfig(ctx, index))).toBe("InvalidThreshold");
+    const extra = DevMemorySigner.generate("EXTRA");
+    const i = await proposeConfig(ctx, [{ __kind: "AddMember", newMember: { key: await extra.publicKey(), permissions: multisig.types.Permissions.fromPermissions([multisig.types.Permission.Vote]) } }]);
+    await approve(ctx, i, ctx.keys.client);
+    await approve(ctx, i, ctx.keys.webapp);
+    await executeConfig(ctx, i);
+    // Com 4 votantes e threshold 2, Phantom + extra (ambos do usuário) aprovam sem o serviço — por isso a troca é atômica e a política recusa AddMember solto.
+    const to = attacker();
+    const j = await proposeTransfer(ctx, to, SOL);
+    await approve(ctx, j, ctx.keys.client);
+    await approve(ctx, j, extra);
+    await executeVault(ctx, j);
+    expect(await ctx.chain.getBalance(to)).toBe(SOL);
   });
 });

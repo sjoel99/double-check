@@ -129,7 +129,10 @@ export type AuditEventType =
   | "INVARIANT_VIOLATION"
   | "PASSKEY_ADDED"
   | "PASSKEY_PENDING"
-  | "PASSKEY_REFUSED";
+  | "PASSKEY_REFUSED"
+  | "SECURITY_CHANGE_REQUESTED"
+  | "SECURITY_CHANGE_VETOED"
+  | "SECURITY_CHANGE_EXECUTED";
 
 export type AuditEvent = {
   seq: number;
@@ -158,7 +161,7 @@ export type ApprovalRecord = {
   intentId: string;
   accountId: string;
   publicKey: string;
-  role: "CLIENT" | "SERVER";
+  role: "CLIENT" | "WEBAPP" | "SERVER";
   decision: "APPROVE" | "REJECT" | "CANCEL";
   /** Declaração assinada (só material público: dados + assinatura). */
   statement: unknown;
@@ -197,6 +200,47 @@ export type PasskeyRecord = {
   revokedAt: number | null;
 };
 
+/**
+ * Chave do webapp cifrada para uma passkey (biometria) de um aparelho. O
+ * serviço guarda só o texto cifrado: a chave AES sai da extensão PRF da
+ * passkey, que só o aparelho (com a digital/rosto) calcula.
+ */
+export type WebappKeyBlob = { credentialId: string; salt: string; iv: string; ciphertext: string };
+export type WebappKeyRecord = {
+  accountId: string;
+  /** Chave pública do webapp (membro da multisig). */
+  publicKey: string;
+  blob: WebappKeyBlob;
+  deviceName: string;
+  createdAt: number;
+  revokedAt: number | null;
+};
+
+/**
+ * Troca de um votante (Phantom, webapp ou serviço) em dois passos: o pedido
+ * entra na chain aprovado por dois votantes; o operador (único executor) só
+ * executa depois de `executeAfter`. "Não fui eu" (VETOED) para tudo.
+ */
+export type SecurityChangeStatus = "PREPARED" | "PENDING" | "EXECUTED" | "VETOED" | "FAILED";
+export type SecurityChangeRecord = {
+  id: string;
+  accountId: string;
+  role: "CLIENT" | "WEBAPP" | "SERVER";
+  oldKey: string;
+  newKey: string;
+  status: SecurityChangeStatus;
+  /** Índice da ConfigTransaction na multisig (fixado ao preparar o pedido). */
+  index: string | null;
+  createdAt: number;
+  executeAfter: number | null;
+  /** Transações preparadas (pedido ou execução) que ainda podem entrar. */
+  prepared: PreparedEntry[] | null;
+  /** Recuperação do webapp: a chave nova cifrada, ativada quando a troca executar. */
+  newKeyBlob: (WebappKeyBlob & { deviceName: string }) | null;
+  signatures: Partial<Record<"request" | "execute", string>>;
+  history: { status: SecurityChangeStatus; at: number; note?: string }[];
+};
+
 export type SecurityEventRecord = {
   id: string;
   accountId: string | null;
@@ -224,6 +268,8 @@ export interface Store {
   listAccountIds(): Promise<string[]>;
   /** Conta cuja CLIENT atual (esperada) é esta chave. */
   findAccountByClientKey(publicKey: string): Promise<SmartAccountRecord | null>;
+  /** Conta cuja chave do webapp atual (esperada) é esta. */
+  findAccountByWebappKey(publicKey: string): Promise<SmartAccountRecord | null>;
 
   saveMember(m: MemberRecord): Promise<void>;
   listMembers(accountId: string): Promise<MemberRecord[]>;
@@ -236,6 +282,13 @@ export interface Store {
 
   savePasskey(p: PasskeyRecord): Promise<void>;
   listPasskeys(accountId: string): Promise<PasskeyRecord[]>;
+
+  saveWebappKey(k: WebappKeyRecord): Promise<void>;
+  listWebappKeys(accountId: string): Promise<WebappKeyRecord[]>;
+
+  saveSecurityChange(c: SecurityChangeRecord): Promise<void>;
+  getSecurityChange(id: string): Promise<SecurityChangeRecord | null>;
+  listSecurityChanges(accountId: string): Promise<SecurityChangeRecord[]>;
 
   saveRotation(r: RotationRecord): Promise<void>;
   getRotation(id: string): Promise<RotationRecord | null>;
@@ -297,6 +350,7 @@ export class MemoryStore implements Store, ChallengeStore {
   async listAccounts(userId: string) { return [...this.accounts.values()].filter((a) => a.userId === userId).map(clone); }
   async listAccountIds() { return [...this.accounts.keys()]; }
   async findAccountByClientKey(publicKey: string) { const a = [...this.accounts.values()].find((x) => x.roles.client === publicKey); return a ? clone(a) : null; }
+  async findAccountByWebappKey(publicKey: string) { const a = [...this.accounts.values()].find((x) => x.roles.webapp === publicKey); return a ? clone(a) : null; }
 
   async saveMember(m: MemberRecord) {
     const i = this.members.findIndex((x) => x.accountId === m.accountId && x.publicKey === m.publicKey);
@@ -315,6 +369,17 @@ export class MemoryStore implements Store, ChallengeStore {
   private passkeys = new Map<string, PasskeyRecord>();
   async savePasskey(p: PasskeyRecord) { this.passkeys.set(p.id, clone(p)); }
   async listPasskeys(accountId: string) { return [...this.passkeys.values()].filter((p) => p.accountId === accountId).map(clone); }
+  private webappKeys: WebappKeyRecord[] = [];
+  async saveWebappKey(k: WebappKeyRecord) {
+    const i = this.webappKeys.findIndex((x) => x.accountId === k.accountId && x.blob.credentialId === k.blob.credentialId && x.publicKey === k.publicKey);
+    if (i >= 0) this.webappKeys[i] = clone(k);
+    else this.webappKeys.push(clone(k));
+  }
+  async listWebappKeys(accountId: string) { return this.webappKeys.filter((k) => k.accountId === accountId).map(clone); }
+  private changes = new Map<string, SecurityChangeRecord>();
+  async saveSecurityChange(c: SecurityChangeRecord) { this.changes.set(c.id, clone(c)); }
+  async getSecurityChange(id: string) { const c = this.changes.get(id); return c ? clone(c) : null; }
+  async listSecurityChanges(accountId: string) { return [...this.changes.values()].filter((c) => c.accountId === accountId).sort((a, b) => b.createdAt - a.createdAt).map(clone); }
 
   async saveRotation(r: RotationRecord) { this.rotations.set(r.id, clone(r)); }
   async getRotation(id: string) { const r = this.rotations.get(id); return r ? clone(r) : null; }

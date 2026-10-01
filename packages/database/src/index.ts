@@ -6,6 +6,8 @@ import type {
   AuditInput,
   ChallengeRecord,
   PasskeyRecord,
+  SecurityChangeRecord,
+  WebappKeyRecord,
   ChallengeStore,
   DeviceRecord,
   IntentRecord,
@@ -142,6 +144,10 @@ export class PgStore implements Store, ChallengeStore {
   }
   async findAccountByClientKey(publicKey: string) {
     const { rows } = await this.db.query<Record<string, unknown>>(`SELECT * FROM smart_accounts WHERE roles->>'client' = $1 LIMIT 1`, [publicKey]);
+    return rows[0] ? this.account(rows[0]) : null;
+  }
+  async findAccountByWebappKey(publicKey: string) {
+    const { rows } = await this.db.query<Record<string, unknown>>(`SELECT * FROM smart_accounts WHERE roles->>'webapp' = $1 LIMIT 1`, [publicKey]);
     return rows[0] ? this.account(rows[0]) : null;
   }
   async saveMember(m: MemberRecord) {
@@ -282,6 +288,41 @@ export class PgStore implements Store, ChallengeStore {
       activeAt: Number(r.active_at),
       revokedAt: r.revoked_at === null ? null : Number(r.revoked_at),
     }));
+  }
+
+  // chave do webapp e trocas de votante ---------------------------------------
+  async saveWebappKey(k: WebappKeyRecord) {
+    await this.db.query(
+      `INSERT INTO webapp_keys (account_id, public_key, credential_id, blob, device_name, created_at, revoked_at) VALUES ($1,$2,$3,$4,$5,$6,$7)
+       ON CONFLICT (account_id, public_key, credential_id) DO UPDATE SET revoked_at = EXCLUDED.revoked_at`,
+      [k.accountId, k.publicKey, k.blob.credentialId, JSON.stringify(k.blob), k.deviceName, k.createdAt, k.revokedAt],
+    );
+  }
+  async listWebappKeys(accountId: string) {
+    const { rows } = await this.db.query<Record<string, unknown>>(`SELECT * FROM webapp_keys WHERE account_id = $1 ORDER BY created_at`, [accountId]);
+    return rows.map((r) => ({
+      accountId: r.account_id as string,
+      publicKey: r.public_key as string,
+      blob: r.blob as WebappKeyRecord["blob"],
+      deviceName: r.device_name as string,
+      createdAt: Number(r.created_at),
+      revokedAt: r.revoked_at === null ? null : Number(r.revoked_at),
+    }));
+  }
+  async saveSecurityChange(c: SecurityChangeRecord) {
+    await this.db.query(
+      `INSERT INTO security_changes (id, account_id, record, status, created_at) VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (id) DO UPDATE SET record = EXCLUDED.record, status = EXCLUDED.status`,
+      [c.id, c.accountId, JSON.stringify(c), c.status, c.createdAt],
+    );
+  }
+  async getSecurityChange(id: string) {
+    const { rows } = await this.db.query<Record<string, unknown>>(`SELECT record FROM security_changes WHERE id = $1`, [id]);
+    return rows[0] ? (rows[0].record as SecurityChangeRecord) : null;
+  }
+  async listSecurityChanges(accountId: string) {
+    const { rows } = await this.db.query<Record<string, unknown>>(`SELECT record FROM security_changes WHERE account_id = $1 ORDER BY created_at DESC`, [accountId]);
+    return rows.map((r) => r.record as SecurityChangeRecord);
   }
 
   // evidências ----------------------------------------------------------------

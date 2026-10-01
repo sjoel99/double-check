@@ -38,8 +38,6 @@ export class DevServerKeyProvider implements ServerKeyProvider {
  * rent saem da carteira do cliente.
  */
 export type ServiceKeys = {
-  /** Membro só com Execute (reserva: a carteira do cliente executa na transação atômica). */
-  executor: Signer;
-  /** Membro só com Initiate: cria a transação da Squads (assina, não paga). */
-  proposer: Signer;
+  /** Membro com criar + executar, sem voto: o ÚNICO executor da multisig. Assina, não paga. */
+  operator: Signer;
 };

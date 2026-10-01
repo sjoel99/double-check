@@ -7,30 +7,41 @@ const ix = multisig.instructions;
 const { Permissions } = multisig.types;
 
 /**
- * As quatro chaves da multisig e o que cada uma pode fazer.
- * client = carteira comum do usuário (Phantom, Backpack…): vota e executa —
- * executar não dá poder (só roda o que já tem 2 votos) e deixa a aprovação e a
- * execução irem numa transação só.
+ * As quatro chaves da multisig 2 de 3:
+ * - client: a Phantom do usuário (vota);
+ * - webapp: a chave do webapp, guardada cifrada e destravada pela biometria (vota);
+ * - server: a chave do serviço (vota — só em recuperação, e com prazo);
+ * - operator: do serviço, cria e é o ÚNICO que executa (não vota).
+ * Votar e executar são permissões separadas na Squads: como só o operador
+ * executa, nada aprovado roda sem o serviço conferir a política (e o prazo).
  */
 export type MultisigLayout = {
   client: PublicKey;
+  webapp: PublicKey;
   server: PublicKey;
-  executor: PublicKey;
-  proposer: PublicKey;
+  operator: PublicKey;
 };
+
+export const VOTER_MASK = PERM.Vote;
+export const OPERATOR_MASK = PERM.Initiate | PERM.Execute;
+/** Compatibilidade de nomes: todos os votantes têm só Vote. */
+export const CLIENT_MASK = VOTER_MASK;
+export const SERVER_MASK = VOTER_MASK;
 
 export function layoutMembers(layout: MultisigLayout): multisig.types.Member[] {
   return [
-    { key: layout.client, permissions: Permissions.fromPermissions([PERM.Vote, PERM.Execute]) },
+    { key: layout.client, permissions: Permissions.fromPermissions([PERM.Vote]) },
+    { key: layout.webapp, permissions: Permissions.fromPermissions([PERM.Vote]) },
     { key: layout.server, permissions: Permissions.fromPermissions([PERM.Vote]) },
-    { key: layout.executor, permissions: Permissions.fromPermissions([PERM.Execute]) },
-    { key: layout.proposer, permissions: Permissions.fromPermissions([PERM.Initiate]) },
+    { key: layout.operator, permissions: Permissions.fromPermissions([PERM.Initiate, PERM.Execute]) },
   ];
 }
 
 /**
- * Multisig STRICT_2_OF_2: threshold 2, dois votantes, sem config authority
- * (autônoma: toda mudança passa por votação), sem rent collector, sem time lock.
+ * Multisig 2 de 3: threshold 2 entre client, webapp e server; operator cria e
+ * executa; sem config authority (toda mudança passa por votação), sem time lock
+ * (o prazo das trocas é imposto pelo operador, o único que executa), rent de
+ * volta para a Phantom.
  */
 export function createStrictMultisigIx(args: {
   createKey: PublicKey;
@@ -38,7 +49,7 @@ export function createStrictMultisigIx(args: {
   treasury: PublicKey;
   layout: MultisigLayout;
   timeLock?: number;
-  /** Recebe o rent das contas de proposta fechadas. Padrão: a carteira do cliente. */
+  /** Recebe o rent das contas de proposta fechadas. Padrão: a Phantom. */
   rentCollector?: PublicKey | null;
 }): { instruction: TransactionInstruction; multisig: PublicKey; vault: PublicKey } {
   const [msPda] = multisig.getMultisigPda({ createKey: args.createKey });
@@ -119,20 +130,17 @@ export function createConfigProposalIxs(args: {
 }
 
 /**
- * Troca de um votante numa única ConfigTransaction: [AddMember(nova), RemoveMember(antiga)].
- * As duas ações executam juntas; o invariant do programa só roda no fim, e
- * nenhum estado intermediário com três votantes chega a existir na chain.
+ * Troca de um votante numa única ConfigTransaction: [AddMember(nova, Vote),
+ * RemoveMember(antiga)] — e, na troca da Phantom, SetRentCollector(nova). As
+ * ações executam juntas; o invariant do programa só roda no fim.
  */
-export const CLIENT_MASK = PERM.Vote | PERM.Execute;
-export const SERVER_MASK = PERM.Vote;
+export type RotationRole = "CLIENT" | "WEBAPP" | "SERVER";
 
-export function rotationActions(oldKey: PublicKey, newKey: PublicKey, role: "CLIENT" | "SERVER" = "CLIENT"): multisig.types.ConfigAction[] {
-  const perms = role === "CLIENT" ? [PERM.Vote, PERM.Execute] : [PERM.Vote];
+export function rotationActions(oldKey: PublicKey, newKey: PublicKey, role: RotationRole = "CLIENT"): multisig.types.ConfigAction[] {
   const actions: multisig.types.ConfigAction[] = [
-    { __kind: "AddMember", newMember: { key: newKey, permissions: Permissions.fromPermissions(perms) } },
+    { __kind: "AddMember", newMember: { key: newKey, permissions: Permissions.fromPermissions([PERM.Vote]) } },
     { __kind: "RemoveMember", oldMember: oldKey },
   ];
-  // O rent das propostas volta para a carteira do cliente: acompanha a troca.
   if (role === "CLIENT") actions.push({ __kind: "SetRentCollector", newRentCollector: newKey });
   return actions;
 }

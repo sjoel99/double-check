@@ -28,7 +28,7 @@ describe("PgStore (PGlite)", () => {
     const s = new PgStore(db);
     await s.saveUser({ id: "u", name: "u", policy: { allowedPrograms: [], allowedMints: [], maxLamportsPerTx: 5n, maxTokenPerTx: {}, addressBook: [], requireAddressBook: false }, createdAt: 1 });
     expect((await s.getUser("u"))?.policy.maxLamportsPerTx).toBe(5n);
-    await s.saveAccount({ id: "a", userId: "u", cluster: "localnet", multisig: "m", vault: "v", roles: { client: "c", server: "s", executor: "e", proposer: "p" }, frozenBy: null, createdAt: 1 });
+    await s.saveAccount({ id: "a", userId: "u", cluster: "localnet", multisig: "m", vault: "v", roles: { client: "c", webapp: "w", server: "s", operator: "o" }, frozenBy: null, createdAt: 1 });
     const m = { accountId: "a", publicKey: "k", role: "CLIENT" as const, permissions: 2, status: "REVOKED" as const, deviceId: null, createdAt: 1, revokedAt: 2 };
     await s.saveMember(m);
     await expect(s.saveMember({ ...m, status: "ACTIVE", revokedAt: null })).rejects.toThrow(/revogada/);

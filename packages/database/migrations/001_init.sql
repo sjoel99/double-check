@@ -183,3 +183,29 @@ CREATE TABLE IF NOT EXISTS passkeys (
   revoked_at   bigint
 );
 CREATE INDEX IF NOT EXISTS passkeys_account ON passkeys(account_id);
+
+-- Modelo 2 de 3: papéis novos.
+ALTER TABLE members DROP CONSTRAINT IF EXISTS members_role_check;
+ALTER TABLE members ADD CONSTRAINT members_role_check CHECK (role IN ('CLIENT','WEBAPP','SERVER','OPERATOR','EXECUTOR','PROPOSER'));
+
+-- Chave do webapp cifrada por passkey (o serviço só vê o texto cifrado).
+CREATE TABLE IF NOT EXISTS webapp_keys (
+  account_id     text NOT NULL REFERENCES smart_accounts(id),
+  public_key     text NOT NULL,
+  credential_id  text NOT NULL,
+  blob           jsonb NOT NULL,
+  device_name    text NOT NULL,
+  created_at     bigint NOT NULL,
+  revoked_at     bigint,
+  PRIMARY KEY (account_id, public_key, credential_id)
+);
+
+-- Trocas de votante em dois passos (pedido + execução depois do prazo).
+CREATE TABLE IF NOT EXISTS security_changes (
+  id            text PRIMARY KEY,
+  account_id    text NOT NULL REFERENCES smart_accounts(id),
+  record        jsonb NOT NULL,
+  status        text NOT NULL,
+  created_at    bigint NOT NULL
+);
+CREATE INDEX IF NOT EXISTS security_changes_account ON security_changes(account_id, created_at);

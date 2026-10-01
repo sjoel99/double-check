@@ -1,120 +1,127 @@
-/** Transação atômica paga pela carteira: provas no programa real. */
+/** Transação atômica paga pela Phantom no modelo 2 de 3: provas no programa real. */
 import { describe, expect, it } from "vitest";
-import { LAMPORTS_PER_SOL, SystemProgram, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
+import { LAMPORTS_PER_SOL, SystemProgram, TransactionMessage, VersionedTransaction, type TransactionInstruction } from "@solana/web3.js";
 import { DevMemorySigner, signTransaction } from "@duplachave/crypto";
-import { atomicConfigInstructions, atomicVaultInstructions, readMultisig, readProposal, rotationActions } from "@duplachave/squads";
+import { atomicVaultInstructions, configCancelInstructions, configExecuteInstructions, configRequestInstructions, readMultisig, readProposal, rotationActions } from "@duplachave/squads";
 import { attacker, chainError, setupStrict } from "./support/setup";
 
 const SOL = BigInt(LAMPORTS_PER_SOL);
+type Ctx = Awaited<ReturnType<typeof setupStrict>>;
 
-async function build(ctx: Awaited<ReturnType<typeof setupStrict>>, ixs: Parameters<typeof signTransaction>[0] extends never ? never : any, payer = ctx.keys.client) {
+async function build(ctx: Ctx, ixs: TransactionInstruction[], payer = ctx.keys.client) {
   const msg = new TransactionMessage({ payerKey: await payer.publicKey(), recentBlockhash: await ctx.chain.getLatestBlockhash(), instructions: ixs }).compileToV0Message();
   return new VersionedTransaction(msg);
 }
 
-describe("transação atômica paga pela carteira", () => {
-  it("cria, servidor aprova, carteira aprova e executa numa transação; a carteira paga taxa e rent", async () => {
+const transfer = async (ctx: Ctx, lamports: bigint, over: Partial<Parameters<typeof atomicVaultInstructions>[0]> = {}) => {
+  const index = (await readMultisig(ctx.chain, ctx.multisig)).transactionIndex + 1n;
+  const ixs = atomicVaultInstructions({
+    multisig: ctx.multisig,
+    index,
+    operator: ctx.layout.operator,
+    voters: [ctx.layout.client, ctx.layout.webapp],
+    payer: ctx.layout.client,
+    rentCollector: ctx.layout.client,
+    instructions: [SystemProgram.transfer({ fromPubkey: ctx.vault, toPubkey: attacker(), lamports })],
+    ...over,
+  });
+  return { index, ixs };
+};
+
+describe("operação atômica (Phantom + webapp votam, operador executa, Phantom paga)", () => {
+  it("cria, dois votos, operador executa e fecha numa transação; a Phantom paga só a taxa; o serviço não gasta nada", async () => {
     const ctx = await setupStrict();
-    const dest = attacker();
-    const index = (await readMultisig(ctx.chain, ctx.multisig)).transactionIndex + 1n;
-    const ixs = atomicVaultInstructions({
-      multisig: ctx.multisig, index, proposer: ctx.layout.proposer, server: ctx.layout.server, wallet: ctx.layout.client,
-      instructions: [SystemProgram.transfer({ fromPubkey: ctx.vault, toPubkey: dest, lamports: 2n * SOL })],
-    });
+    const { index, ixs } = await transfer(ctx, 2n * SOL);
     const tx = await build(ctx, ixs);
-    console.log("tamanho da transação atômica:", tx.serialize().length, "bytes (limite 1232)");
+    console.log("tamanho da transação atômica (2 de 3):", tx.serialize().length, "bytes (limite 1232)");
     expect(tx.serialize().length).toBeLessThanOrEqual(1232);
-    const feePayerBefore = await ctx.chain.getBalance(await ctx.keys.relayer.publicKey());
-    const walletBefore = await ctx.chain.getBalance(ctx.layout.client);
-    await signTransaction(tx, [ctx.keys.proposer, ctx.keys.server]); // o serviço assina antes
-    await signTransaction(tx, [ctx.keys.client]); // a carteira por último
+    expect(tx.message.header.numRequiredSignatures).toBe(3);
+    const before = await ctx.chain.getBalance(ctx.layout.client);
+    await signTransaction(tx, [ctx.keys.webapp]); // webapp (depois da biometria)
+    await signTransaction(tx, [ctx.keys.operator]); // serviço (depois de conferir a política e o webapp)
+    await signTransaction(tx, [ctx.keys.client]); // Phantom por último
     await ctx.chain.sendTransaction(tx);
-    expect(await ctx.chain.getBalance(dest)).toBe(2n * SOL);
-    // Executada e já fechada: as contas da proposta somem e o rent volta para a carteira.
     expect(await readProposal(ctx.chain, ctx.multisig, index)).toBeNull();
-    expect((await readMultisig(ctx.chain, ctx.multisig)).transactionIndex).toBe(index);
-    const walletAfter = await ctx.chain.getBalance(ctx.layout.client);
-    console.log("custo líquido para a carteira:", Number(walletBefore - walletAfter) / 1e9, "SOL");
-    expect(walletBefore - walletAfter).toBe(15_000n); // só a taxa de rede: 3 assinaturas × 5000 lamports
-    expect(await ctx.chain.getBalance(await ctx.keys.relayer.publicKey())).toBe(feePayerBefore); // o sistema não pagou nada
+    expect(before - (await ctx.chain.getBalance(ctx.layout.client))).toBe(15_000n);
+    for (const k of [ctx.layout.operator, ctx.layout.server, ctx.layout.webapp]) expect(await ctx.chain.getBalance(k)).toBe(0n);
   });
 
-  it("sem a assinatura do servidor a transação nem entra; sem a da carteira também não", async () => {
+  it("sem o operador, sem o webapp ou com a Phantom no lugar do operador: o programa recusa", async () => {
     const ctx = await setupStrict();
-    const index = (await readMultisig(ctx.chain, ctx.multisig)).transactionIndex + 1n;
-    const ixs = atomicVaultInstructions({
-      multisig: ctx.multisig, index, proposer: ctx.layout.proposer, server: ctx.layout.server, wallet: ctx.layout.client,
-      instructions: [SystemProgram.transfer({ fromPubkey: ctx.vault, toPubkey: attacker(), lamports: SOL })],
-    });
-    const noServer = await build(ctx, ixs);
-    await signTransaction(noServer, [ctx.keys.proposer, ctx.keys.client]);
-    await expect(ctx.chain.sendTransaction(noServer)).rejects.toThrow();
-    // Carteira tentando substituir o servidor por outro votante: o programa recusa.
-    const fake = DevMemorySigner.generate("FAKE");
-    const ixs2 = atomicVaultInstructions({
-      multisig: ctx.multisig, index, proposer: ctx.layout.proposer, server: await fake.publicKey(), wallet: ctx.layout.client,
-      instructions: [SystemProgram.transfer({ fromPubkey: ctx.vault, toPubkey: attacker(), lamports: SOL })],
-    });
-    const forged = await build(ctx, ixs2);
-    await signTransaction(forged, [ctx.keys.proposer, fake, ctx.keys.client]);
+    const a = await transfer(ctx, SOL);
+    const noOperator = await build(ctx, a.ixs);
+    await signTransaction(noOperator, [ctx.keys.webapp, ctx.keys.client]);
+    await expect(ctx.chain.sendTransaction(noOperator)).rejects.toThrow();
+
+    const fake = DevMemorySigner.generate("FAKE_WEBAPP");
+    const b = await transfer(ctx, SOL, { voters: [ctx.layout.client, await fake.publicKey()] });
+    const forged = await build(ctx, b.ixs);
+    await signTransaction(forged, [fake, ctx.keys.operator, ctx.keys.client]);
     expect(await chainError(ctx.chain.sendTransaction(forged))).toBe("NotAMember");
+
+    const c = await transfer(ctx, SOL, { operator: ctx.layout.client });
+    const selfExec = await build(ctx, c.ixs);
+    await signTransaction(selfExec, [ctx.keys.webapp, ctx.keys.client]);
+    expect(await chainError(ctx.chain.sendTransaction(selfExec))).toBe("Unauthorized");
   });
 
-  it("se a execução falha, nada fica na chain (nem a proposta)", async () => {
+  it("se a execução falha, nada fica na chain", async () => {
     const ctx = await setupStrict(1);
-    const index = (await readMultisig(ctx.chain, ctx.multisig)).transactionIndex + 1n;
-    const ixs = atomicVaultInstructions({
-      multisig: ctx.multisig, index, proposer: ctx.layout.proposer, server: ctx.layout.server, wallet: ctx.layout.client,
-      instructions: [SystemProgram.transfer({ fromPubkey: ctx.vault, toPubkey: attacker(), lamports: 5n * SOL })],
-    });
+    const { index, ixs } = await transfer(ctx, 5n * SOL);
     const tx = await build(ctx, ixs);
-    await signTransaction(tx, [ctx.keys.proposer, ctx.keys.server, ctx.keys.client]);
+    await signTransaction(tx, [ctx.keys.webapp, ctx.keys.operator, ctx.keys.client]);
     await expect(ctx.chain.sendTransaction(tx)).rejects.toThrow();
     expect(await readProposal(ctx.chain, ctx.multisig, index)).toBeNull();
     expect((await readMultisig(ctx.chain, ctx.multisig)).transactionIndex).toBe(index - 1n);
   });
+});
 
-  it("troca de carteira atômica: carteira atual + servidor, e a carteira atual executa", async () => {
+describe("troca de chave em dois passos (pedido agora, execução depois do prazo)", () => {
+  it("recuperar o webapp: pedido com Phantom + serviço; depois o operador executa; a Phantom paga as duas vezes", async () => {
     const ctx = await setupStrict();
-    const next = DevMemorySigner.generate("NEXT");
+    const next = DevMemorySigner.generate("WEBAPP_B");
     const index = (await readMultisig(ctx.chain, ctx.multisig)).transactionIndex + 1n;
-    const ixs = atomicConfigInstructions({
-      multisig: ctx.multisig, index, proposer: ctx.layout.proposer, server: ctx.layout.server, wallet: ctx.layout.client,
-      actions: rotationActions(ctx.layout.client, await next.publicKey(), "CLIENT"),
-      rentCollector: await next.publicKey(),
-    });
-    const tx = await build(ctx, ixs);
-    console.log("tamanho da troca atômica:", tx.serialize().length, "bytes");
-    await signTransaction(tx, [ctx.keys.proposer, ctx.keys.server, ctx.keys.client]);
-    await ctx.chain.sendTransaction(tx);
-    const state = await readMultisig(ctx.chain, ctx.multisig);
-    expect(state.members.find((m) => m.key === (next as any).toJSON().publicKey)?.mask).toBe(6);
-    expect(state.members.some((m) => m.key === ctx.layout.client.toBase58())).toBe(false);
-    expect(state.rentCollector).toBe((next as any).toJSON().publicKey);
+    const req = await build(
+      ctx,
+      configRequestInstructions({ multisig: ctx.multisig, index, operator: ctx.layout.operator, voters: [ctx.layout.client, ctx.layout.server], payer: ctx.layout.client, actions: rotationActions(ctx.layout.webapp, await next.publicKey(), "WEBAPP") }),
+    );
+    await signTransaction(req, [ctx.keys.operator, ctx.keys.server, ctx.keys.client]);
+    await ctx.chain.sendTransaction(req);
+    expect((await readProposal(ctx.chain, ctx.multisig, index))?.status).toBe("Approved");
+
+    const exec = await build(ctx, configExecuteInstructions({ multisig: ctx.multisig, index, operator: ctx.layout.operator, payer: ctx.layout.client, rentCollector: ctx.layout.client }));
+    await signTransaction(exec, [ctx.keys.operator, ctx.keys.client]);
+    await ctx.chain.sendTransaction(exec);
+    const s = await readMultisig(ctx.chain, ctx.multisig);
+    const nk = (await next.publicKey()).toBase58();
+    expect(s.members.find((m) => m.key === nk)?.mask).toBe(2);
+    expect(s.members.some((m) => m.key === ctx.layout.webapp.toBase58())).toBe(false);
+    expect(await readProposal(ctx.chain, ctx.multisig, index)).toBeNull();
   });
 
-  it("multisig antiga sem rent_collector: o app monta sem fechar as contas, e a troca da carteira passa a fechar", async () => {
-    const { atomicInstructionsFor, compileAtomic } = await import("@duplachave/custody");
-    const { sealIntent } = await import("@duplachave/shared");
-    const ctx = await setupStrict(10, { rentCollector: null });
-    const state = await readMultisig(ctx.chain, ctx.multisig);
-    expect(state.rentCollector).toBeNull();
-    const roles = { proposer: ctx.layout.proposer, server: ctx.layout.server, wallet: ctx.layout.client };
-    const base = { version: 1 as const, id: crypto.randomUUID(), cluster: "localnet" as const, multisig: ctx.multisig.toBase58(), transactionIndex: "1", createdAt: 1, expiresAt: 100 };
-    const intent = sealIntent({ ...base, kind: "OPERATION", type: "TRANSFER_SOL", vault: ctx.vault.toBase58(), vaultIndex: 0, amountLamports: SOL.toString(), destination: attacker().toBase58(), programs: [SystemProgram.programId.toBase58()] });
-    const ixs = atomicInstructionsFor(intent, roles, state);
-    expect(ixs).toHaveLength(5);
-    const tx = new VersionedTransaction(compileAtomic(ixs, ctx.layout.client, await ctx.chain.getLatestBlockhash()));
-    await signTransaction(tx, [ctx.keys.proposer, ctx.keys.server, ctx.keys.client]);
-    await ctx.chain.sendTransaction(tx);
+  it("'Não fui eu': webapp + serviço cancelam o pedido aprovado, numa transação paga pela Phantom", async () => {
+    const ctx = await setupStrict();
+    const thief = DevMemorySigner.generate("WEBAPP_LADRAO");
+    const index = (await readMultisig(ctx.chain, ctx.multisig)).transactionIndex + 1n;
+    const req = await build(
+      ctx,
+      configRequestInstructions({ multisig: ctx.multisig, index, operator: ctx.layout.operator, voters: [ctx.layout.client, ctx.layout.server], payer: ctx.layout.client, actions: rotationActions(ctx.layout.webapp, await thief.publicKey(), "WEBAPP") }),
+    );
+    await signTransaction(req, [ctx.keys.operator, ctx.keys.server, ctx.keys.client]);
+    await ctx.chain.sendTransaction(req);
+    const cancel = await build(ctx, configCancelInstructions({ multisig: ctx.multisig, index, voters: [ctx.layout.webapp, ctx.layout.server], rentCollector: ctx.layout.client }));
+    await signTransaction(cancel, [ctx.keys.webapp, ctx.keys.server, ctx.keys.client]);
+    await ctx.chain.sendTransaction(cancel);
+    expect(await readProposal(ctx.chain, ctx.multisig, index)).toBeNull(); // cancelada e fechada
+    expect((await readMultisig(ctx.chain, ctx.multisig)).members.some((m) => m.key === ctx.layout.webapp.toBase58())).toBe(true);
+  });
 
-    const next = DevMemorySigner.generate("NEXT");
-    const rot = sealIntent({ ...base, id: crypto.randomUUID(), transactionIndex: "2", kind: "CONFIG", type: "ROTATE_MEMBER", role: "CLIENT", oldKey: ctx.layout.client.toBase58(), newKey: (await next.publicKey()).toBase58(), rotationId: crypto.randomUUID() });
-    const rotIxs = atomicInstructionsFor(rot, roles, await readMultisig(ctx.chain, ctx.multisig));
-    expect(rotIxs).toHaveLength(6);
-    const rtx = new VersionedTransaction(compileAtomic(rotIxs, ctx.layout.client, await ctx.chain.getLatestBlockhash()));
-    await signTransaction(rtx, [ctx.keys.proposer, ctx.keys.server, ctx.keys.client]);
-    await ctx.chain.sendTransaction(rtx);
-    expect((await readMultisig(ctx.chain, ctx.multisig)).rentCollector).toBe((await next.publicKey()).toBase58());
+  it("multisig sem rent_collector: a operação sai sem fechar as contas", async () => {
+    const ctx = await setupStrict(10, { rentCollector: null });
+    const { ixs } = await transfer(ctx, SOL, { rentCollector: null });
+    expect(ixs).toHaveLength(5);
+    const tx = await build(ctx, ixs);
+    await signTransaction(tx, [ctx.keys.webapp, ctx.keys.operator, ctx.keys.client]);
+    await ctx.chain.sendTransaction(tx);
   });
 });
