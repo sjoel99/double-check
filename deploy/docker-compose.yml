@@ -42,7 +42,7 @@ services:
       DK_SESSION_SECRET: ${DK_SESSION_SECRET}
       DK_ADMIN_TOKEN: ${DK_ADMIN_TOKEN}
       DK_KEYS_DIR: /data/keys
-      DK_PASSKEY_RESET_DELAY: ${DK_PASSKEY_RESET_DELAY:-172800}
+      DK_SECURITY_DELAY: ${DK_SECURITY_DELAY:-259200}
     volumes:
       - /root/duplachave/data/keys:/data/keys
     depends_on: [duplachave-db]
