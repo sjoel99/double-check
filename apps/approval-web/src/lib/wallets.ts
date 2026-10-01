@@ -1,5 +1,9 @@
 import { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
+import { ensureActivation } from "./activation";
+
+/** Nome exibido: o Mobile Wallet Adapter abre o app de carteira do celular (Phantom, Solflare…). */
+export const walletLabel = (name: string) => (name === "Mobile Wallet Adapter" ? "Carteira do celular" : name);
 
 /**
  * Carteiras pelo Wallet Standard (Phantom, Backpack, Solflare e outras se
@@ -67,7 +71,12 @@ export class ConnectedWallet {
   }
 
   get name() {
-    return this.wallet.name;
+    return walletLabel(this.wallet.name);
+  }
+
+  /** Abre outro app (Mobile Wallet Adapter): precisa de um toque recente. */
+  private async gate(what: string) {
+    if (this.wallet.name === "Mobile Wallet Adapter") await ensureActivation(what);
   }
   get icon() {
     return this.wallet.icon;
@@ -93,6 +102,7 @@ export class ConnectedWallet {
   }
 
   async signMessage(text: string): Promise<string> {
+    await this.gate("Abrir a carteira para assinar o texto");
     const [out] = await this.wallet.features["solana:signMessage"].signMessage({ account: this.account, message: new TextEncoder().encode(text) });
     return bs58.encode(out.signature);
   }
@@ -102,6 +112,7 @@ export class ConnectedWallet {
    * é a pagadora; quem envia é o backend, depois de conferir os bytes.
    */
   async signTransaction(tx: VersionedTransaction): Promise<string> {
+    await this.gate("Abrir a carteira para assinar a transação");
     const chain = chainFor(this.cluster);
     const [out] = await this.wallet.features["solana:signTransaction"].signTransaction({ account: this.account, transaction: tx.serialize(), ...(chain ? { chain } : {}) });
     return Buffer.from(out.signedTransaction).toString("base64");

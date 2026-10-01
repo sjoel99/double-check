@@ -1,6 +1,7 @@
 import { startAuthentication, startRegistration } from "@simplewebauthn/browser";
 import { b64url, type SoftCredential, softCreate, softGet } from "@duplachave/crypto";
 import { kvGet, kvSet } from "./storage";
+import { ensureActivation, isMobile } from "./activation";
 
 /**
  * Biometria (passkey/WebAuthn) deste aparelho. Com o app aberto num domínio
@@ -33,6 +34,7 @@ export async function createPasskey(options: any, soft: { devTools: boolean; con
     await kvSet(softKey(), [...((await kvGet<SoftCredential[]>(softKey())) ?? []), credential]);
     return response;
   }
+  if (isMobile()) await ensureActivation("Criar a biometria deste aparelho");
   return startRegistration({ optionsJSON: options });
 }
 
@@ -47,6 +49,7 @@ export async function confirmPasskey(challenge: string, allow: string[], soft: {
     await kvSet(softKey(), all); // contador
     return out;
   }
+  if (isMobile()) await ensureActivation("Confirmar com a biometria");
   return startAuthentication({
     optionsJSON: {
       challenge,

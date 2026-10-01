@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { errorText, loginOrEnroll, useApp } from "../app";
 import { Icon, Logo } from "../icons";
-import type { StandardWallet } from "../lib/wallets";
+import { type StandardWallet, walletLabel } from "../lib/wallets";
 import { api } from "../lib/api";
 import { PhoneQr } from "../components/PhoneQr";
 
@@ -19,8 +19,9 @@ export function WalletList({ onPick, busy, exclude }: { onPick: (w: StandardWall
     <button key={w.name} type="button" className="item" disabled={busy} onClick={() => onPick(w)} style={{ padding: 14 }}>
       <img src={w.icon} alt="" width={36} height={36} style={{ borderRadius: 10 }} />
       <div className="grow">
-        <div className="t">{w.name}</div>
-        {w.name === exclude && <div className="s">carteira atual da conta</div>}
+        <div className="t">{walletLabel(w.name)}</div>
+        {w.name === "Mobile Wallet Adapter" && <div className="s">Phantom, Solflare… (abre o app da carteira)</div>}
+        {walletLabel(w.name) === exclude && <div className="s">carteira atual da conta</div>}
       </div>
       <Icon name="chev" size={18} color="var(--muted)" />
     </button>

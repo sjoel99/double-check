@@ -10,7 +10,10 @@ import { api, ApiError } from "./lib/api";
 import { appChain, short } from "./lib/chain";
 import { makeDevWallet, type DevConfirm } from "./lib/devwallet";
 import { loadSession, saveSession, type Session } from "./lib/storage";
-import { ConnectedWallet, discoverWallets, registerWallet, type StandardWallet } from "./lib/wallets";
+import { ConnectedWallet, discoverWallets, registerWallet, type StandardWallet, walletLabel } from "./lib/wallets";
+import { setActivationGate } from "./lib/activation";
+
+let mwaRegistered = false;
 import { Icon } from "./icons";
 
 export type Config = { cluster: Cluster; mode: string; devTools: boolean };
@@ -59,6 +62,11 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
   const [toastMsg, setToast] = useState<string | null>(null);
   const [confirmReq, setConfirmReq] = useState<ConfirmReq | null>(null);
   const [malicious, setMalicious] = useState(false);
+  const [tapReq, setTapReq] = useState<{ label: string; resolve: () => void; reject: (e: Error) => void } | null>(null);
+  useEffect(() => {
+    setActivationGate((label) => new Promise<void>((resolve, reject) => setTapReq({ label, resolve, reject })));
+    return () => setActivationGate(null);
+  }, []);
   const chain = useMemo(() => appChain(), []);
   const toastTimer = useRef<number>(0);
   const devConfirm = useRef<DevConfirm>(async () => false);
@@ -71,7 +79,8 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
       registerWallet(makeDevWallet("Carteira de teste B", () => devConfirm.current) as unknown as StandardWallet);
     }
     // No Android, a Phantom do celular entra pelo Mobile Wallet Adapter (a página chama o app da carteira).
-    if (/Android/i.test(navigator.userAgent) && config.cluster !== "localnet") {
+    if (/Android/i.test(navigator.userAgent) && config.cluster !== "localnet" && !mwaRegistered) {
+      mwaRegistered = true;
       try {
         registerMwa({
           appIdentity: { name: "Dupla Chave", uri: location.origin, icon: "icon.svg" },
@@ -112,7 +121,7 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
       if (!session) throw new Error("sem sessão");
       let c = wallet;
       if (!c || c.name !== session.walletName) {
-        const w = wallets.find((x) => x.name === session.walletName);
+        const w = wallets.find((x) => walletLabel(x.name) === session.walletName);
         if (!w) throw new Error(`Abra ou instale a carteira ${session.walletName} para assinar.`);
         c = await connect(w);
       }
@@ -145,6 +154,38 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
             setConfirmReq(null);
           }}
         />
+      )}
+      {tapReq && (
+        <div className="sheet-wrap" role="dialog" aria-modal="true" aria-label={tapReq.label}>
+          <div className="sheet" style={{ alignItems: "stretch" }}>
+            <div className="grab" style={{ alignSelf: "center" }} />
+            <div style={{ fontSize: 17, fontWeight: 600, textAlign: "center" }}>Continue com um toque</div>
+            <div className="muted" style={{ fontSize: 13, textAlign: "center", lineHeight: 1.5 }}>
+              O celular só deixa abrir a carteira ou a biometria logo depois de um toque seu.
+            </div>
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => {
+                // Resolve dentro do próprio toque: a chamada seguinte ainda conta como iniciada por ele.
+                tapReq.resolve();
+                setTapReq(null);
+              }}
+            >
+              {tapReq.label}
+            </button>
+            <button
+              type="button"
+              className="linkbtn"
+              onClick={() => {
+                tapReq.reject(new Error("assinatura recusada"));
+                setTapReq(null);
+              }}
+            >
+              Cancelar
+            </button>
+          </div>
+        </div>
       )}
       {toastMsg && (
         <div className="toast" role="status">
