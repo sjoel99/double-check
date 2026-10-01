@@ -1,0 +1,72 @@
+# Dupla Chave (devnet) na VPS, atrás do mesmo Cloudflare Tunnel do resto.
+# Hostname público → http://duplachave:80
+#
+# - duplachave (nginx): app estático, /api → API, /rpc → RPC da devnet
+# - duplachave-api: a API (chaves do serviço cifradas em /root/duplachave/data/keys)
+# - duplachave-db: Postgres, só na rede interna (fora da vps_default)
+#
+# Segredos em /root/duplachave/deploy/.env (600). Uso:
+#   docker compose -f /root/duplachave/src/deploy/docker-compose.yml --env-file /root/duplachave/deploy/.env up -d --build
+name: duplachave
+
+services:
+  duplachave:
+    image: nginx:1.29-alpine
+    container_name: duplachave
+    restart: unless-stopped
+    expose: ["80"]
+    volumes:
+      - /root/duplachave/dist:/usr/share/nginx/html:ro
+      - /root/duplachave/src/deploy/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+    environment:
+      RPC_UPSTREAM: ${RPC_UPSTREAM:-https://api.devnet.solana.com/}
+      RPC_HOST: ${RPC_HOST:-api.devnet.solana.com}
+      NGINX_ENVSUBST_FILTER: "^RPC_"
+    read_only: true
+    tmpfs: [/var/cache/nginx, /var/run, /etc/nginx/conf.d]
+    networks: [vps, interno]
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+
+  duplachave-api:
+    build: { context: .., dockerfile: deploy/Dockerfile.api }
+    image: duplachave-api:latest
+    container_name: duplachave-api
+    restart: unless-stopped
+    expose: ["8787"]
+    environment:
+      SOLANA_CLUSTER: devnet
+      SOLANA_RPC_URL: ${SOLANA_RPC_URL:-https://api.devnet.solana.com}
+      DATABASE_URL: postgres://postgres:${DB_PASSWORD}@duplachave-db:5432/dk
+      DK_PUBLIC_URL: ${DK_PUBLIC_URL}
+      DK_KEY_ENCRYPTION_KEY: ${DK_KEY_ENCRYPTION_KEY}
+      DK_SESSION_SECRET: ${DK_SESSION_SECRET}
+      DK_ADMIN_TOKEN: ${DK_ADMIN_TOKEN}
+      DK_KEYS_DIR: /data/keys
+      DK_PASSKEY_RESET_DELAY: ${DK_PASSKEY_RESET_DELAY:-172800}
+    volumes:
+      - /root/duplachave/data/keys:/data/keys
+    depends_on: [duplachave-db]
+    networks: [interno]
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+
+  duplachave-db:
+    image: postgres:17-alpine
+    container_name: duplachave-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: dk
+    volumes:
+      - duplachave-db:/var/lib/postgresql/data
+    networks: [interno]
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+
+networks:
+  vps:
+    name: vps_default
+    external: true
+  interno:
+    internal: false
+
+volumes:
+  duplachave-db:

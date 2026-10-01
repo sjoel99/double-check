@@ -1,0 +1,13 @@
+# API do Dupla Chave (devnet). Contexto: a raiz do repositório.
+FROM node:24-slim
+RUN corepack enable
+WORKDIR /app
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY packages ./packages
+COPY apps/api ./apps/api
+COPY apps/approval-web/package.json ./apps/approval-web/package.json
+RUN pnpm install --frozen-lockfile --filter "@duplachave/api..."
+USER node
+WORKDIR /app/apps/api
+ENV HOST=0.0.0.0 PORT=8787
+CMD ["node", "--import", "tsx", "src/main.ts"]
