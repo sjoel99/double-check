@@ -1,6 +1,7 @@
 import { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { ensureActivation } from "./activation";
+import { trace } from "./trace";
 
 /** Nome exibido: o Mobile Wallet Adapter abre o app de carteira do celular (Phantom, Solflare…). */
 export const walletLabel = (name: string) => (name === "Mobile Wallet Adapter" ? "Carteira do celular" : name);
@@ -64,7 +65,15 @@ export class ConnectedWallet {
   ) {}
 
   static async connect(wallet: StandardWallet, cluster: string): Promise<ConnectedWallet> {
-    const out = await wallet.features["standard:connect"].connect();
+    trace("carteira:connect:inicio", wallet.name);
+    let out;
+    try {
+      out = await wallet.features["standard:connect"].connect();
+    } catch (e) {
+      trace("carteira:connect:erro", e);
+      throw e;
+    }
+    trace("carteira:connect:ok", `${(out?.accounts ?? wallet.accounts).length} conta(s)`);
     const account = (out?.accounts ?? wallet.accounts)[0];
     if (!account) throw new Error(`${wallet.name} não devolveu nenhuma conta`);
     return new ConnectedWallet(wallet, account, cluster);
@@ -103,8 +112,15 @@ export class ConnectedWallet {
 
   async signMessage(text: string): Promise<string> {
     await this.gate("Abrir a carteira para assinar o texto");
-    const [out] = await this.wallet.features["solana:signMessage"].signMessage({ account: this.account, message: new TextEncoder().encode(text) });
-    return bs58.encode(out.signature);
+    trace("carteira:signMessage:inicio", `${this.wallet.name} ativacao=${(navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation?.isActive}`);
+    try {
+      const [out] = await this.wallet.features["solana:signMessage"].signMessage({ account: this.account, message: new TextEncoder().encode(text) });
+      trace("carteira:signMessage:ok", `${out?.signature?.length ?? "?"} bytes`);
+      return bs58.encode(out.signature);
+    } catch (e) {
+      trace("carteira:signMessage:erro", e);
+      throw e;
+    }
   }
 
   /**
@@ -114,8 +130,15 @@ export class ConnectedWallet {
   async signTransaction(tx: VersionedTransaction): Promise<string> {
     await this.gate("Abrir a carteira para assinar a transação");
     const chain = chainFor(this.cluster);
-    const [out] = await this.wallet.features["solana:signTransaction"].signTransaction({ account: this.account, transaction: tx.serialize(), ...(chain ? { chain } : {}) });
-    return Buffer.from(out.signedTransaction).toString("base64");
+    trace("carteira:signTransaction:inicio", this.wallet.name);
+    try {
+      const [out] = await this.wallet.features["solana:signTransaction"].signTransaction({ account: this.account, transaction: tx.serialize(), ...(chain ? { chain } : {}) });
+      trace("carteira:signTransaction:ok");
+      return Buffer.from(out.signedTransaction).toString("base64");
+    } catch (e) {
+      trace("carteira:signTransaction:erro", e);
+      throw e;
+    }
   }
 
   async disconnect() {

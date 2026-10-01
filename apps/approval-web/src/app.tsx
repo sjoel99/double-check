@@ -12,6 +12,7 @@ import { makeDevWallet, type DevConfirm } from "./lib/devwallet";
 import { loadSession, saveSession, type Session } from "./lib/storage";
 import { ConnectedWallet, discoverWallets, registerWallet, type StandardWallet, walletLabel } from "./lib/wallets";
 import { setActivationGate } from "./lib/activation";
+import { trace } from "./lib/trace";
 
 let mwaRegistered = false;
 import { Icon } from "./icons";
@@ -241,6 +242,7 @@ export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: st
   const status = await api<{ enrolled: boolean; revoked: boolean }>("GET", `/v1/wallets/${publicKey}`, undefined, { auth: false });
   if (status.revoked && !status.enrolled) throw new Error("Esta carteira foi substituída em uma conta e não volta a valer. Use outra carteira.");
   if (status.enrolled) {
+    trace("login:desafio");
     onStep(`Confirme a entrada na ${c.name}…`);
     const ch = await api("POST", "/v1/auth/challenge", { publicKey }, { auth: false });
     const signature = await c.signMessage(ch.message);

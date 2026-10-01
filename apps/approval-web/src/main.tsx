@@ -5,6 +5,15 @@ import "./styles.css";
 import { AppProvider, type Config, useApp } from "./app";
 import { api } from "./lib/api";
 import { PINNED_CLUSTER } from "./lib/chain";
+import { trace } from "./lib/trace";
+
+// Diagnóstico no celular: erros soltos e quando a página sai/volta (troca para o app da carteira).
+if (/Android|iPhone|iPad/i.test(navigator.userAgent)) {
+  addEventListener("error", (e) => trace("erro", e.message));
+  addEventListener("unhandledrejection", (e) => trace("promessa-rejeitada", e.reason));
+  document.addEventListener("visibilitychange", () => trace(`pagina:${document.visibilityState}`));
+  trace("pagina:abriu", navigator.userAgent);
+}
 import { ed25519Supported, loadSession, type Session } from "./lib/storage";
 import { Deposit, Home } from "./screens/home";
 import { IntentScreen, Send } from "./screens/intent";
