@@ -1,3 +1,5 @@
 packages:
   - "apps/*"
   - "packages/*"
+patchedDependencies:
+  '@solana-mobile/wallet-standard-mobile@0.6.0': patches/@solana-mobile__wallet-standard-mobile@0.6.0.patch
