@@ -21,10 +21,12 @@ import { Activity, RotateWallet, Security } from "./screens/security";
 import { Welcome } from "./screens/welcome";
 import { MobileHandoff } from "./screens/handoff";
 import { PasskeySetup } from "./screens/passkey";
+import { PrfCheck } from "./screens/prfcheck";
 
 function Router() {
   const { route, session } = useApp();
   const [path, query = ""] = route.split("?");
+  if (path === "/prf") return <PrfCheck />;
   if (path?.startsWith("/m/")) return <MobileHandoff key={path} token={path.slice(3)} />;
   if (!session) return <Welcome />;
   if (path === "/passkey") return <PasskeySetup then={new URLSearchParams(query).get("then") ?? "/"} />;
