@@ -22,7 +22,7 @@ export type Keys = {
   relayer: DevMemorySigner;
 };
 
-export async function setupStrict(depositSol = 10) {
+export async function setupStrict(depositSol = 10, opts: { rentCollector?: null } = {}) {
   const chain = new LiteSvmChain();
   const keys: Keys = {
     client: DevMemorySigner.generate("CLIENT_A"),
@@ -45,6 +45,7 @@ export async function setupStrict(depositSol = 10) {
     creator: await keys.relayer.publicKey(),
     treasury: chain.treasury,
     layout,
+    ...(opts.rentCollector === null ? { rentCollector: null } : {}),
   });
   await sendInstructions(chain, [created.instruction], [keys.relayer, createKey]);
   const vault = created.vault;

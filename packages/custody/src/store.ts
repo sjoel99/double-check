@@ -54,7 +54,16 @@ export type IntentRecord = {
   reasons: string[];
   signatures: Partial<Record<"create" | "clientApprove" | "serverApprove" | "execute" | "reject", string>>;
   updatedAt: number;
+  /**
+   * Transações atômicas preparadas (assinadas pelo servidor e pelo proponente,
+   * falta a carteira) que ainda podem entrar na chain: valem até o blockhash
+   * expirar. A conciliação com a chain decide cada uma (entrou ou morreu).
+   */
+  prepared?: PreparedEntry[] | null;
 };
+
+/** Uma transação preparada: mensagem (base64) e o índice da multisig que ela usa. */
+export type PreparedEntry = { index: string; message: string; preparedAt: number };
 
 export const ROTATION_STATUSES = [
   "REQUESTED",

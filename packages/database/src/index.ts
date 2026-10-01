@@ -171,13 +171,15 @@ export class PgStore implements Store, ChallengeStore {
   // intents -------------------------------------------------------------------
   async saveIntent(r: IntentRecord) {
     await this.db.query(
-      `INSERT INTO transaction_intents (id, account_id, kind, type, transaction_index, intent, intent_hash, transaction_hash, status, risk_flags, reasons, signatures, updated_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-       ON CONFLICT (id) DO UPDATE SET intent = EXCLUDED.intent, intent_hash = EXCLUDED.intent_hash, status = EXCLUDED.status,
-         risk_flags = EXCLUDED.risk_flags, reasons = EXCLUDED.reasons, signatures = EXCLUDED.signatures, updated_at = EXCLUDED.updated_at`,
+      `INSERT INTO transaction_intents (id, account_id, kind, type, transaction_index, intent, intent_hash, transaction_hash, status, risk_flags, reasons, signatures, updated_at, prepared)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       ON CONFLICT (id) DO UPDATE SET intent = EXCLUDED.intent, intent_hash = EXCLUDED.intent_hash, transaction_index = EXCLUDED.transaction_index,
+         transaction_hash = EXCLUDED.transaction_hash, status = EXCLUDED.status, risk_flags = EXCLUDED.risk_flags, reasons = EXCLUDED.reasons,
+         signatures = EXCLUDED.signatures, updated_at = EXCLUDED.updated_at, prepared = EXCLUDED.prepared`,
       [
         r.intent.id, r.accountId, r.intent.kind, r.intent.type, r.intent.transactionIndex, JSON.stringify(r.intent), r.intent.intentHash,
         r.transactionHash, r.status, JSON.stringify(r.riskFlags), JSON.stringify(r.reasons), JSON.stringify(r.signatures), r.updatedAt,
+        r.prepared ? JSON.stringify(r.prepared) : null,
       ],
     );
   }
@@ -191,6 +193,7 @@ export class PgStore implements Store, ChallengeStore {
       reasons: r.reasons as string[],
       signatures: r.signatures as IntentRecord["signatures"],
       updatedAt: Number(r.updated_at),
+      prepared: (r.prepared as IntentRecord["prepared"]) ?? null,
     };
   }
   async getIntent(id: string) {
@@ -199,7 +202,7 @@ export class PgStore implements Store, ChallengeStore {
   }
   async listIntents(accountId: string) {
     const { rows } = await this.db.query<Record<string, unknown>>(
-      `SELECT * FROM transaction_intents WHERE account_id = $1 ORDER BY (transaction_index)::numeric DESC`,
+      `SELECT * FROM transaction_intents WHERE account_id = $1 ORDER BY updated_at DESC`,
       [accountId],
     );
     return rows.map((r) => this.intent(r));

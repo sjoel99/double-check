@@ -5,14 +5,13 @@
 // - Rede: devnet (a carteira do celular envia a transação para a rede dela; localnet não serve).
 // - Túnel HTTPS (cloudflared) para a API: o Solana Pay exige HTTPS que o celular alcance.
 // - Postgres em Docker (volume persistente) e chaves de serviço cifradas em .data/devnet-keys:
-//   contas e pagador sobrevivem a reinícios.
+//   contas sobrevivem a reinícios. O serviço não paga nada: a Phantom precisa de SOL de devnet.
 // - .env.devnet (criado na primeira vez, fora do git) guarda os segredos locais.
 //   Opcional: DEVNET_RPC_URL=https://devnet.helius-rpc.com/?api-key=... (mais estável que a pública).
 import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { Connection, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 
 const log = (m: string) => console.log(`\x1b[35m[devnet]\x1b[0m ${m}`);
 const children: ChildProcess[] = [];
@@ -123,13 +122,7 @@ for (let i = 0; i < 80; i++) {
 const web = spawn("pnpm", ["--filter", "@duplachave/approval-web", "dev"], { stdio: "inherit", env: { ...process.env, RPC_UPSTREAM: rpc, VITE_CLUSTER: "devnet" } });
 children.push(web);
 
-// ---------------------------------------------------------------- pagador de taxas
-try {
-  const cfg = (await (await fetch("http://127.0.0.1:8787/v1/config")).json()) as { feePayer: string };
-  const bal = await new Connection(rpc, "confirmed").getBalance(new PublicKey(cfg.feePayer));
-  log(`pagador de taxas do serviço: ${cfg.feePayer} — saldo ${(bal / LAMPORTS_PER_SOL).toFixed(4)} SOL`);
-  if (bal < 0.3 * LAMPORTS_PER_SOL) log("⚠ abasteça o pagador com SOL de devnet em https://faucet.solana.com (cole o endereço acima). Cada conta nova custa ~0,01 SOL.");
-} catch (e) {
-  log(`não consegui ler o pagador: ${String(e)}`);
-}
+// ---------------------------------------------------------------- quem paga
+log("taxas e depósitos saem da carteira do cliente: a Phantom precisa de SOL de devnet (https://faucet.solana.com).");
+log("custos: criar a conta ~0,003 SOL (uma vez); cada transação ~0,000015 SOL, mas a carteira precisa ter ~0,007 SOL na hora (o depósito volta na mesma transação).");
 log("abra http://127.0.0.1:5173 no computador; no celular, a Phantom em modo devnet (Configurações → Configurações de desenvolvedor → Modo testnet → Solana Devnet)");

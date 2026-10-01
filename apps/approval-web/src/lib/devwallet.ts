@@ -67,10 +67,11 @@ export function makeDevWallet(name: string, confirm: () => DevConfirm) {
           const tx = VersionedTransaction.deserialize(transaction);
           const me = new PublicKey((await key(name)).publicKey);
           const n = tx.message.staticAccountKeys.length;
+          const payer = tx.message.staticAccountKeys[0]!.equals(me) ? "Taxa paga por esta carteira" : "Taxa paga por outra conta";
           const ok = await confirm()({
             walletName: name,
             kind: "transaction",
-            text: `Assinar transação (${tx.message.compiledInstructions.length} instrução(ões), ${n} contas). Taxa paga por outra conta.`,
+            text: `Assinar transação (${tx.message.compiledInstructions.length} instrução(ões), ${n} contas). ${payer} (${tx.message.header.numRequiredSignatures} assinatura(s) × 0,000005 SOL).`,
           });
           if (!ok) throw new Error("assinatura recusada na carteira");
           tx.addSignature(me, await sign(tx.message.serialize()));

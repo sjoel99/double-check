@@ -1,12 +1,12 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import rateLimit from "@fastify/rate-limit";
-import { LAMPORTS_PER_SOL, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
+import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { z } from "zod";
 import { SecurityError } from "@duplachave/shared";
-import { verifyEd25519, type WalletProof } from "@duplachave/crypto";
+import type { WalletProof } from "@duplachave/crypto";
 import type { CustodyService, Store, ChallengeStore, IntentRecord } from "@duplachave/custody";
 import { renderIntent } from "@duplachave/custody";
-import { type Chain, ChainTxError, parseInstruction } from "@duplachave/solana";
+import type { Chain } from "@duplachave/solana";
 import { issueSession, readSession, type Session } from "./session";
 import { registerPay } from "./pay";
 
@@ -17,9 +17,6 @@ export type ApiDeps = {
   cluster: string;
   sessionSecret: string;
   adminToken: string | null;
-  feePayer: string;
-  /** Assina como pagador de taxas (depósito vindo da carteira). */
-  signAsFeePayer: (message: Uint8Array) => Promise<Uint8Array>;
   /** Só em localnet: airdrop para testar. */
   airdrop?: (address: PublicKey, lamports: number) => Promise<void>;
   /** URL pública (HTTPS) que o celular alcança, para o QR do Solana Pay. */
@@ -87,22 +84,21 @@ export async function buildServer(d: ApiDeps) {
   app.get("/healthz", async () => ({ ok: true }));
 
   // A RPC que o app usa para conferir NÃO vem daqui: é fixada no build do app.
-  app.get("/v1/config", async () => ({ cluster: d.cluster, feePayer: d.feePayer, mode: "STRICT_2_OF_2", devTools: Boolean(d.airdrop) }));
+  app.get("/v1/config", async () => ({ cluster: d.cluster, mode: "STRICT_2_OF_2", devTools: Boolean(d.airdrop) }));
 
   // ---------------------------------------------------------------- cadastro
-  // Cadastro cria multisig paga pelo serviço: limite apertado por IP (produção: convite/captcha + cota).
+  // A carteira paga a criação da multisig; o limite por IP segura a geração de chaves do servidor.
   const enrollLimit = { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } };
 
-  /** Devolve o texto exato que a carteira vai assinar (e mostrar na janela dela). */
-  app.post("/v1/enrollment/challenge", enrollLimit, async (req) => {
-    const { publicKey } = z.object({ publicKey: pubkey }).parse(req.body);
-    const c = await d.custody.createChallenge("ENROLL_CLIENT_KEY", publicKey);
-    return { challengeId: c.id, message: c.message, expiresAt: c.expiresAt };
+  /** Monta a criação da conta 2-de-2, paga pela carteira. Ela assina e o app devolve em /submit. */
+  app.post("/v1/enrollment/prepare", enrollLimit, async (req) => {
+    const body = z.object({ publicKey: pubkey, walletName: z.string().min(1).max(40) }).parse(req.body);
+    return d.custody.prepareEnrollment(body);
   });
 
-  app.post("/v1/enrollment", enrollLimit, async (req) => {
-    const body = z.object({ challengeId: z.string().uuid(), publicKey: pubkey, signature, walletName: z.string().min(1).max(40) }).parse(req.body);
-    const { account } = await d.custody.enroll(body);
+  app.post("/v1/enrollment/submit", enrollLimit, async (req) => {
+    const { enrollmentId, transaction } = z.object({ enrollmentId: z.string().uuid(), transaction: txB64 }).parse(req.body);
+    const { account } = await d.custody.submitEnrollment(enrollmentId, transaction);
     return { account, token: tokenFor(account) };
   });
 
@@ -139,36 +135,6 @@ export async function buildServer(d: ApiDeps) {
     return { events: await d.store.listAudit(id) };
   });
 
-  /**
-   * Depósito vindo da carteira: só aceita UMA transferência de SOL da carteira
-   * da conta para o Vault dela. O serviço paga a taxa.
-   */
-  app.post("/v1/accounts/:id/deposit", async (req) => {
-    const { id } = req.params as { id: string };
-    await ownAccount(req, id);
-    const { transaction } = z.object({ transaction: txB64 }).parse(req.body);
-    const acc = (await d.store.getAccount(id))!;
-    const tx = VersionedTransaction.deserialize(Buffer.from(transaction, "base64"));
-    if (tx.message.addressTableLookups.length) throw new SecurityError("ALT_IN_TX", "lookup table não é aceita");
-    const msg = TransactionMessage.decompile(tx.message);
-    const fee = new PublicKey(d.feePayer);
-    const wallet = new PublicKey(acc.roles.client);
-    if (!msg.payerKey.equals(fee) || msg.instructions.length !== 1) throw new SecurityError("DEPOSIT_NOT_EXPECTED", "depósito deve ser uma transferência paga pelo serviço");
-    const ix = msg.instructions[0]!;
-    const p = parseInstruction({ programId: ix.programId, keys: ix.keys, data: new Uint8Array(ix.data) });
-    if (p.kind !== "SYSTEM_TRANSFER" || p.from !== wallet.toBase58() || p.to !== acc.vault) throw new SecurityError("DEPOSIT_NOT_EXPECTED", "só transferência de SOL da sua carteira para o seu Vault");
-    const signers = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
-    const wi = signers.findIndex((k) => k.equals(wallet));
-    if (signers.length !== 2 || wi < 0 || !verifyEd25519(tx.message.serialize(), tx.signatures[wi]!, wallet)) throw new SecurityError("WALLET_BAD_SIGNATURE", "assinatura da carteira inválida");
-    tx.addSignature(fee, await d.signAsFeePayer(tx.message.serialize()));
-    try {
-      return { signature: await d.chain.sendTransaction(tx), lamports: p.lamports.toString() };
-    } catch (e) {
-      if (e instanceof ChainTxError) throw new SecurityError("DEPOSIT_FAILED", e.programError ?? e.message);
-      throw e;
-    }
-  });
-
   // ---------------------------------------------------------------- operações
   app.post("/v1/accounts/:id/intents", async (req) => {
     const { id } = req.params as { id: string };
@@ -187,28 +153,32 @@ export async function buildServer(d: ApiDeps) {
   app.get("/v1/intents/:id", async (req) => {
     const { id } = req.params as { id: string };
     const rec = await ownIntent(req, id);
-    const pending = rec.status === "AWAITING_CLIENT" || rec.status === "APPROVED_PENDING_EXECUTION";
-    return { record: view(rec), approvals: await d.store.listApprovals(id), approvalRequest: pending ? await d.custody.approvalRequest(id) : null };
+    return { record: view(rec), approvals: await d.store.listApprovals(id) };
   });
 
-  /** Transação assinada pela carteira do cliente (aprovar + executar, aprovar, ou cancelar). */
-  app.post("/v1/intents/:id/sign", async (req) => {
+  /**
+   * A transação atômica para a carteira assinar: o serviço já assinou (é o voto
+   * dele). Vale ~1 minuto (blockhash); o app prepara de novo se passar.
+   */
+  app.post("/v1/intents/:id/prepare", async (req) => {
+    const { id } = req.params as { id: string };
+    const s = await session(req);
+    await ownIntent(req, id);
+    return d.custody.prepareIntent(id, s.key);
+  });
+
+  /** A transação assinada pela carteira: o backend confere que é a preparada e envia. */
+  app.post("/v1/intents/:id/submit", async (req) => {
     const { id } = req.params as { id: string };
     await ownIntent(req, id);
     const { transaction } = z.object({ transaction: txB64 }).parse(req.body);
-    return view(await d.custody.submitWalletTransaction(id, transaction));
+    return view(await d.custody.submitIntent(id, transaction));
   });
 
   app.post("/v1/intents/:id/reject", async (req) => {
     const { id } = req.params as { id: string };
     await ownIntent(req, id);
     return view(await d.custody.rejectByClient(id));
-  });
-
-  app.post("/v1/intents/:id/execute", async (req) => {
-    const { id } = req.params as { id: string };
-    await ownIntent(req, id);
-    return view(await d.custody.retryExecution(id));
   });
 
   // ---------------------------------------------------------------- troca de carteira
@@ -270,10 +240,11 @@ export async function buildServer(d: ApiDeps) {
       return d.custody.requestServerRotation(id, "rotação programada (simulada)");
     });
     // Simula um servidor malicioso para ver o app recusar (só dev).
-    app.get("/v1/dev/intents/:id/tampered", async (req) => {
+    app.post("/v1/dev/intents/:id/prepare-tampered", async (req) => {
       const { id } = req.params as { id: string };
+      const s = await session(req);
       await ownIntent(req, id);
-      const request = await d.custody.approvalRequest(id);
+      const request = await d.custody.prepareIntent(id, s.key);
       const { sealIntent, intentBody } = await import("@duplachave/shared");
       if (request.intent.type !== "TRANSFER_SOL") return request;
       const body = intentBody(request.intent) as { amountLamports: string };
@@ -297,6 +268,5 @@ export async function buildServer(d: ApiDeps) {
     log: (m) => app.log.warn(m),
   });
 
-  void SystemProgram;
   return Object.assign(app, { pay });
 }

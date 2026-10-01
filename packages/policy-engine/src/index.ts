@@ -128,7 +128,9 @@ export class DefaultPolicyEngine implements PolicyEngine {
       if (a.kind === "AddSpendingLimit") reasons.push("SPENDING_LIMIT_FORBIDDEN: spending limit move fundos sem quórum");
       if (a.kind === "ChangeThreshold") reasons.push("THRESHOLD_CHANGE_FORBIDDEN");
       if (a.kind === "SetTimeLock") reasons.push("TIMELOCK_CHANGE_FORBIDDEN");
-      if (a.kind === "RemoveSpendingLimit" || a.kind === "SetRentCollector") reasons.push(`CONFIG_ACTION_FORBIDDEN: ${a.kind}`);
+      if (a.kind === "RemoveSpendingLimit") reasons.push(`CONFIG_ACTION_FORBIDDEN: ${a.kind}`);
+      // SetRentCollector só como parte da troca da carteira (configView confere que aponta para a nova).
+      if (a.kind === "SetRentCollector" && tx.rotation?.role !== "CLIENT") reasons.push("CONFIG_ACTION_FORBIDDEN: SetRentCollector");
     }
     const r = tx.rotation;
     if (!r) {

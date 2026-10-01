@@ -97,7 +97,10 @@ export class ConnectedWallet {
     return bs58.encode(out.signature);
   }
 
-  /** Assina sem enviar: quem paga a taxa e envia é o serviço, depois de conferir. */
+  /**
+   * Assina sem enviar (mantém as assinaturas que o serviço já pôs). A carteira
+   * é a pagadora; quem envia é o backend, depois de conferir os bytes.
+   */
   async signTransaction(tx: VersionedTransaction): Promise<string> {
     const chain = chainFor(this.cluster);
     const [out] = await this.wallet.features["solana:signTransaction"].signTransaction({ account: this.account, transaction: tx.serialize(), ...(chain ? { chain } : {}) });

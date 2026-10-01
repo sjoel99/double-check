@@ -2,11 +2,11 @@ import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { DevMemorySigner } from "@duplachave/crypto";
 import { DefaultPolicyEngine } from "@duplachave/policy-engine";
 import {
-  buildWalletTransaction,
   CustodyService,
   DevServerKeyProvider,
   LogNotificationService,
   MemoryStore,
+  reviewPrepared,
   signAsWallet,
   signWalletPossession,
 } from "@duplachave/custody";
@@ -32,18 +32,17 @@ async function pgliteStore() {
 
 /**
  * Backend completo sobre LiteSVM, com relógio controlável e a carteira comum
- * do usuário (WALLET_A, como seria a Phantom) já cadastrada.
+ * do usuário (WALLET_A, como seria a Phantom) já cadastrada. O serviço não tem
+ * SOL nenhum: quem paga tudo é a carteira.
  */
-export async function setupService(opts: { depositSol?: number; store?: "memory" | "pglite" | "postgres" } = {}) {
+export async function setupService(opts: { depositSol?: number; walletSol?: number; store?: "memory" | "pglite" | "postgres" } = {}) {
   const chain = new LiteSvmChain();
   let offset = 0;
   const now = () => Math.floor(Date.now() / 1000) + offset;
   const service = {
     executor: DevMemorySigner.generate("EXECUTOR"),
     proposer: DevMemorySigner.generate("PROPOSER"),
-    feePayer: DevMemorySigner.generate("FEE_PAYER"),
   };
-  chain.airdrop(await service.feePayer.publicKey(), 100n * BigInt(LAMPORTS_PER_SOL));
   chain.warp(now() - (await chain.now()));
 
   const kind = opts.store ?? process.env.DK_TEST_STORE ?? "memory";
@@ -53,6 +52,7 @@ export async function setupService(opts: { depositSol?: number; store?: "memory"
   const custody = new CustodyService({ cluster: "localnet", chain, store, policy: new DefaultPolicyEngine(), serverKeys, service, notifications, now, squadsTreasury: chain.treasury });
 
   const wallet = DevMemorySigner.generate("WALLET_A");
+  chain.airdrop(await wallet.publicKey(), BigInt(opts.walletSol ?? 1) * BigInt(LAMPORTS_PER_SOL));
   const account = await enrollWallet(custody, wallet);
   chain.airdrop(new PublicKey(account.vault), BigInt((opts.depositSol ?? 10) * LAMPORTS_PER_SOL));
 
@@ -61,15 +61,15 @@ export async function setupService(opts: { depositSol?: number; store?: "memory"
     chain.warp(seconds);
   };
 
-  /** O app monta a transação (conferindo a chain) e a carteira assina. Devolve o base64. */
+  /** O serviço prepara, o app confere (remontando os bytes) e a carteira assina. Devolve o base64. */
   const walletTx = async (intentId: string, signer: DevMemorySigner = wallet, extra: { initiatedHere?: (id: string) => boolean } = {}) => {
-    const request = await custody.approvalRequest(intentId);
-    const { transaction } = await buildWalletTransaction({ chain, request, wallet: await signer.publicKey(), now: now(), ...extra });
+    const request = await custody.prepareIntent(intentId);
+    const { transaction } = await reviewPrepared(chain, request, await signer.publicKey(), now(), extra);
     return signAsWallet(transaction, signer);
   };
 
-  /** Fluxo completo do cliente: conferir, assinar na carteira, enviar. */
-  const sign = async (intentId: string, signer: DevMemorySigner = wallet) => custody.submitWalletTransaction(intentId, await walletTx(intentId, signer));
+  /** Fluxo completo do cliente: preparar, conferir, assinar na carteira, enviar. */
+  const sign = async (intentId: string, signer: DevMemorySigner = wallet) => custody.submitIntent(intentId, await walletTx(intentId, signer));
 
   /** Troca de carteira: a atual pede, a nova prova posse. */
   const rotateTo = async (next: DevMemorySigner) => {
@@ -83,11 +83,13 @@ export async function setupService(opts: { depositSol?: number; store?: "memory"
   return { chain, custody, store, notifications, serverKeys, service, wallet, account, now, advance, walletTx, sign, rotateTo };
 }
 
+/** Cadastro: o serviço prepara a criação da multisig, a carteira assina e paga. */
 export async function enrollWallet(custody: CustodyService, wallet: DevMemorySigner, walletName = "Phantom") {
   const pk = (await wallet.publicKey()).toBase58();
-  const ch = await custody.createChallenge("ENROLL_CLIENT_KEY", pk);
-  const signature = (await import("bs58")).default.encode(await wallet.sign(new TextEncoder().encode(ch.message)));
-  const { account } = await custody.enroll({ challengeId: ch.id, publicKey: pk, signature, walletName });
+  const p = await custody.prepareEnrollment({ publicKey: pk, walletName });
+  const { VersionedTransaction } = await import("@solana/web3.js");
+  const signed = await signAsWallet(VersionedTransaction.deserialize(Buffer.from(p.transaction, "base64")), wallet);
+  const { account } = await custody.submitEnrollment(p.enrollmentId, signed);
   return account;
 }
 

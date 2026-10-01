@@ -8,7 +8,7 @@ import { Icon } from "../icons";
 /**
  * Celular de teste (só localnet): faz o que a Phantom do celular faz com um QR
  * do Solana Pay — GET (rótulo), POST { account }, mostra a mensagem, assina a
- * transação (já assinada pelo pagador) e a envia para a rede.
+ * transação (paga por ela; o serviço já assinou a parte dele) e a envia para a rede.
  */
 const WALLETS = ["Carteira de teste A", "Carteira de teste B"];
 
@@ -113,7 +113,7 @@ export function PhoneSimulator({ url }: { url: string }) {
             </div>
             <div style={{ fontSize: 16, fontWeight: 600, lineHeight: 1.4 }}>{built.message}</div>
             <div className="subtle" style={{ fontSize: 12 }}>
-              Taxa de rede paga por {meta?.label ?? "outra conta"}.
+              Taxa de rede paga por esta carteira.
             </div>
           </div>
           <div style={{ display: "flex", gap: 12 }}>

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
+import type { PublicKey } from "@solana/web3.js";
 import * as multisig from "@sqds/multisig";
 import { DevMemorySigner } from "@duplachave/crypto";
 import { RpcChain } from "@duplachave/solana";
@@ -26,22 +26,15 @@ log(cfg.DATABASE_URL ? "banco: Postgres" : "banco: memória (some ao reiniciar �
 const keyStore = cfg.DK_KEY_ENCRYPTION_KEY ? new DevFileKeyStore(cfg.DK_KEYS_DIR, Buffer.from(cfg.DK_KEY_ENCRYPTION_KEY, "hex"), cfg.SOLANA_CLUSTER) : null;
 if (!keyStore) log("chaves de serviço só em memória (defina DK_KEY_ENCRYPTION_KEY para persistir em DK_KEYS_DIR)");
 const svc = (label: string) => keyStore?.loadOrCreate(label) ?? DevMemorySigner.generate(label, cfg.SOLANA_CLUSTER);
-const service = { executor: svc("executor"), proposer: svc("proposer"), feePayer: svc("fee-payer") };
+// Nenhuma chave do serviço tem SOL: a carteira do cliente paga taxa e rent.
+const service = { executor: svc("executor"), proposer: svc("proposer") };
 const serverKeys = await FileServerKeyProvider.open(keyStore, cfg.SOLANA_CLUSTER);
 
-const feePayer = await service.feePayer.publicKey();
 const conn = chain.connection;
 const airdrop = async (address: PublicKey, lamports: number) => {
   const sig = await conn.requestAirdrop(address, lamports);
   await conn.confirmTransaction(sig, "confirmed");
 };
-if (cfg.SOLANA_CLUSTER !== "devnet" || (await chain.getBalance(feePayer)) < BigInt(LAMPORTS_PER_SOL) / 10n) {
-  try {
-    if ((await chain.getBalance(feePayer)) < 5n * BigInt(LAMPORTS_PER_SOL)) await airdrop(feePayer, 10 * LAMPORTS_PER_SOL);
-  } catch (e) {
-    log(`não consegui airdrop para o pagador ${feePayer.toBase58()}: ${String(e)} — financie manualmente`);
-  }
-}
 const programConfig = await multisig.accounts.ProgramConfig.fromAccountAddress(conn, multisig.getProgramConfigPda({})[0]);
 
 const notifications = new LogNotificationService(log);
@@ -69,14 +62,12 @@ const app = await buildServer({
   cluster: cfg.SOLANA_CLUSTER,
   sessionSecret,
   adminToken,
-  feePayer: feePayer.toBase58(),
-  signAsFeePayer: (m) => service.feePayer.sign(m),
   publicUrl: cfg.DK_PUBLIC_URL ?? `http://${cfg.HOST}:${cfg.PORT}`,
   airdrop: cfg.SOLANA_CLUSTER === "localnet" ? airdrop : undefined,
   log: true,
 });
 
-// Expira pendências vencidas (rejeição on-chain) a cada 30 s.
+// Concilia com a chain e vence rascunhos a cada 30 s.
 setInterval(async () => {
   for (const id of await store.listAccountIds()) {
     try {
@@ -90,4 +81,4 @@ setInterval(async () => {
 await app.listen({ port: cfg.PORT, host: cfg.HOST });
 if (cfg.DK_PUBLIC_URL) log(`QR do celular aponta para ${cfg.DK_PUBLIC_URL}/pay/…`);
 else log("sem DK_PUBLIC_URL: o QR só funciona com o celular de teste (celular de verdade exige HTTPS — use pnpm dev:devnet)");
-log(`API em http://${cfg.HOST}:${cfg.PORT} · cluster ${cfg.SOLANA_CLUSTER} · RPC ${cfg.SOLANA_RPC_URL.replace(/api-key=[^&]+/, "api-key=***")} · pagador ${feePayer.toBase58()}`);
+log(`API em http://${cfg.HOST}:${cfg.PORT} · cluster ${cfg.SOLANA_CLUSTER} · RPC ${cfg.SOLANA_RPC_URL.replace(/api-key=[^&]+/, "api-key=***")} · taxas pagas pela carteira do cliente`);

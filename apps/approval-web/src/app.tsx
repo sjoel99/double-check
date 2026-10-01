@@ -1,3 +1,5 @@
+import { PublicKey, VersionedTransaction } from "@solana/web3.js";
+import { verifyEnrollmentTransaction } from "@duplachave/custody/src/client";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Chain } from "@duplachave/solana";
 import type { Cluster } from "@duplachave/shared";
@@ -8,7 +10,7 @@ import { loadSession, saveSession, type Session } from "./lib/storage";
 import { ConnectedWallet, discoverWallets, registerWallet, type StandardWallet } from "./lib/wallets";
 import { Icon } from "./icons";
 
-export type Config = { cluster: Cluster; feePayer: string; mode: string; devTools: boolean };
+export type Config = { cluster: Cluster; mode: string; devTools: boolean };
 
 type ConfirmReq = Parameters<DevConfirm>[0] & { resolve: (ok: boolean) => void };
 
@@ -169,8 +171,9 @@ function DevWalletSheet({ req, onDone }: { req: ConfirmReq; onDone: (ok: boolean
 }
 
 /**
- * Entra com a carteira: se ela já tem conta, assina o texto de entrada; se não,
- * assina o texto de vínculo e a conta 2-de-2 é criada.
+ * Entra com a carteira: se ela já tem conta, assina o texto de entrada (sem
+ * custo); se não, assina e paga a criação da conta 2-de-2 (~0,003 SOL), depois
+ * de o app conferir a transação.
  */
 export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: string) => void): Promise<Session> {
   const publicKey = c.publicKey;
@@ -185,11 +188,18 @@ export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: st
     await ctx.setSession(s);
     return s;
   }
-  onStep(`Assine o vínculo na ${c.name}…`);
-  const ch = await api("POST", "/v1/enrollment/challenge", { publicKey }, { auth: false });
-  const signature = await c.signMessage(ch.message);
+  // Em localnet, a carteira de teste (ou a Phantom) recebe SOL de teste para pagar a criação.
+  if (ctx.config.devTools && (await ctx.chain.getBalance(new PublicKey(publicKey))) < 10_000_000n) {
+    onStep("Pedindo SOL de teste para a sua carteira…");
+    await api("POST", "/v1/dev/airdrop", { address: publicKey, sol: 2 }, { auth: false });
+  }
+  onStep("Preparando sua conta 2 de 2…");
+  const p = await api("POST", "/v1/enrollment/prepare", { publicKey, walletName: c.name }, { auth: false });
+  const { transaction } = verifyEnrollmentTransaction(p.transaction, new PublicKey(publicKey));
+  onStep(`Confirme na ${c.name}: criar a conta custa ~0,003 SOL, pagos pela sua carteira…`);
+  const signed = await c.signTransaction(transaction);
   onStep("Criando sua conta 2 de 2 na Solana…");
-  const r = await api("POST", "/v1/enrollment", { challengeId: ch.challengeId, publicKey, signature, walletName: c.name }, { auth: false });
+  const r = await api("POST", "/v1/enrollment/submit", { enrollmentId: p.enrollmentId, transaction: signed }, { auth: false });
   const s: Session = { token: r.token, accountId: r.account.id, walletName: c.name, publicKey, myRotations: [], via: "extension" };
   await ctx.setSession(s);
   return s;
@@ -199,6 +209,7 @@ export function errorText(e: unknown): string {
   if (e instanceof ApiError) return e.message;
   const m = (e as Error)?.message ?? String(e);
   if (/User rejected|rejected the request|recusad/i.test(m)) return "Assinatura recusada na carteira.";
+  if (/insufficient|Attempt to debit an account but found no record/i.test(m)) return "Sua carteira não tem SOL suficiente para a taxa.";
   return m;
 }
 

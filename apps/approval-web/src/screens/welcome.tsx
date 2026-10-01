@@ -92,8 +92,8 @@ export function Welcome() {
       <div className="steps">
         {[
           ["1", "Conecte sua carteira", "Phantom, Backpack, Solflare…"],
-          ["2", "Assine o vínculo", "a carteira mostra o texto antes de assinar"],
-          ["3", "Pronto", "sua conta 2 de 2 é criada na Solana"],
+          ["2", "Assine a criação da conta", "a sua carteira paga ~0,003 SOL, uma vez só"],
+          ["3", "Pronto", "sua conta 2 de 2 existe na Solana; cada envio custa ~0,000015 SOL"],
         ].map(([n, t, s]) => (
           <div key={n} className="step">
             <div className="step-n">{n}</div>
@@ -111,7 +111,7 @@ export function Welcome() {
           <PhoneQr
             create={() => api("POST", "/v1/pay/connect", {}, { auth: false })}
             title="Escaneie com a carteira do celular"
-            steps={[...SCAN_STEPS.slice(0, 2), "Confirme: se a carteira for nova, a conta é criada; se já tiver conta, você entra"]}
+            steps={[...SCAN_STEPS.slice(0, 2), "Confirme: carteira nova cria a conta (~0,003 SOL); com conta, você entra (0,000005 SOL)"]}
             onDone={fromPhone}
           />
           <button type="button" className="linkbtn" onClick={() => setPhone(false)}>
@@ -139,7 +139,7 @@ export function Welcome() {
       )}
       {err && <div className="banner danger">{err}</div>}
       <div className="subtle" style={{ fontSize: 12, lineHeight: 1.5 }}>
-        Já tem conta? Escolha a mesma carteira: o app reconhece e só pede para confirmar a entrada.
+        Já tem conta? Escolha a mesma carteira: o app reconhece e só pede para confirmar a entrada. Todas as taxas saem da sua carteira; o serviço não paga nada.
       </div>
     </div>
   );

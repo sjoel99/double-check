@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS transaction_intents (
   updated_at         bigint NOT NULL
 );
 CREATE INDEX IF NOT EXISTS intents_account ON transaction_intents(account_id, updated_at);
+ALTER TABLE transaction_intents ADD COLUMN IF NOT EXISTS prepared jsonb;
 
 -- Espelho do que foi criado no programa (endereço e hash da conta on-chain).
 -- O status da proposta NÃO é guardado: é sempre lido da chain.
@@ -115,6 +116,8 @@ CREATE TABLE IF NOT EXISTS key_rotations (
   possession       jsonb,
   history          jsonb NOT NULL
 );
+
+ALTER TABLE key_rotations ADD COLUMN IF NOT EXISTS possession jsonb;
 
 CREATE TABLE IF NOT EXISTS consumed_nonces (
   scope       text NOT NULL,

@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { LAMPORTS_PER_SOL, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { errorText, useApp } from "../app";
 import { api, ApiError } from "../lib/api";
-import { now, short, sol } from "../lib/chain";
+import { now, sendSigned, short, sol } from "../lib/chain";
+import { verifyAccountOnChain } from "@duplachave/custody/src/client";
 import { Icon, Logo } from "../icons";
 import QRCode from "qrcode";
 
@@ -10,7 +11,11 @@ export type AccountView = {
   account: { id: string; multisig: string; vault: string; roles: { client: string; server: string; executor: string; proposer: string }; frozenBy: string | null };
   invariantOk: boolean;
   vaultLamports: string;
+  walletLamports: string;
 };
+
+/** Saldo que a carteira precisa ter na hora de assinar: o depósito das contas volta na mesma transação. */
+const WALLET_NEEDS = 7_000_000n;
 
 export type IntentView = {
   intent: any;
@@ -186,6 +191,15 @@ export function Home() {
           </button>
         </div>
 
+        {acc && BigInt(acc.walletLamports) < WALLET_NEEDS && (
+          <div className="banner warn">
+            <Icon name="shieldalert" size={18} color="#F2B33D" />
+            <div>
+              Sua {s.walletName} tem {sol(acc.walletLamports, 6)} SOL. Ela paga as taxas: para assinar, precisa ter ~0,007 SOL (quase tudo volta na mesma transação; o custo real é ~0,000015 SOL).
+            </div>
+          </div>
+        )}
+
         {pending.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <div className="section-title">
@@ -279,7 +293,7 @@ function DevTools({ vault, accountId, reload }: { vault: string; accountId: stri
   );
 }
 
-/** Depósito: a carteira assina uma transferência dela para o Vault; o serviço paga a taxa. */
+/** Depósito: a carteira assina e paga uma transferência dela para o Vault; o app envia. */
 export function Deposit() {
   const ctx = useApp();
   const { acc } = useAccount(15000);
@@ -312,13 +326,16 @@ export function Deposit() {
       const [i, f = ""] = s.split(".");
       const lamports = BigInt(i!) * BigInt(LAMPORTS_PER_SOL) + BigInt(f.padEnd(9, "0"));
       const c = await ctx.accountWallet();
+      // O Vault de destino é conferido na chain: 2-de-2 com esta carteira, não um endereço que o servidor disse.
+      const vault = await verifyAccountOnChain(ctx.chain, acc.account.multisig, new PublicKey(c.publicKey));
+      if (vault !== acc.account.vault) throw new Error("o Vault informado não é o desta conta");
       const msg = new TransactionMessage({
-        payerKey: new PublicKey(ctx.config.feePayer),
+        payerKey: new PublicKey(c.publicKey),
         recentBlockhash: await ctx.chain.getLatestBlockhash(),
         instructions: [SystemProgram.transfer({ fromPubkey: new PublicKey(c.publicKey), toPubkey: new PublicKey(acc.account.vault), lamports })],
       }).compileToV0Message();
       const signed = await c.signTransaction(new VersionedTransaction(msg));
-      await api("POST", `/v1/accounts/${acc.account.id}/deposit`, { transaction: signed });
+      await sendSigned(signed);
       ctx.toast(`${sol(lamports, 9)} SOL depositados no Vault`);
       ctx.go("/");
     } catch (e) {
@@ -338,7 +355,7 @@ export function Deposit() {
       </div>
       <div className="page">
         <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
-          Sai da sua {ctx.session!.walletName} para o Vault da conta. Depositar não precisa da aprovação do serviço; sacar, sim.
+          Sai da sua {ctx.session!.walletName} para o Vault da conta, com a taxa (~0,000005 SOL) paga por ela. Depositar não precisa da aprovação do serviço; sacar, sim.
         </div>
         <div className="card" style={{ gap: 6 }}>
           <div className="muted" style={{ fontSize: 12 }}>

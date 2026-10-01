@@ -60,6 +60,8 @@ export interface Chain {
    * no Solana Pay). null enquanto não confirmar.
    */
   getLandedTransaction?(signature: string): Promise<LandedTransaction | null>;
+  /** Assinaturas recentes de transações que tocaram este endereço (mais nova primeiro). */
+  signaturesFor?(address: PublicKey, limit?: number): Promise<string[]>;
 }
 
 export type SimulationResult = { ok: boolean; error: string | null; logs: string[] };
@@ -157,6 +159,10 @@ export class RpcChain implements Chain {
 
   async getAddressLookupTable(address: PublicKey) {
     return (await this.connection.getAddressLookupTable(address)).value;
+  }
+
+  async signaturesFor(address: PublicKey, limit = 10): Promise<string[]> {
+    return (await this.connection.getSignaturesForAddress(address, { limit }, "confirmed")).map((s) => s.signature);
   }
 
   async getLandedTransaction(signature: string): Promise<LandedTransaction | null> {

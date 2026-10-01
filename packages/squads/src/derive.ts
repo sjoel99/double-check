@@ -96,21 +96,31 @@ export function normalizeConfigActions(actions: multisig.types.ConfigAction[]): 
 }
 
 /**
- * Única ConfigTransaction aceita: [AddMember(nova, só Vote), RemoveMember(votante atual)].
+ * Únicas ConfigTransactions aceitas (a troca de uma chave, numa transação só):
+ *   carteira: [AddMember(nova, Vote+Execute), RemoveMember(atual), SetRentCollector(nova)]
+ *   serviço:  [AddMember(nova, Vote), RemoveMember(atual)]
  * Qualquer outra forma devolve rotation = null e a política recusa.
  */
-export function viewConfigTransaction(tx: OnchainConfigTransaction, state: MultisigState, roles: ExpectedRoles): ConfigView {
-  const actions = normalizeConfigActions(tx.actions);
+export function configView(rawActions: multisig.types.ConfigAction[], state: MultisigState, roles: ExpectedRoles): ConfigView {
+  const actions = normalizeConfigActions(rawActions);
   let rotation: DerivedRotation | null = null;
-  const [add, remove] = actions;
-  if (actions.length === 2 && add?.kind === "AddMember" && remove?.kind === "RemoveMember") {
+  const [add, remove, third] = actions;
+  if (add?.kind === "AddMember" && remove?.kind === "RemoveMember") {
     const role = remove.key === roles.client ? "CLIENT" : remove.key === roles.server ? "SERVER" : null;
-    // A chave nova herda exatamente as permissões do papel: cliente 6, servidor 2.
-    if (add.mask !== (role === "CLIENT" ? 6 : 2)) return { kind: "CONFIG", actions, rotation: null };
     const isNew = !state.members.some((m) => m.key === add.key);
-    if (role && isNew) rotation = { role, oldKey: remove.key, newKey: add.key };
+    const shapeOk =
+      role === "CLIENT"
+        ? actions.length === 3 && add.mask === 6 && third?.kind === "SetRentCollector" && rawActions[2]?.__kind === "SetRentCollector" && (rawActions[2] as { newRentCollector: PublicKey | null }).newRentCollector?.toBase58() === add.key
+        : role === "SERVER"
+          ? actions.length === 2 && add.mask === 2
+          : false;
+    if (role && isNew && shapeOk) rotation = { role, oldKey: remove.key, newKey: add.key };
   }
   return { kind: "CONFIG", actions, rotation };
+}
+
+export function viewConfigTransaction(tx: OnchainConfigTransaction, state: MultisigState, roles: ExpectedRoles): ConfigView {
+  return configView(tx.actions, state, roles);
 }
 
 /** Diferenças entre a intenção e o que a chain contém. Vazio = idênticas. */

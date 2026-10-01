@@ -238,7 +238,7 @@ export function RotateWallet() {
         {step.kind === "start" && (
           <>
             <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
-              A carteira nova entra e a atual (<span className="mono">{short(s.publicKey)}</span>, {s.walletName}) sai, na mesma transação da Solana. Precisa da carteira atual e da aprovação do serviço. Envios ficam pausados até terminar.
+              A carteira nova entra e a atual (<span className="mono">{short(s.publicKey)}</span>, {s.walletName}) sai, na mesma transação da Solana, assinada e paga pela carteira atual (~0,000015 SOL) e aprovada pelo serviço.
             </div>
             <button type="button" className="btn primary" disabled={Boolean(busy)} onClick={start}>
               Começar
@@ -252,7 +252,7 @@ export function RotateWallet() {
               <PhoneQr
                 create={() => api("POST", `/v1/rotations/${step.rotationId}/pay-proof`, {})}
                 title="Escaneie com a carteira NOVA"
-                steps={["Na carteira do celular, abra a conta nova (ou outra carteira)", "Escaneie e confirme: ela só prova que é sua"]}
+                steps={["Na carteira do celular, abra a conta nova (ou outra carteira)", "Escaneie e confirme: ela só prova que é sua (taxa de 0,000005 SOL, paga por ela)"]}
                 onDone={(r: { intentId: string; newKey: string }) => setStep({ kind: "approve", intentId: r.intentId, newKey: r.newKey })}
               />
             </div>
@@ -274,7 +274,7 @@ export function RotateWallet() {
             <div className="banner warn">
               <Icon name="shieldalert" size={18} color="#F2B33D" />
               <div>
-                Agora volte para a carteira <b>atual</b> (<span className="mono">{short(s.publicKey)}</span>) e assine a troca. O serviço já conferiu e aprovou.
+                Agora volte para a carteira <b>atual</b> (<span className="mono">{short(s.publicKey)}</span>) e assine a troca. O serviço já conferiu a política; a carteira atual paga a taxa.
               </div>
             </div>
             <button type="button" className="btn amber" onClick={() => ctx.go(`/intent/${step.intentId}`)}>

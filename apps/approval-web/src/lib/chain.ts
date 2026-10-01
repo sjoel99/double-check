@@ -1,4 +1,4 @@
-import type { AccountInfo, PublicKey } from "@solana/web3.js";
+import { type AccountInfo, Connection, type PublicKey } from "@solana/web3.js";
 import { RpcChain, type Chain } from "@duplachave/solana";
 import type { Cluster } from "@duplachave/shared";
 
@@ -48,4 +48,21 @@ export const short = (k: string) => `${k.slice(0, 4)}…${k.slice(-4)}`;
 export function sol(lamports: string | bigint | number, max = 4): string {
   const v = Number(BigInt(lamports.toString())) / 1e9;
   return v.toLocaleString("pt-BR", { maximumFractionDigits: max });
+}
+
+/**
+ * Envia uma transação já assinada pela carteira (paga por ela) pela RPC fixada
+ * e espera confirmar consultando o status (o proxy local não repassa websocket).
+ */
+export async function sendSigned(transactionB64: string): Promise<string> {
+  const conn = new Connection(new URL(RPC_1, location.origin).toString(), "confirmed");
+  const raw = Uint8Array.from(atob(transactionB64), (c) => c.charCodeAt(0));
+  const sig = await conn.sendRawTransaction(raw, { preflightCommitment: "confirmed" });
+  for (let i = 0; i < 60; i++) {
+    const st = (await conn.getSignatureStatuses([sig])).value[0];
+    if (st?.err) throw new Error(`a transação falhou: ${JSON.stringify(st.err)}`);
+    if (st?.confirmationStatus === "confirmed" || st?.confirmationStatus === "finalized") return sig;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error("a transação não confirmou a tempo; confira o saldo antes de tentar de novo");
 }

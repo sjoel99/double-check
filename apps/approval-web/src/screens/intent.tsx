@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { PublicKey } from "@solana/web3.js";
-import { buildWalletTransaction, inspectOnChain, type ApprovalRequest, type Inspection } from "@duplachave/custody/src/client";
+import { inspectPrepared, type ApprovalRequest, type Inspection } from "@duplachave/custody/src/client";
 import { KNOWN_PROGRAM_NAMES } from "@duplachave/solana";
 import { errorText, useApp } from "../app";
 import { api } from "../lib/api";
@@ -77,7 +77,7 @@ export function Send() {
       <TopBar title="Enviar SOL" />
       <div className="page">
         <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
-          O serviço monta a transação, confere a sua política e aprova. Depois você revisa e assina uma vez na {ctx.session!.walletName}.
+          O serviço confere a sua política e assina a parte dele. Depois você revisa e assina uma vez na {ctx.session!.walletName}, que paga a taxa da rede (~0,000015 SOL).
         </div>
         <div className="field">
           <label htmlFor="dest">Endereço de destino</label>
@@ -100,49 +100,69 @@ export function Send() {
 
 // ---------------------------------------------------------------- Revisar e assinar
 
-type Loaded = { record: IntentView; request: ApprovalRequest | null };
+/** Uma transação preparada vale ~60–90 s (blockhash). Passou disso, o app prepara de novo antes de assinar. */
+const PREPARED_FRESH_MS = 40_000;
+
+type Loaded = { record: IntentView; request: ApprovalRequest | null; preparedAt: number; prepareErr: string | null };
 
 export function IntentScreen({ id }: { id: string }) {
   const ctx = useApp();
   const [data, setData] = useState<Loaded | null>(null);
   const [check, setCheck] = useState<Inspection | null>(null);
-  const [busy, setBusy] = useState<null | "sign" | "reject" | "retry">(null);
+  const [busy, setBusy] = useState<null | "sign" | "reject">(null);
   const [err, setErr] = useState<string | null>(null);
   const [handedOver, setHandedOver] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
   const viaPhone = ctx.session?.via === "phone";
 
+  /** Pede a transação atômica (o serviço já assinou) e confere: o app remonta os bytes sozinho. */
+  const prepare = useCallback(async () => {
+    const path = ctx.dev.malicious ? `/v1/dev/intents/${id}/prepare-tampered` : `/v1/intents/${id}/prepare`;
+    const request = await api<ApprovalRequest>("POST", path, {});
+    const inspection = await inspectPrepared(ctx.chain, request, new PublicKey(ctx.session!.publicKey), now(), { initiatedHere: ctx.initiatedHere });
+    return { request, inspection };
+  }, [id, ctx]);
+
   const load = useCallback(async () => {
     try {
-      const r = await api<{ record: IntentView; approvalRequest: ApprovalRequest | null }>("GET", `/v1/intents/${id}`);
-      let request = r.approvalRequest;
-      if (request && ctx.dev.malicious && r.record.intent.type === "TRANSFER_SOL" && request.mode !== "CANCEL") {
-        request = await api<ApprovalRequest>("GET", `/v1/dev/intents/${id}/tampered`);
+      const r = await api<{ record: IntentView }>("GET", `/v1/intents/${id}`);
+      if (r.record.status !== "AWAITING_CLIENT") return setData({ record: r.record, request: null, preparedAt: 0, prepareErr: null });
+      try {
+        const { request, inspection } = await prepare();
+        setData({ record: r.record, request, preparedAt: Date.now(), prepareErr: null });
+        setCheck(inspection);
+      } catch (e) {
+        setData({ record: r.record, request: null, preparedAt: 0, prepareErr: errorText(e) });
       }
-      setData({ record: r.record, request });
-      // A conferência é do app: lê a transação pela RPC fixada no build e compara com o que vai mostrar.
-      if (request) setCheck(await inspectOnChain(ctx.chain, request, new PublicKey(ctx.session!.publicKey), now(), { initiatedHere: ctx.initiatedHere }));
     } catch (e) {
       setErr(errorText(e));
     }
-  }, [id, ctx]);
+  }, [id, prepare]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
   const sign = async () => {
-    if (!data?.request) return;
+    if (!data?.request || !check?.ok) return;
     setErr(null);
     setBusy("sign");
     try {
       const c = await ctx.accountWallet();
-      const { transaction } = await buildWalletTransaction({ chain: ctx.chain, request: data.request, wallet: new PublicKey(c.publicKey), now: now(), initiatedHere: ctx.initiatedHere });
-      const signed = await c.signTransaction(transaction);
-      const out = await api<IntentView>("POST", `/v1/intents/${id}/sign`, { transaction: signed });
-      const intent = data.request.intent;
+      let review = check.review;
+      let request = data.request;
+      if (Date.now() - data.preparedAt > PREPARED_FRESH_MS) {
+        const again = await prepare();
+        setCheck(again.inspection);
+        setData({ ...data, request: again.request, preparedAt: Date.now() });
+        if (!again.inspection.ok) return;
+        review = again.inspection.review;
+        request = again.request;
+      }
+      const signed = await c.signTransaction(review.transaction);
+      const out = await api<IntentView>("POST", `/v1/intents/${id}/submit`, { transaction: signed });
+      const intent = request.intent;
       if (intent.type === "ROTATE_MEMBER" && intent.role === "CLIENT" && out.status === "EXECUTED") return setHandedOver(true);
-      if (data.request.mode === "CANCEL") ctx.toast("Cancelada na Solana. Nada mais pode executá-la.");
       await load();
     } catch (e) {
       setErr(errorText(e));
@@ -156,20 +176,7 @@ export function IntentScreen({ id }: { id: string }) {
     setBusy("reject");
     try {
       await api("POST", `/v1/intents/${id}/reject`);
-      ctx.toast("Recusada. A proposta foi encerrada na Solana.");
-      await load();
-    } catch (e) {
-      setErr(errorText(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const retry = async () => {
-    setErr(null);
-    setBusy("retry");
-    try {
-      await api("POST", `/v1/intents/${id}/execute`);
+      ctx.toast("Recusada. Nada foi para a Solana.");
       await load();
     } catch (e) {
       setErr(errorText(e));
@@ -182,7 +189,6 @@ export function IntentScreen({ id }: { id: string }) {
     setQrOpen(false);
     const intent = data?.request?.intent;
     if (intent?.type === "ROTATE_MEMBER" && intent.role === "CLIENT" && result.status === "EXECUTED") return setHandedOver(true);
-    if (data?.request?.mode === "CANCEL") ctx.toast("Cancelada na Solana. Nada mais pode executá-la.");
     await load();
   };
   const qrSheet = qrOpen && (
@@ -198,16 +204,10 @@ export function IntentScreen({ id }: { id: string }) {
   if (handedOver) return <HandedOver />;
   if (!data) return <Loading err={err} />;
   const { record, request } = data;
+  if (data.prepareErr) return <PrepareFailed message={data.prepareErr} busy={busy} onRetry={load} onReject={reject} />;
   if (!request) return <Outcome record={record} />;
-  if (!check) return <Loading err={err} label="Conferindo na Solana…" />;
+  if (!check) return <Loading err={err} label="Conferindo…" />;
   if (!check.ok) return <Blocked check={check} request={request} />;
-  if (request.mode === "CANCEL")
-    return (
-      <>
-        <PendingExecution record={record} busy={busy} err={err} onRetry={retry} onCancel={viaPhone ? () => setQrOpen(true) : sign} />
-        {qrSheet}
-      </>
-    );
 
   const intent = request.intent;
   const walletName = ctx.session!.walletName;
@@ -241,7 +241,7 @@ export function IntentScreen({ id }: { id: string }) {
     <div className="banner ok">
       <Icon name="shieldcheck" size={18} color="var(--accent)" />
       <div className="grow">
-        Conferido na Solana: idêntico ao que você vê.{check.serverApproved ? " O serviço já conferiu a política e aprovou." : ""}
+        Conferido: a carteira vai assinar exatamente isto, e o serviço já conferiu a política e assinou a parte dele.
       </div>
       <div className="mono" style={{ color: "#8fa36b" }}>
         #{intent.transactionIndex}
@@ -286,11 +286,11 @@ export function IntentScreen({ id }: { id: string }) {
           <Detail label="De" value={`Seu Vault · ${short(intent.vault)}`} mono />
           <Detail label="Programa" value={intent.programs.map((p: string) => KNOWN_PROGRAM_NAMES[p] ?? short(p)).join(", ")} />
           <Detail label="Assinaturas" value={`Serviço ✓ · você (${walletName})`} />
-          <Detail label="Taxa de rede" value="Paga pelo serviço" />
+          <Detail label="Taxa de rede" value={`~0,000015 SOL · paga pela ${viaPhone ? "carteira" : walletName}`} />
         </div>
         <div className="banner info">
           <Icon name="key" size={18} />
-          <div>{viaPhone ? "A carteira do celular" : `A ${walletName}`} assina uma vez a aprovação e a execução juntas: se a execução falhar, nada fica aprovado.</div>
+          <div>{viaPhone ? "A carteira do celular" : `A ${walletName}`} assina uma vez: a transação cria, aprova e executa junto. Se algo falhar, nada acontece na Solana.</div>
         </div>
         {flags.includes("POSSIBLE_FULL_BALANCE") && (
           <div className="banner warn">
@@ -367,7 +367,7 @@ function RotationApproval({ request, header, actions, err }: { request: Approval
           <div className="banner warn">
             <Icon name="shieldalert" size={18} color="#F2B33D" />
             <div>
-              Assine com a carteira <b>atual</b> (<span className="mono">{short(intent.oldKey)}</span>). Depois disso ela perde o acesso, e a nova passa a assinar. Envios ficam pausados até terminar.
+              Assine com a carteira <b>atual</b> (<span className="mono">{short(intent.oldKey)}</span>). Ela paga a taxa e, na mesma transação, perde o acesso; a nova passa a assinar.
             </div>
           </div>
         ) : (
@@ -383,25 +383,25 @@ function RotationApproval({ request, header, actions, err }: { request: Approval
   );
 }
 
-function PendingExecution({ record, busy, err, onRetry, onCancel }: { record: IntentView; busy: null | string; err: string | null; onRetry: () => void; onCancel: () => void }) {
-  const { session } = useApp();
+function PrepareFailed({ message, busy, onRetry, onReject }: { message: string; busy: null | string; onRetry: () => void; onReject: () => void }) {
   return (
     <>
-      <TopBar title="Aguardando execução" />
+      <TopBar title="Confirmar transação" />
       <div className="page" style={{ gap: 18 }}>
         <div className="banner warn">
           <Icon name="shieldalert" size={18} color="#F2B33D" />
-          <div>Você e o serviço aprovaram, mas a execução falhou. A proposta continua válida na Solana: execute de novo ou cancele (o cancelamento também precisa da sua {session!.walletName} e do serviço).</div>
+          <div>Não deu para preparar a transação: {message}</div>
         </div>
-        <Detail label="Motivo" value={record.reasons.join(" · ") || "—"} />
-        {err && <div className="banner danger">{err}</div>}
+        <div className="muted" style={{ fontSize: 13, lineHeight: 1.5 }}>
+          Nada foi assinado nem enviado. Taxa e depósito saem da sua carteira: o depósito das contas volta na mesma transação.
+        </div>
       </div>
       <div className="actions">
-        <button type="button" className="btn" disabled={Boolean(busy)} onClick={onCancel}>
-          {busy === "sign" ? <span className="spinner" /> : null}Cancelar
+        <button type="button" className="btn" disabled={Boolean(busy)} onClick={onReject}>
+          {busy === "reject" ? <span className="spinner" /> : null}Recusar
         </button>
         <button type="button" className="btn primary" disabled={Boolean(busy)} onClick={onRetry}>
-          {busy === "retry" ? <span className="spinner" /> : null}Executar de novo
+          Tentar de novo
         </button>
       </div>
     </>
@@ -411,14 +411,18 @@ function PendingExecution({ record, busy, err, onRetry, onCancel }: { record: In
 function Blocked({ check, request }: { check: Extract<Inspection, { ok: false }>; request: ApprovalRequest }) {
   const { go } = useApp();
   const intent = request.intent;
-  const op = check.view?.kind === "VAULT" ? check.view.operation : null;
+  // O que a transação recebida faria de verdade (decodificada aqui, não dita pelo servidor).
+  const op = check.actual?.length === 1 && check.actual[0]!.kind === "SYSTEM_TRANSFER" ? check.actual[0]! : null;
   const rows: [string, string, string][] = [];
-  if (intent.type === "TRANSFER_SOL" && op?.type === "TRANSFER_SOL") {
-    if (intent.amountLamports !== op.amountLamports) rows.push(["Valor", `${sol(intent.amountLamports, 9)} SOL`, `${sol(op.amountLamports, 9)} SOL`]);
-    if (intent.destination !== op.destination) rows.push(["Destino", short(intent.destination), short(op.destination)]);
+  if (intent.type === "TRANSFER_SOL" && op?.kind === "SYSTEM_TRANSFER") {
+    if (intent.amountLamports !== op.lamports.toString()) rows.push(["Valor", `${sol(intent.amountLamports, 9)} SOL`, `${sol(op.lamports, 9)} SOL`]);
+    if (intent.destination !== op.to) rows.push(["Destino", short(intent.destination), short(op.to)]);
   }
   const reason: Record<string, string> = {
-    INTENT_MISMATCH: "O que o servidor mostrou não é o que está na Solana.",
+    INTENT_MISMATCH: "O que o servidor mostrou não é o que a transação faz.",
+    STALE_INDEX: "Outra transação entrou antes desta. Volte e abra de novo.",
+    SERVER_NOT_SIGNED: "Falta a assinatura do serviço na transação.",
+    TX_MALFORMED: "A transação recebida está ilegível.",
     INTENT_HASH_INVALID: "Os dados recebidos não batem com a assinatura da intenção.",
     INTENT_EXPIRED: "O prazo para assinar acabou.",
     PROPOSAL_NOT_ACTIVE: "A proposta não está mais aberta na Solana.",
@@ -443,7 +447,7 @@ function Blocked({ check, request }: { check: Extract<Inspection, { ok: false }>
             <div className="diff head">
               <div>Campo</div>
               <div>Mostrado</div>
-              <div>Na Solana</div>
+              <div>Na transação</div>
             </div>
             {rows.map(([f, a, b]) => (
               <div className="diff" key={f}>
@@ -475,19 +479,13 @@ function Outcome({ record }: { record: IntentView }) {
   const intent = record.intent;
   const rot = intent.type === "ROTATE_MEMBER";
   const explorer = (sig: string) => `https://explorer.solana.com/tx/${sig}?cluster=${config.cluster === "devnet" ? "devnet" : `custom&customUrl=${encodeURIComponent("http://127.0.0.1:8899")}`}`;
-  const steps: [string, string | undefined][] = rot
-    ? [
-        ["Proposta criada na Solana", record.signatures.create],
-        ["Serviço conferiu e aprovou", record.signatures.serverApprove],
-        [`Você aprovou na ${session?.walletName ?? "carteira"}`, record.signatures.clientApprove],
-        ["Chaves trocadas na Solana", record.signatures.execute],
-      ]
-    : [
-        ["Proposta criada na Solana", record.signatures.create],
-        ["Serviço conferiu a política e aprovou", record.signatures.serverApprove],
-        [`Você assinou na ${session?.walletName ?? "carteira"} (aprovou e executou)`, record.signatures.clientApprove],
-      ];
-  const label: Record<string, string> = { REJECTED: "Transação recusada", EXPIRED: "Prazo expirado", FAILED: "Falhou", CANCELLED: "Cancelada", EXECUTING: "Executando" };
+  // Uma transação só: criar, aprovar (serviço + você), executar e fechar.
+  const steps: [string, string | undefined][] = [
+    ["Serviço conferiu a política e assinou", record.signatures.serverApprove],
+    [`Você assinou e pagou na ${session?.walletName ?? "carteira"}`, record.signatures.clientApprove],
+    [rot ? "Chaves trocadas na Solana" : "Executada na Solana", record.signatures.execute],
+  ];
+  const label: Record<string, string> = { REJECTED: "Transação recusada", EXPIRED: "Prazo expirado", FAILED: "Falhou", CANCELLED: "Cancelada" };
   return (
     <>
       <div className="page" style={{ paddingTop: 56, gap: 26 }}>

@@ -1,12 +1,13 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { FailedTransactionMetadata, LiteSVM } from "litesvm";
-import { PublicKey, type TransactionInstruction, type VersionedTransaction } from "@solana/web3.js";
+import { PublicKey, type TransactionInstruction, VersionedMessage, type VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import * as multisig from "@sqds/multisig";
 import { buildTransaction, ChainTxError, type Chain, programErrorFromLogs } from "@duplachave/solana";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
+const keysOf = (message: Uint8Array) => VersionedMessage.deserialize(message).staticAccountKeys;
 
 /**
  * Chain em processo: LiteSVM com o ELF do Squads v4 baixado da mainnet
@@ -43,6 +44,15 @@ export class LiteSvmChain implements Chain {
 
   /** Transações que confirmaram (para o fluxo em que a carteira envia ela mesma). */
   readonly landed = new Map<string, { message: Uint8Array; signatures: Uint8Array[]; signers: PublicKey[] }>();
+
+  async signaturesFor(address: PublicKey, limit = 10) {
+    const out: string[] = [];
+    for (const [sig, t] of [...this.landed.entries()].reverse()) {
+      if (keysOf(t.message).some((k) => k.equals(address))) out.push(sig);
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
 
   async getLandedTransaction(signature: string) {
     const t = this.landed.get(signature);

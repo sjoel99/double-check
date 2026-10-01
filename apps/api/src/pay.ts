@@ -10,10 +10,11 @@ import type { CustodyService, Store } from "@duplachave/custody";
  *
  * O app mostra um QR com `solana:<URL HTTPS>/pay/<token>`. A carteira do celular:
  *   GET  → { label, icon }
- *   POST { account } → { transaction (já assinada pelo pagador), message }
- * e então assina e ENVIA a transação ela mesma. O backend acompanha o id (a
- * assinatura do pagador, que é a primeira) até confirmar e conclui o pedido.
- * O desktop acompanha por GET /v1/pay/:token.
+ *   POST { account } → { transaction (paga por ela; o serviço já assinou o que
+ *                        precisava), message }
+ * e então assina, paga e ENVIA a transação ela mesma. O backend procura a
+ * transação na chain pela conta que ela toca e compara os bytes com a
+ * preparada. O desktop acompanha por GET /v1/pay/:token.
  */
 
 type Kind = "CONNECT" | "SIGN_INTENT" | "ROTATION_PROOF";
@@ -28,7 +29,6 @@ type PayRequest = {
   expiresAt: number;
   status: "WAITING_SCAN" | "WAITING_SIGNATURE" | "DONE" | "FAILED" | "EXPIRED";
   wallet: string | null;
-  txid: string | null;
   error: string | null;
   result: Record<string, unknown> | null;
   /** Dados para concluir (transação montada, plano de cadastro…). Nunca sai pela API. */
@@ -55,13 +55,13 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
   const create = (kind: Kind, subject: string | null, accountId: string | null) => {
     const token = randomBytes(24).toString("hex");
     const now = d.now();
-    const r: PayRequest = { token, kind, subject, accountId, createdAt: now, expiresAt: now + TTL, status: "WAITING_SCAN", wallet: null, txid: null, error: null, result: null, pending: null, attempts: 0 };
+    const r: PayRequest = { token, kind, subject, accountId, createdAt: now, expiresAt: now + TTL, status: "WAITING_SCAN", wallet: null, error: null, result: null, pending: null, attempts: 0 };
     requests.set(token, r);
     const url = `${base}/pay/${token}`;
     return { token, url, link: `solana:${encodeURIComponent(url)}`, expiresAt: r.expiresAt, https: url.startsWith("https://") };
   };
 
-  const publicView = (r: PayRequest) => ({ status: r.status, kind: r.kind, wallet: r.wallet, txid: r.txid, error: r.error, result: r.result, expiresAt: r.expiresAt });
+  const publicView = (r: PayRequest) => ({ status: r.status, kind: r.kind, wallet: r.wallet, error: r.error, result: r.result, expiresAt: r.expiresAt });
 
   // ------------------------------------------------------------ o desktop cria e acompanha
   app.post("/v1/pay/connect", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async () => create("CONNECT", null, null));
@@ -114,7 +114,7 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
     // Um QR, uma carteira: depois do primeiro POST, outra carteira não troca o pedido.
     if (r.wallet && r.wallet !== account) throw new SecurityError("PAY_WRONG_WALLET", "este QR já está com outra carteira");
 
-    let built: { transaction: string; txid: string; message: string };
+    let built: { transaction: string; message: string };
     if (r.kind === "CONNECT") {
       const tx = await d.custody.phoneConnectTransaction(account, token);
       r.pending = tx;
@@ -128,7 +128,6 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
       built = tx;
     }
     r.wallet = account;
-    r.txid = built.txid;
     r.status = "WAITING_SIGNATURE";
     r.error = null;
     return { transaction: built.transaction, message: built.message };
@@ -146,14 +145,14 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
         r.status = "EXPIRED";
         continue;
       }
-      if (r.status !== "WAITING_SIGNATURE" || !r.txid || !r.wallet) continue;
+      if (r.status !== "WAITING_SIGNATURE" || !r.wallet) continue;
       try {
         if (r.kind === "CONNECT") {
-          const out = await d.custody.phoneConnectComplete(r.pending, r.wallet, "Carteira do celular");
+          const out = await d.custody.phoneConnectComplete(r.pending, r.wallet);
           if (!out) continue;
           r.result = { accountId: out.account.id, created: out.created, sessionToken: d.issueToken(out.account), walletName: "Carteira do celular", publicKey: r.wallet };
         } else if (r.kind === "SIGN_INTENT") {
-          const out = await d.custody.phoneSignComplete(r.subject!, r.txid);
+          const out = await d.custody.phoneSignComplete(r.subject!);
           if (!out) continue;
           r.result = { status: out.status };
         } else {

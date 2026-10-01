@@ -38,6 +38,8 @@ export function createStrictMultisigIx(args: {
   treasury: PublicKey;
   layout: MultisigLayout;
   timeLock?: number;
+  /** Recebe o rent das contas de proposta fechadas. Padrão: a carteira do cliente. */
+  rentCollector?: PublicKey | null;
 }): { instruction: TransactionInstruction; multisig: PublicKey; vault: PublicKey } {
   const [msPda] = multisig.getMultisigPda({ createKey: args.createKey });
   const instruction = ix.multisigCreateV2({
@@ -49,7 +51,7 @@ export function createStrictMultisigIx(args: {
     members: layoutMembers(args.layout),
     timeLock: args.timeLock ?? 0,
     createKey: args.createKey,
-    rentCollector: null,
+    rentCollector: args.rentCollector === undefined ? args.layout.client : args.rentCollector,
   });
   return { instruction, multisig: msPda, vault: vaultPda(msPda, 0) };
 }
@@ -126,10 +128,13 @@ export const SERVER_MASK = PERM.Vote;
 
 export function rotationActions(oldKey: PublicKey, newKey: PublicKey, role: "CLIENT" | "SERVER" = "CLIENT"): multisig.types.ConfigAction[] {
   const perms = role === "CLIENT" ? [PERM.Vote, PERM.Execute] : [PERM.Vote];
-  return [
+  const actions: multisig.types.ConfigAction[] = [
     { __kind: "AddMember", newMember: { key: newKey, permissions: Permissions.fromPermissions(perms) } },
     { __kind: "RemoveMember", oldMember: oldKey },
   ];
+  // O rent das propostas volta para a carteira do cliente: acompanha a troca.
+  if (role === "CLIENT") actions.push({ __kind: "SetRentCollector", newRentCollector: newKey });
+  return actions;
 }
 
 /** Memo da aprovação: liga o voto on-chain à intenção (auditoria). */

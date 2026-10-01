@@ -33,12 +33,13 @@ export class DevServerKeyProvider implements ServerKeyProvider {
   }
 }
 
-/** Chaves operacionais do serviço: nenhuma vota. */
+/**
+ * Chaves operacionais do serviço: nenhuma vota e nenhuma paga nada — taxa e
+ * rent saem da carteira do cliente.
+ */
 export type ServiceKeys = {
-  /** Membro só com Execute. */
+  /** Membro só com Execute (reserva: a carteira do cliente executa na transação atômica). */
   executor: Signer;
-  /** Membro só com Initiate (a "wallet operacional" quando o backend propõe). */
+  /** Membro só com Initiate: cria a transação da Squads (assina, não paga). */
   proposer: Signer;
-  /** Paga taxas e rent. Não é membro. */
-  feePayer: Signer;
 };

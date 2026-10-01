@@ -7,28 +7,39 @@ Custódia na Solana em que **nenhuma chave sozinha move fundos**. Os ativos fica
 
 Executor e proponente do serviço não votam. Trocar a carteira ou a chave do serviço também exige as duas.
 
+**O serviço não paga nada.** Taxas e rent saem da carteira do cliente. Cada operação é uma transação atômica: o serviço assina antes, a carteira assina por último e paga, e criar, aprovar, executar e fechar acontecem juntos.
+
+| | Custo para a carteira |
+|---|---|
+| Criar a conta (uma vez) | ~0,003 SOL |
+| Cada envio ou troca de chave | 0,000015 SOL. Na hora, a carteira precisa *ter* ~0,0065 SOL: o depósito das contas da Squads volta na mesma transação |
+| Depósito no Vault | 0,000005 SOL |
+| Entrar pelo celular / prova da carteira nova pelo celular | 0,000005 SOL (o Solana Pay não tem assinatura de mensagem) |
+| Entrar pela extensão | grátis (assinatura de texto) |
+
 Quem garante isso é o programa da Squads. Backend, banco e app podem falhar sem que uma chave isolada mova fundos. Os testes atacam o programa direto para provar.
 
 ## Os dois fluxos
 
 **Cadastro**
 1. O cliente conecta a carteira que já usa.
-2. A carteira assina um texto de vínculo, que ela mesma mostra na janela dela.
-3. A conta 2-de-2 é criada na Solana: carteira do cliente + chave do serviço.
+2. O serviço prepara a criação da conta 2-de-2 (carteira do cliente + chave nova do serviço), com um memo de vínculo. O app confere a transação: só a criação, com os membros certos, sem nada escondido.
+3. A carteira assina e paga (~0,003 SOL). A conta existe na Solana.
 
 **Transação**
-1. O cliente pede o envio no app.
-2. O serviço monta a transação, confere a política, simula e aprova.
-3. O cliente assina **uma vez** na carteira. Essa transação aprova e executa junto; se a execução falhar, nada fica aprovado.
+1. O cliente pede o envio no app. O serviço confere a política e simula; nada vai para a chain.
+2. O serviço prepara a transação atômica e assina a parte dele.
+3. O app remonta a transação sozinho, a partir do que mostra na tela, e compara byte a byte.
+4. O cliente assina **uma vez** na carteira, que paga a taxa. Se algo falhar, nada acontece na Solana.
 
 ## Pelo celular (QR)
 
-Em qualquer ponto que precise de assinatura, o app mostra um QR do **Solana Pay**. A Phantom ou a Solflare do celular lê o código, busca a transação no nosso servidor e mostra a mensagem (por exemplo "Aprovar e executar #3: Enviar 2,5 SOL · Destino 9xQe…"). Depois a carteira assina e **envia ela mesma**. O serviço paga a taxa e o computador acompanha até confirmar.
+Em qualquer ponto que precise de assinatura, o app mostra um QR do **Solana Pay**. A Phantom ou a Solflare do celular lê o código, busca a transação no nosso servidor e mostra a mensagem (por exemplo "Aprovar e executar #3: Enviar 2,5 SOL · Destino 9xQe…"). Depois a carteira assina, paga e **envia ela mesma**. O backend acha a transação na chain, confere que é exatamente a preparada, e o computador segue sozinho.
 
 O Solana Pay não tem assinatura de mensagem. Por isso, pelo celular:
 - **Cadastro:** um memo de vínculo assinado pela carteira, na mesma transação que cria a multisig (atômico).
-- **Entrada:** um memo de entrada.
-- **Prova da carteira nova (na troca):** um memo com o texto de posse. A prova guardada é a mensagem da transação + a assinatura da carteira, e qualquer um confere offline.
+- **Entrada:** um memo de entrada (0,000005 SOL).
+- **Prova da carteira nova (na troca):** um memo com o texto de posse, pago pela carteira nova, que precisa de 0,000005 SOL. A prova guardada é a mensagem da transação + a assinatura da carteira, e qualquer um confere offline.
 
 ### Testar com o seu celular (devnet)
 
@@ -39,8 +50,9 @@ pnpm dev:devnet
 O script:
 - sobe um túnel HTTPS (cloudflared) para a API, porque o celular exige HTTPS;
 - sobe um Postgres em Docker e chaves persistentes;
-- aponta tudo para a devnet;
-- imprime o endereço do **pagador de taxas**: abasteça-o uma vez em https://faucet.solana.com, porque o airdrop automático da devnet está limitado.
+- aponta tudo para a devnet.
+
+Quem paga é a sua Phantom: ela precisa de SOL de devnet (https://faucet.solana.com; 0,05 SOL dá para muitos testes).
 
 Na Phantom do celular, ative o modo devnet: Configurações → Configurações de desenvolvedor → Modo testnet → Solana Devnet. Depois, no computador, abra http://127.0.0.1:5173 e use **Usar a carteira do celular**.
 
@@ -51,7 +63,7 @@ Em localnet (`pnpm dev`), o botão **Abrir no celular de teste** abre uma aba qu
 ```bash
 cd ~/Desenvolvimento/Pessoal/duplachave
 pnpm install
-pnpm test     # 74 testes, ~4 s, sem rede: o Squads v4 da mainnet rodando no LiteSVM
+pnpm test     # 80 testes, ~4 s, sem rede: o Squads v4 da mainnet rodando no LiteSVM
 pnpm dev      # surfpool offline (Squads v4 das fixtures) + API :8787 + app :5173
 ```
 
@@ -59,16 +71,18 @@ Abra **http://127.0.0.1:5173**.
 
 ### Roteiro (5 minutos)
 
-1. **Escolha a carteira.** Em localnet há duas **Carteiras de teste** (A e B) que imitam a janela da Phantom: dá para testar sem extensão e sem SOL de verdade. Assine o texto de vínculo e a conta é criada.
-2. **Depositar:** use "5 SOL na carteira" (ferramentas de teste) e depois **Depositar**. A carteira assina a transferência para o Vault e o serviço paga a taxa. Também dá para usar "10 SOL no Vault" direto.
-3. **Enviar:** cole um endereço de carteira e o valor, depois toque em **Revisar**. A tela mostra "Conferido na Solana… O serviço já conferiu a política e aprovou". **Assinar** abre a carteira uma vez e a transação executa.
-4. **Servidor malicioso:** marque a opção nas ferramentas de teste e faça outro envio. O servidor mostra 1/10 do valor; o app compara com a chain, mostra **Transação bloqueada** e não pede assinatura.
-5. **Trocar de carteira:** Segurança → Trocar a carteira → Começar → escolha a **Carteira de teste B** e assine o texto. Depois toque em **Revisar e assinar a troca**: a carteira **atual** (A) assina. Por fim, entre com a B.
+1. **Escolha a carteira.** Em localnet há duas **Carteiras de teste** (A e B) que imitam a janela da Phantom: dá para testar sem extensão e sem SOL de verdade. O app pede SOL de teste para ela, prepara a criação da conta e a carteira assina (pagando ~0,003 SOL).
+2. **Depositar:** toque em **Depositar** e informe o valor. A carteira assina e paga a transferência para o Vault, e o app envia. Também dá para usar "10 SOL no Vault" direto.
+3. **Enviar:** cole um endereço de carteira e o valor, depois toque em **Revisar**. A tela mostra "Conferido: a carteira vai assinar exatamente isto…". **Assinar** abre a carteira uma vez e a transação executa; a carteira paga 0,000015 SOL.
+4. **Servidor malicioso:** marque a opção nas ferramentas de teste e faça outro envio. O servidor mostra 1/10 do valor; o app remonta a transação, vê que não bate, mostra **Transação bloqueada** com o valor real e não pede assinatura.
+5. **Trocar de carteira:** Segurança → Trocar a carteira → Começar → escolha a **Carteira de teste B** e assine o texto. Depois toque em **Revisar e assinar a troca**: a carteira **atual** (A) assina e paga. Por fim, entre com a B (ela precisa de SOL para os próximos envios: "5 SOL na carteira").
 6. **Troca da chave do serviço:** use "Simular pedido de troca da chave do serviço" e assine (ou recuse: nada muda).
 
 ### Com a Phantom de verdade
 
-A Phantom aparece na lista sozinha, pelo Wallet Standard. Em localnet, assinar mensagens e transações funciona. Mas a Phantom simula a transação na rede dela (mainnet/devnet), onde esta conta não existe, então ela pode mostrar um aviso de que não conseguiu simular. Para testar sem esse aviso, rode em devnet: `SOLANA_RPC_URL=https://api.devnet.solana.com SOLANA_CLUSTER=devnet pnpm dev`, com SOL de devnet no pagador e a Phantom em devnet.
+A Phantom aparece na lista sozinha, pelo Wallet Standard. Em localnet, assinar mensagens e transações funciona. Mas a Phantom simula a transação na rede dela (mainnet/devnet), onde esta conta não existe, então ela pode mostrar um aviso de que não conseguiu simular. Para testar sem esse aviso, rode em devnet: `SOLANA_RPC_URL=https://api.devnet.solana.com SOLANA_CLUSTER=devnet pnpm dev`, com SOL de devnet na Phantom e ela em devnet (ou use `pnpm dev:devnet`).
+
+A Phantom precisa de SOL na rede em que está: em localnet o app pede SOL de teste para ela no cadastro.
 
 Na troca de carteira com a mesma Phantom, troque de conta dentro dela entre os passos: a conta nova assina o texto e a atual assina a troca. O app avisa qual conta tem que estar ativa.
 
@@ -86,7 +100,8 @@ serviço sozinho = impossível                 (Teste 2)
 carteira + serviço = possível                (Teste 3)
 trocar a carteira exige carteira + serviço   (Testes 6, 8)
 trocar a chave do serviço exige os dois      (Testes 7, 9)
-aprovar + executar numa transação é atômico  (falha na execução não deixa voto)
+criar + aprovar + executar é atômico         (falha não deixa nada na chain)
+o serviço não gasta SOL                      (a carteira paga taxa e rent; o rent volta)
 ```
 
 Também estão cobertos:
@@ -140,8 +155,9 @@ DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
 
 ## Limites desta versão
 
-- **Assinatura de uma vez só.** A carteira mostra uma transação técnica (aprovar + executar na Squads), não "enviar 2,5 SOL para X". O que o cliente vê é a tela do app, que confere a chain. Se o app (frontend) for adulterado, o cliente pode assinar algo que não pediu. Nesse caso, a política do serviço (limites, lista de endereços) é o que segura. Endurecimento possível: a carteira assinar também um texto com o resumo (duas janelas). Ver THREAT_MODEL #24.
+- **Assinatura de uma vez só.** A carteira mostra uma transação técnica (instruções da Squads), não "enviar 2,5 SOL para X". O que o cliente vê é a tela do app, que remonta a transação e compara os bytes. Se o app (frontend) for adulterado, o cliente pode assinar algo que não pediu. Nesse caso, a política do serviço (limites, lista de endereços) é o que segura. Endurecimento possível: a carteira assinar também um texto com o resumo (duas janelas). Ver THREAT_MODEL #24.
 - **Mainnet bloqueada.** As chaves do serviço são de desenvolvimento; é preciso KMS/HSM antes.
 - **Modo estrito.** Perder a carteira (seed phrase) sem trocar antes **bloqueia a conta**. Recuperação ainda é pesquisa (RECOVERY.md), não código.
 - **Só transferência de SOL.** Swap fica para depois.
 - **Notificações simuladas.** São um mock que só registra no log.
+- **A carteira precisa de SOL.** Sem ~0,0065 SOL na hora, o app avisa e não prepara a transação. Cadastros preparados e não assinados ficam em memória na API (~3 min).

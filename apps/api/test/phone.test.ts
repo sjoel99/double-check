@@ -1,28 +1,26 @@
 /**
  * Assinatura pelo celular (Solana Pay transaction request), com um "celular"
  * que faz o que a Phantom faz: GET (rótulo/ícone), POST { account }, assina a
- * transação recebida (já assinada pelo pagador) e a envia ele mesmo.
+ * transação recebida (paga por ela) e a envia ele mesmo. O serviço não tem SOL.
  */
 import { describe, expect, it } from "vitest";
 import { Keypair, LAMPORTS_PER_SOL, PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { DevMemorySigner } from "@duplachave/crypto";
 import { DefaultPolicyEngine } from "@duplachave/policy-engine";
-import { buildWalletTransaction, CustodyService, DevServerKeyProvider, LogNotificationService, MemoryStore } from "@duplachave/custody";
+import { reviewPrepared, CustodyService, DevServerKeyProvider, LogNotificationService, MemoryStore } from "@duplachave/custody";
 import { readMultisig } from "@duplachave/squads";
 import { LiteSvmChain } from "../../../tests/support/litesvm-chain";
 import { buildServer } from "../src/server";
 
 async function setup() {
   const chain = new LiteSvmChain();
-  const service = { executor: DevMemorySigner.generate("E"), proposer: DevMemorySigner.generate("P"), feePayer: DevMemorySigner.generate("F") };
-  chain.airdrop(await service.feePayer.publicKey(), 100n * BigInt(LAMPORTS_PER_SOL));
+  const service = { executor: DevMemorySigner.generate("E"), proposer: DevMemorySigner.generate("P") };
   const now = () => Math.floor(Date.now() / 1000);
   chain.warp(now() - (await chain.now()));
   const store = new MemoryStore();
   const custody = new CustodyService({ cluster: "localnet", chain, store, policy: new DefaultPolicyEngine(), serverKeys: new DevServerKeyProvider("localnet"), service, notifications: new LogNotificationService(), squadsTreasury: chain.treasury });
   const app = await buildServer({
     custody, store, chain, cluster: "localnet", sessionSecret: "s".repeat(64), adminToken: null,
-    feePayer: (await service.feePayer.publicKey()).toBase58(), signAsFeePayer: (m) => service.feePayer.sign(m),
     airdrop: async (a, l) => chain.airdrop(a, BigInt(l)), publicUrl: "https://dupla.example",
   });
   const call = async (method: "GET" | "POST", url: string, body?: unknown, token?: string) => {
@@ -50,6 +48,7 @@ async function setup() {
 }
 
 async function connect(t: Awaited<ReturnType<typeof setup>>, wallet = DevMemorySigner.generate("PHANTOM_MOBILE")) {
+  if ((await t.chain.getBalance(await wallet.publicKey())) === 0n) t.chain.airdrop(await wallet.publicKey(), BigInt(LAMPORTS_PER_SOL));
   const qr = await t.call("POST", "/v1/pay/connect");
   const out = await t.phone(qr.json.link, wallet);
   expect(out.error).toBeNull();
@@ -101,20 +100,25 @@ describe("celular (Solana Pay)", () => {
     const proofQr = await t.call("POST", `/v1/rotations/${rot.json.rotationId}/pay-proof`, {}, c.token);
     const next = DevMemorySigner.generate("NOVA");
     expect((await t.phone(proofQr.json.link, c.wallet)).error).toBe("SAME_WALLET");
+    // A prova é uma transação: a carteira nova paga a taxa dela (0,000005 SOL).
+    expect((await t.phone(proofQr.json.link, next)).error).toBe("NEW_WALLET_NO_SOL");
+    t.chain.airdrop(await next.publicKey(), 10_000_000n);
+    const before = await t.chain.getBalance(await next.publicKey());
     expect((await t.phone(proofQr.json.link, next)).error).toBeNull();
+    expect(before - (await t.chain.getBalance(await next.publicKey()))).toBe(5000n);
     const done = await t.call("GET", `/v1/pay/${proofQr.json.token}`);
     expect(done.json.status).toBe("DONE");
     const intentId = done.json.result.intentId;
 
     // O app confere a prova feita por transação (memo + assinatura da carteira nova).
-    const got = await t.call("GET", `/v1/intents/${intentId}`, undefined, c.token);
-    expect(got.json.approvalRequest.possession.via).toBe("transaction");
-    await buildWalletTransaction({ chain: t.chain, request: got.json.approvalRequest, wallet: await c.wallet.publicKey(), now: t.now() });
+    const prepared = await t.call("POST", `/v1/intents/${intentId}/prepare`, {}, c.token);
+    expect(prepared.json.possession.via).toBe("transaction");
+    await reviewPrepared(t.chain, prepared.json, await c.wallet.publicKey(), t.now());
 
     const signQr = await t.call("POST", `/v1/intents/${intentId}/pay`, {}, c.token);
     expect((await t.phone(signQr.json.link, c.wallet)).error).toBeNull();
     expect((await t.call("GET", `/v1/pay/${signQr.json.token}`)).json.result.status).toBe("EXECUTED");
-    const state = await readMultisig(t.chain, new PublicKey(got.json.record.intent.multisig));
+    const state = await readMultisig(t.chain, new PublicKey(prepared.json.intent.multisig));
     expect(state.members.some((m) => m.key === (next as any).toJSON().publicKey)).toBe(true);
     expect((await t.call("GET", `/v1/accounts/${c.accountId}/security`, undefined, c.token)).status).toBe(401); // sessão antiga morreu
   });
@@ -123,6 +127,7 @@ describe("celular (Solana Pay)", () => {
     const t = await setup();
     const qr = await t.call("POST", "/v1/pay/connect");
     const w = DevMemorySigner.generate("W");
+    t.chain.airdrop(await w.publicKey(), BigInt(LAMPORTS_PER_SOL));
     await t.phone(qr.json.link, w);
     const path = new URL(decodeURIComponent(qr.json.link.slice(7))).pathname;
     expect((await t.call("POST", path, { account: (await w.publicKey()).toBase58() })).json.error).toBe("PAY_USED");
