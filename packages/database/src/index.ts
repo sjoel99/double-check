@@ -135,6 +135,14 @@ export class PgStore implements Store, ChallengeStore {
     const { rows } = await this.db.query<Record<string, unknown>>(`SELECT * FROM smart_accounts WHERE user_id = $1 ORDER BY created_at`, [userId]);
     return rows.map((r) => this.account(r));
   }
+  async listAccountIds() {
+    const { rows } = await this.db.query<{ id: string }>(`SELECT id FROM smart_accounts`);
+    return rows.map((r) => r.id);
+  }
+  async findAccountByClientKey(publicKey: string) {
+    const { rows } = await this.db.query<Record<string, unknown>>(`SELECT * FROM smart_accounts WHERE roles->>'client' = $1 LIMIT 1`, [publicKey]);
+    return rows[0] ? this.account(rows[0]) : null;
+  }
   async saveMember(m: MemberRecord) {
     await this.db.query(
       `INSERT INTO members (account_id, public_key, role, permissions, status, device_id, created_at, revoked_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)

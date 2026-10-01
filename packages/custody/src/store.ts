@@ -173,6 +173,9 @@ export interface Store {
   saveAccount(a: SmartAccountRecord): Promise<void>;
   getAccount(id: string): Promise<SmartAccountRecord | null>;
   listAccounts(userId: string): Promise<SmartAccountRecord[]>;
+  listAccountIds(): Promise<string[]>;
+  /** Conta cuja CLIENT atual (esperada) é esta chave. */
+  findAccountByClientKey(publicKey: string): Promise<SmartAccountRecord | null>;
 
   saveMember(m: MemberRecord): Promise<void>;
   listMembers(accountId: string): Promise<MemberRecord[]>;
@@ -241,6 +244,8 @@ export class MemoryStore implements Store, ChallengeStore {
   async saveAccount(a: SmartAccountRecord) { this.accounts.set(a.id, clone(a)); }
   async getAccount(id: string) { const a = this.accounts.get(id); return a ? clone(a) : null; }
   async listAccounts(userId: string) { return [...this.accounts.values()].filter((a) => a.userId === userId).map(clone); }
+  async listAccountIds() { return [...this.accounts.keys()]; }
+  async findAccountByClientKey(publicKey: string) { const a = [...this.accounts.values()].find((x) => x.roles.client === publicKey); return a ? clone(a) : null; }
 
   async saveMember(m: MemberRecord) {
     const i = this.members.findIndex((x) => x.accountId === m.accountId && x.publicKey === m.publicKey);
