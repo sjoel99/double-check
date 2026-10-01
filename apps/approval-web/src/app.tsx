@@ -1,7 +1,7 @@
 import { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { verifyEnrollmentTransaction } from "@duplachave/custody/src/client";
 import { passkeyBindingMessage } from "@duplachave/crypto";
-import { createDefaultAuthorizationCache, createDefaultChainSelector, createDefaultWalletNotFoundHandler, registerMwa } from "@solana-mobile/wallet-standard-mobile";
+import { makeMwaWallet } from "./lib/mwa";
 import { type BiometricConfirm, challengeForText, confirmPasskey, createPasskey, deviceName } from "./lib/passkey";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Chain } from "@duplachave/solana";
@@ -82,17 +82,7 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
     // No Android, a Phantom do celular entra pelo Mobile Wallet Adapter (a página chama o app da carteira).
     if (/Android/i.test(navigator.userAgent) && config.cluster !== "localnet" && !mwaRegistered) {
       mwaRegistered = true;
-      try {
-        registerMwa({
-          appIdentity: { name: "Dupla Chave", uri: location.origin, icon: "icon.svg" },
-          authorizationCache: createDefaultAuthorizationCache(),
-          chains: [config.cluster === "devnet" ? "solana:devnet" : "solana:mainnet"],
-          chainSelector: createDefaultChainSelector(),
-          onWalletNotFound: createDefaultWalletNotFoundHandler(),
-        });
-      } catch (e) {
-        console.warn("MWA indisponível", e);
-      }
+      registerWallet(makeMwaWallet({ chain: config.cluster === "devnet" ? "solana:devnet" : "solana:mainnet", identity: { name: "Dupla Chave", uri: location.origin, icon: "icon.svg" } }) as unknown as StandardWallet);
     }
     return stop;
   }, [config.devTools]);

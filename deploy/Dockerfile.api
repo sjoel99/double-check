@@ -3,7 +3,6 @@ FROM node:24-slim
 RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY patches ./patches
 COPY packages ./packages
 COPY apps/api ./apps/api
 COPY apps/approval-web/package.json ./apps/approval-web/package.json
