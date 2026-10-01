@@ -2,6 +2,8 @@ import { useState } from "react";
 import { errorText, loginOrEnroll, useApp } from "../app";
 import { Icon, Logo } from "../icons";
 import type { StandardWallet } from "../lib/wallets";
+import { api } from "../lib/api";
+import { PhoneQr, SCAN_STEPS } from "../components/PhoneQr";
 
 const INSTALL = [
   { name: "Phantom", url: "https://phantom.com/download" },
@@ -57,6 +59,13 @@ export function Welcome() {
   const ctx = useApp();
   const [step, setStep] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [phone, setPhone] = useState(false);
+
+  const fromPhone = async (r: { sessionToken: string; accountId: string; publicKey: string; created: boolean }) => {
+    await ctx.setSession({ token: r.sessionToken, accountId: r.accountId, walletName: "Carteira do celular", publicKey: r.publicKey, myRotations: [], via: "phone" });
+    ctx.go("/");
+    ctx.toast(r.created ? "Pronto. Sua conta 2 de 2 foi criada." : "Você entrou pela carteira do celular.");
+  };
 
   const pick = async (w: StandardWallet) => {
     setErr(null);
@@ -97,7 +106,31 @@ export function Welcome() {
           </div>
         ))}
       </div>
-      <div className="section-title">Escolha sua carteira</div>
+      {phone ? (
+        <div className="card">
+          <PhoneQr
+            create={() => api("POST", "/v1/pay/connect", {}, { auth: false })}
+            title="Escaneie com a carteira do celular"
+            steps={[...SCAN_STEPS.slice(0, 2), "Confirme: se a carteira for nova, a conta é criada; se já tiver conta, você entra"]}
+            onDone={fromPhone}
+          />
+          <button type="button" className="linkbtn" onClick={() => setPhone(false)}>
+            Voltar
+          </button>
+        </div>
+      ) : (
+        <button type="button" className="item phone-cta" onClick={() => setPhone(true)}>
+          <div className="ico" style={{ background: "var(--accent)" }}>
+            <Icon name="phone" color="#0B0D10" sw={2} />
+          </div>
+          <div className="grow">
+            <div className="t">Usar a carteira do celular</div>
+            <div className="s">Escaneie um QR com a Phantom ou Solflare</div>
+          </div>
+          <Icon name="chev" size={18} color="var(--muted)" />
+        </button>
+      )}
+      <div className="or">ou a extensão deste navegador</div>
       <WalletList onPick={pick} busy={Boolean(step)} />
       {step && (
         <div className="status">

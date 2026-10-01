@@ -142,3 +142,14 @@ nav.tabs button.on { color: var(--accent); }
 .diff-box { border-radius: 18px; background: #170f0f; border: 1px solid #3b2220; padding: 6px 16px 4px; }
 .diff.head { border-top: 0; font-size: 11px; color: var(--subtle); text-transform: uppercase; letter-spacing: 0.1em; }
 .item:disabled { opacity: 0.6; cursor: progress; }
+
+/* celular (QR) */
+.qr-box { display: flex; flex-direction: column; gap: 14px; align-items: stretch; }
+.qr-box .qr { align-self: center; width: 240px; height: 240px; }
+.qr-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+.choice { display: flex; flex-direction: column; gap: 10px; }
+.or { display: flex; align-items: center; gap: 10px; color: var(--subtle); font-size: 12px; }
+.or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.phone-frame { max-width: 380px; margin: 0 auto; }
+.phone-cta { border-color: #3a4a1c; background: #12170c; }
+.phone-cta .s { color: #a9b98a; }

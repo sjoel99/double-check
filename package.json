@@ -10,7 +10,8 @@
     "fixtures": "tsx scripts/baixar-fixtures.ts",
     "dev": "tsx scripts/dev.ts",
     "test:pg": "DK_TEST_STORE=postgres vitest run tests/protocol.test.ts",
-    "smoke": "tsx scripts/smoke-rpc.ts"
+    "smoke": "tsx scripts/smoke-rpc.ts",
+    "dev:devnet": "tsx scripts/dev-devnet.ts"
   },
   "devDependencies": {
     "@duplachave/crypto": "workspace:*",

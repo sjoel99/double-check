@@ -4,6 +4,7 @@ import { errorText, useApp } from "../app";
 import { api, ApiError } from "../lib/api";
 import { now, short, sol } from "../lib/chain";
 import { Icon, Logo } from "../icons";
+import QRCode from "qrcode";
 
 export type AccountView = {
   account: { id: string; multisig: string; vault: string; roles: { client: string; server: string; executor: string; proposer: string }; frozenBy: string | null };
@@ -290,6 +291,17 @@ export function Deposit() {
     void ctx.chain.getBalance(new PublicKey(ctx.session!.publicKey)).then(setWalletBalance).catch(() => {});
   }, [ctx.chain, ctx.session]);
 
+  const viaPhone = ctx.session?.via === "phone";
+  const [qr, setQr] = useState<string | null>(null);
+  useEffect(() => {
+    // Celular: QR de transferência do Solana Pay — a carteira envia direto para o Vault.
+    if (!viaPhone || !acc) return;
+    const amt = amount.trim().replace(",", ".");
+    const params = new URLSearchParams({ label: "Dupla Chave", message: "Depósito no seu Vault" });
+    if (/^\d+(\.\d{1,9})?$/.test(amt)) params.set("amount", amt);
+    void QRCode.toDataURL(`solana:${acc.account.vault}?${params.toString()}`, { margin: 1, width: 480 }).then(setQr);
+  }, [viaPhone, acc, amount]);
+
   const submit = async () => {
     if (!acc) return;
     setBusy(true);
@@ -345,9 +357,17 @@ export function Deposit() {
             Ou envie de qualquer lugar para o endereço do Vault: <span className="mono">{acc.account.vault}</span>
           </div>
         )}
+        {viaPhone && qr && (
+          <div className="card qr-box">
+            <img className="qr" src={qr} alt="QR de depósito" />
+            <div className="muted" style={{ fontSize: 13, textAlign: "center" }}>
+              Escaneie com a carteira do celular. O saldo do Vault atualiza sozinho quando chegar.
+            </div>
+          </div>
+        )}
         {err && <div className="banner danger">{err}</div>}
       </div>
-      <div className="actions">
+      <div className="actions" style={viaPhone ? { display: "none" } : undefined}>
         <button type="button" className="btn primary" disabled={busy || !amount} onClick={submit}>
           {busy ? <span className="spinner" /> : <Icon name="key" color="#0B0D10" sw={2} />} {ctx.session!.walletName.length <= 12 ? `Assinar na ${ctx.session!.walletName}` : "Assinar na carteira"}
         </button>

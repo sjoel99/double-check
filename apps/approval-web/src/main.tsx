@@ -10,10 +10,12 @@ import { Deposit, Home } from "./screens/home";
 import { IntentScreen, Send } from "./screens/intent";
 import { Activity, RotateWallet, Security } from "./screens/security";
 import { Welcome } from "./screens/welcome";
+import { PhoneSimulator } from "./screens/phone";
 
 function Router() {
   const { route, session } = useApp();
-  const [path] = route.split("?");
+  const [path, query = ""] = route.split("?");
+  if (path === "/phone") return <PhoneSimulator url={new URLSearchParams(query).get("u") ?? ""} />;
   if (!session) return <Welcome />;
   if (path === "/send") return <Send />;
   if (path === "/deposit") return <Deposit />;

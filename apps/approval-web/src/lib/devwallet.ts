@@ -22,6 +22,14 @@ async function key(name: string): Promise<{ privateKey: CryptoKey; publicKey: Ui
   return k;
 }
 
+/** Para o celular de teste: chave pública e assinatura crua da carteira de teste. */
+export async function devWalletPublicKey(name: string) {
+  return new PublicKey((await key(name)).publicKey);
+}
+export async function devWalletSign(name: string, bytes: Uint8Array) {
+  return new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, (await key(name)).privateKey, bytes as BufferSource));
+}
+
 export function makeDevWallet(name: string, confirm: () => DevConfirm) {
   let account: { address: string; publicKey: Uint8Array; chains: string[]; features: string[] } | null = null;
   const sign = async (bytes: Uint8Array) => new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, (await key(name)).privateKey, bytes as BufferSource));

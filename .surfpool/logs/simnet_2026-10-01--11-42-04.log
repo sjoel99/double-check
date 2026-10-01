@@ -28,3 +28,10 @@
 [2026-10-01--12-06-27 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:42160.
 [2026-10-01--12-06-42 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:39554.
 [2026-10-01--12-07-01 INFO parity_ws::io] Accepted a new tcp connection from 127.0.0.1:49280.
+[2026-10-01--12-18-23 INFO actix_server::server] SIGTERM received; starting graceful shutdown
+[2026-10-01--12-18-23 INFO actix_server::worker] shutting down idle worker
+[2026-10-01--12-18-23 INFO actix_server::worker] shutting down idle worker
+[2026-10-01--12-18-23 INFO actix_server::worker] shutting down idle worker
+[2026-10-01--12-18-23 INFO actix_server::accept] accept thread stopped
+[2026-10-01--12-18-23 INFO actix_server::worker] shutting down idle worker
+[2026-10-01--12-18-23 INFO actix_server::worker] shutting down idle worker

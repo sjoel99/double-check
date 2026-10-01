@@ -7,6 +7,7 @@ import { api } from "../lib/api";
 import { now, short, sol } from "../lib/chain";
 import { Icon } from "../icons";
 import type { IntentView } from "./home";
+import { PhoneQrSheet, SCAN_STEPS } from "../components/PhoneQr";
 
 function TopBar({ title, right }: { title: string; right?: React.ReactNode }) {
   const { go } = useApp();
@@ -108,6 +109,8 @@ export function IntentScreen({ id }: { id: string }) {
   const [busy, setBusy] = useState<null | "sign" | "reject" | "retry">(null);
   const [err, setErr] = useState<string | null>(null);
   const [handedOver, setHandedOver] = useState(false);
+  const [qrOpen, setQrOpen] = useState(false);
+  const viaPhone = ctx.session?.via === "phone";
 
   const load = useCallback(async () => {
     try {
@@ -175,26 +178,64 @@ export function IntentScreen({ id }: { id: string }) {
     }
   };
 
+  const phoneDone = async (result: { status: string }) => {
+    setQrOpen(false);
+    const intent = data?.request?.intent;
+    if (intent?.type === "ROTATE_MEMBER" && intent.role === "CLIENT" && result.status === "EXECUTED") return setHandedOver(true);
+    if (data?.request?.mode === "CANCEL") ctx.toast("Cancelada na Solana. Nada mais pode executá-la.");
+    await load();
+  };
+  const qrSheet = qrOpen && (
+    <PhoneQrSheet
+      create={() => api("POST", `/v1/intents/${id}/pay`, {})}
+      title={data?.request?.intent.type === "ROTATE_MEMBER" && data.request.intent.role === "CLIENT" ? "Escaneie com a carteira ATUAL" : "Escaneie com a carteira do celular"}
+      steps={SCAN_STEPS}
+      onDone={phoneDone}
+      onClose={() => setQrOpen(false)}
+    />
+  );
+
   if (handedOver) return <HandedOver />;
   if (!data) return <Loading err={err} />;
   const { record, request } = data;
   if (!request) return <Outcome record={record} />;
   if (!check) return <Loading err={err} label="Conferindo na Solana…" />;
   if (!check.ok) return <Blocked check={check} request={request} />;
-  if (request.mode === "CANCEL") return <PendingExecution record={record} busy={busy} err={err} onRetry={retry} onCancel={sign} />;
+  if (request.mode === "CANCEL")
+    return (
+      <>
+        <PendingExecution record={record} busy={busy} err={err} onRetry={retry} onCancel={viaPhone ? () => setQrOpen(true) : sign} />
+        {qrSheet}
+      </>
+    );
 
   const intent = request.intent;
   const walletName = ctx.session!.walletName;
+  const primaryClass = `btn ${intent.type === "ROTATE_MEMBER" ? "amber" : "primary"}`;
   const actions = (
-    <div className="actions">
-      <button type="button" className="btn" disabled={Boolean(busy)} onClick={reject}>
-        {busy === "reject" ? <span className="spinner" /> : null}Recusar
-      </button>
-      <button type="button" className={`btn ${intent.type === "ROTATE_MEMBER" ? "amber" : "primary"}`} disabled={Boolean(busy)} onClick={sign}>
-        {busy === "sign" ? <span className="spinner" /> : <Icon name="key" color="#0B0D10" sw={2} />}
-        {walletName.length <= 12 ? `Assinar na ${walletName}` : "Assinar na carteira"}
-      </button>
-    </div>
+    <>
+      <div className="actions" style={{ flexWrap: "wrap" }}>
+        <button type="button" className="btn" disabled={Boolean(busy)} onClick={reject}>
+          {busy === "reject" ? <span className="spinner" /> : null}Recusar
+        </button>
+        {viaPhone ? (
+          <button type="button" className={primaryClass} disabled={Boolean(busy)} onClick={() => setQrOpen(true)}>
+            <Icon name="phone" color="#0B0D10" sw={2} /> Assinar no celular
+          </button>
+        ) : (
+          <button type="button" className={primaryClass} disabled={Boolean(busy)} onClick={sign}>
+            {busy === "sign" ? <span className="spinner" /> : <Icon name="key" color="#0B0D10" sw={2} />}
+            {walletName.length <= 12 ? `Assinar na ${walletName}` : "Assinar na carteira"}
+          </button>
+        )}
+        {!viaPhone && (
+          <button type="button" className="linkbtn" style={{ flexBasis: "100%", padding: "2px 0 0" }} onClick={() => setQrOpen(true)}>
+            Ou assinar no celular (QR)
+          </button>
+        )}
+      </div>
+      {qrSheet}
+    </>
   );
   const serverOk = (
     <div className="banner ok">
@@ -249,7 +290,7 @@ export function IntentScreen({ id }: { id: string }) {
         </div>
         <div className="banner info">
           <Icon name="key" size={18} />
-          <div>A {walletName} vai abrir uma vez. Ela assina a aprovação e a execução juntas: se a execução falhar, nada fica aprovado.</div>
+          <div>{viaPhone ? "A carteira do celular" : `A ${walletName}`} assina uma vez a aprovação e a execução juntas: se a execução falhar, nada fica aprovado.</div>
         </div>
         {flags.includes("POSSIBLE_FULL_BALANCE") && (
           <div className="banner warn">

@@ -9,6 +9,7 @@ import type { StandardWallet } from "../lib/wallets";
 import { Icon } from "../icons";
 import { IntentRow, Tabs, useAccount } from "./home";
 import { WalletList } from "./welcome";
+import { PhoneQr, SCAN_STEPS } from "../components/PhoneQr";
 
 function TopBar({ title, back = "/" }: { title: string; back?: string }) {
   const { go } = useApp();
@@ -247,10 +248,15 @@ export function RotateWallet() {
 
         {step.kind === "connect" && (
           <>
-            <div className="banner info">
-              <Icon name="key" size={18} />
-              <div>Escolha a carteira nova. Se for outra conta da mesma {s.walletName}, troque de conta dentro dela antes de escolher.</div>
+            <div className="card">
+              <PhoneQr
+                create={() => api("POST", `/v1/rotations/${step.rotationId}/pay-proof`, {})}
+                title="Escaneie com a carteira NOVA"
+                steps={["Na carteira do celular, abra a conta nova (ou outra carteira)", "Escaneie e confirme: ela só prova que é sua"]}
+                onDone={(r: { intentId: string; newKey: string }) => setStep({ kind: "approve", intentId: r.intentId, newKey: r.newKey })}
+              />
             </div>
+            <div className="or">ou com uma extensão deste navegador</div>
             <WalletList onPick={pickNew} busy={Boolean(busy)} exclude={s.walletName} />
           </>
         )}
@@ -268,7 +274,7 @@ export function RotateWallet() {
             <div className="banner warn">
               <Icon name="shieldalert" size={18} color="#F2B33D" />
               <div>
-                Agora volte para a carteira <b>atual</b> (<span className="mono">{short(s.publicKey)}</span>) na {s.walletName} e assine a troca. O serviço já conferiu e aprovou.
+                Agora volte para a carteira <b>atual</b> (<span className="mono">{short(s.publicKey)}</span>) e assine a troca. O serviço já conferiu e aprovou.
               </div>
             </div>
             <button type="button" className="btn amber" onClick={() => ctx.go(`/intent/${step.intentId}`)}>

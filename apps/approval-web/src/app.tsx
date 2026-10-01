@@ -181,7 +181,7 @@ export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: st
     const ch = await api("POST", "/v1/auth/challenge", { publicKey }, { auth: false });
     const signature = await c.signMessage(ch.message);
     const r = await api("POST", "/v1/auth/verify", { challengeId: ch.challengeId, publicKey, signature }, { auth: false });
-    const s: Session = { token: r.token, accountId: r.account.id, walletName: c.name, publicKey, myRotations: [] };
+    const s: Session = { token: r.token, accountId: r.account.id, walletName: c.name, publicKey, myRotations: [], via: "extension" };
     await ctx.setSession(s);
     return s;
   }
@@ -190,7 +190,7 @@ export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: st
   const signature = await c.signMessage(ch.message);
   onStep("Criando sua conta 2 de 2 na Solana…");
   const r = await api("POST", "/v1/enrollment", { challengeId: ch.challengeId, publicKey, signature, walletName: c.name }, { auth: false });
-  const s: Session = { token: r.token, accountId: r.account.id, walletName: c.name, publicKey, myRotations: [] };
+  const s: Session = { token: r.token, accountId: r.account.id, walletName: c.name, publicKey, myRotations: [], via: "extension" };
   await ctx.setSession(s);
   return s;
 }
