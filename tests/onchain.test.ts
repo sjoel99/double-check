@@ -45,8 +45,8 @@ describe("STRICT_2_OF_2 on-chain", () => {
     expect((await readProposal(ctx.chain, ctx.multisig, index))?.status).toBe("Active");
     // Executor honesto ou não: proposta com 1 de 2 não executa.
     expect(await chainError(executeVault(ctx, index))).toBe("InvalidProposalStatus");
-    // O cliente tentando executar ele mesmo: não tem permissão Execute.
-    expect(await chainError(executeVault(ctx, index, ctx.keys.client))).toBe("Unauthorized");
+    // A carteira do cliente tem Execute, mas executar exige 2 votos.
+    expect(await chainError(executeVault(ctx, index, ctx.keys.client))).toBe("InvalidProposalStatus");
     // Votar de novo não conta duas vezes.
     expect(await chainError(approve(ctx, index, ctx.keys.client))).toBe("AlreadyApproved");
     expect(await ctx.chain.getBalance(thief)).toBe(0n);
@@ -154,7 +154,7 @@ describe("STRICT_2_OF_2 on-chain", () => {
     const ctx = await setupStrict();
     const serverB = DevMemorySigner.generate("SERVER_B");
     const b = await serverB.publicKey();
-    const index = await proposeConfig(ctx, rotationActions(ctx.layout.server, b));
+    const index = await proposeConfig(ctx, rotationActions(ctx.layout.server, b, "SERVER"));
 
     // Sem o cliente: falha. Nem a chave nova ajuda — ainda não é membro.
     await approve(ctx, index, ctx.keys.server);
@@ -166,11 +166,52 @@ describe("STRICT_2_OF_2 on-chain", () => {
 
     const state = await readMultisig(ctx.chain, ctx.multisig);
     expect(state.members.some((m) => m.key === ctx.layout.server.toBase58())).toBe(false);
-    expect(state.members.find((m) => m.key === b.toBase58())?.mask).toBe(2);
+    expect(state.members.find((m) => m.key === b.toBase58())?.mask).toBe(2); // servidor: só Vote
     expect(state.threshold).toBe(2);
 
     const next = await proposeTransfer(ctx, attacker(), SOL);
     expect(await chainError(approve(ctx, next, ctx.keys.server))).toBe("NotAMember");
+  });
+});
+
+describe("aprovar e executar numa transação (fluxo da carteira comum)", () => {
+  it("servidor aprova antes; a carteira aprova + executa num clique", async () => {
+    const ctx = await setupStrict();
+    const dest = attacker();
+    const index = await proposeTransfer(ctx, dest, 3n * SOL);
+    await approve(ctx, index, ctx.keys.server);
+    const { sendInstructions } = await import("@duplachave/solana");
+    const { approveIx, executeVaultIx } = await import("@duplachave/squads");
+    const wallet = await ctx.keys.client.publicKey();
+    const exec = await executeVaultIx(ctx.chain, ctx.multisig, index, wallet);
+    await sendInstructions(ctx.chain, [approveIx(ctx.multisig, index, wallet), exec.instruction], [ctx.keys.relayer, ctx.keys.client]);
+    expect(await ctx.chain.getBalance(dest)).toBe(3n * SOL);
+    expect((await readProposal(ctx.chain, ctx.multisig, index))?.status).toBe("Executed");
+  });
+
+  it("se a execução falha, o voto da carteira também não fica (transação atômica)", async () => {
+    const ctx = await setupStrict(1);
+    const index = await proposeTransfer(ctx, attacker(), 5n * SOL); // mais que o saldo
+    await approve(ctx, index, ctx.keys.server);
+    const { sendInstructions } = await import("@duplachave/solana");
+    const { approveIx, executeVaultIx } = await import("@duplachave/squads");
+    const wallet = await ctx.keys.client.publicKey();
+    const exec = await executeVaultIx(ctx.chain, ctx.multisig, index, wallet);
+    await expect(sendInstructions(ctx.chain, [approveIx(ctx.multisig, index, wallet), exec.instruction], [ctx.keys.relayer, ctx.keys.client])).rejects.toThrow();
+    const p = await readProposal(ctx.chain, ctx.multisig, index);
+    expect(p?.status).toBe("Active");
+    expect(p?.approved).toEqual([ctx.layout.server.toBase58()]);
+  });
+
+  it("servidor troca o voto para rejeição: a proposta morre (expiração depois de pré-aprovar)", async () => {
+    const ctx = await setupStrict();
+    const index = await proposeTransfer(ctx, attacker(), SOL);
+    await approve(ctx, index, ctx.keys.server);
+    const { sendInstructions } = await import("@duplachave/solana");
+    const { rejectIx } = await import("@duplachave/squads");
+    await sendInstructions(ctx.chain, [rejectIx(ctx.multisig, index, ctx.layout.server)], [ctx.keys.relayer, ctx.keys.server]);
+    expect((await readProposal(ctx.chain, ctx.multisig, index))?.status).toBe("Rejected");
+    expect(await chainError(approve(ctx, index, ctx.keys.client))).toBe("InvalidProposalStatus");
   });
 });
 

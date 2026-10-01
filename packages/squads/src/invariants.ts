@@ -29,7 +29,8 @@ export function assertStrictTwoOfTwo(state: MultisigState, expected: ExpectedRol
   const byKey = new Map(state.members.map((m) => [m.key, m]));
   const client = byKey.get(expected.client)!;
   const server = byKey.get(expected.server)!;
-  if (client.mask !== 2 || server.mask !== 2) deny("VOTER_EXTRA_PERMISSIONS", "votantes devem ter só Vote");
+  // Carteira do cliente: Vote + Execute (6). Servidor: só Vote (2). Ninguém mais vota.
+  if (client.mask !== 6 || server.mask !== 2) deny("VOTER_PERMISSIONS", `permissões inesperadas: cliente ${client.mask}, servidor ${server.mask}`);
 
   const executor = byKey.get(expected.executor);
   if (!executor || executor.mask !== 4) deny("EXECUTOR_MISMATCH", "executor ausente ou com permissões além de Execute");

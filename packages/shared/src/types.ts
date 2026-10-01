@@ -75,53 +75,6 @@ export type IntentBody = z.infer<typeof IntentSchema>;
 export type TransactionIntent = IntentBody & { intentHash: string };
 
 // ---------------------------------------------------------------------------
-// Aprovação do cliente. Assinada pela CLIENT_APPROVAL_KEY no formato off-chain
-// (ver @duplachave/crypto). Vincula a decisão a multisig + índice + intenção +
-// conteúdo on-chain + validade + nonce de uso único.
-// ---------------------------------------------------------------------------
-
-export const ApprovalStatementSchema = z.object({
-  domain: z.literal("duplachave/approval/v1"),
-  decision: z.enum(["APPROVE", "REJECT", "CANCEL"]),
-  cluster: z.enum(CLUSTERS),
-  multisig: base58,
-  transactionIndex: decimal,
-  transactionKind: z.enum(["VAULT", "CONFIG"]),
-  intentId: z.string().uuid(),
-  intentHash: hex32,
-  /** sha256 dos bytes da conta VaultTransaction/ConfigTransaction lida da chain. */
-  transactionHash: hex32,
-  signer: base58,
-  nonce: z.string().regex(/^[0-9a-f]{32}$/),
-  createdAt: unixSeconds,
-  expiresAt: unixSeconds,
-});
-export type ApprovalStatement = z.infer<typeof ApprovalStatementSchema>;
-
-export const SignedStatementSchema = <T extends z.ZodTypeAny>(statement: T) =>
-  z.object({ statement, signature: z.string().min(80).max(100) });
-
-// ---------------------------------------------------------------------------
-// Prova de posse da chave nova numa rotação.
-// ---------------------------------------------------------------------------
-
-export const PossessionStatementSchema = z.object({
-  domain: z.literal("duplachave/possession/v1"),
-  operation: z.enum(["ENROLL_CLIENT_KEY", "ROTATE_CLIENT_KEY", "ROTATE_SERVER_KEY"]),
-  cluster: z.enum(CLUSTERS),
-  /** Multisig da rotação; vazio no cadastro inicial (a multisig ainda não existe). */
-  multisig: z.union([base58, z.literal("")]),
-  /** Id da rotação ou do desafio de cadastro. */
-  rotationId: z.string().uuid(),
-  newPublicKey: base58,
-  challenge: z.string().regex(/^[0-9a-f]{64}$/),
-  nonce: z.string().regex(/^[0-9a-f]{32}$/),
-  createdAt: unixSeconds,
-  expiresAt: unixSeconds,
-});
-export type PossessionStatement = z.infer<typeof PossessionStatementSchema>;
-
-// ---------------------------------------------------------------------------
 // Política
 // ---------------------------------------------------------------------------
 

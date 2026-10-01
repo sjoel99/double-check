@@ -1,12 +1,12 @@
 /**
- * Regressões dos achados da revisão de segurança de 2026-10-01 (A2–A5).
- * Cada teste reproduz o ataque/falha original e confere o comportamento corrigido.
+ * Regressões dos achados da revisão de segurança de 2026-10-01 (A2–A5),
+ * adaptadas ao fluxo da carteira comum.
  */
 import { describe, expect, it } from "vitest";
 import { Keypair, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { DevMemorySigner } from "@duplachave/crypto";
 import { SecurityError } from "@duplachave/shared";
-import { signClientDecision, signPossession } from "@duplachave/custody";
+import { buildWalletTransaction, signAsWallet, signWalletPossession } from "@duplachave/custody";
 import { readMultisig, readProposal } from "@duplachave/squads";
 import { setupService } from "./support/service";
 
@@ -22,8 +22,8 @@ async function code(p: Promise<unknown>): Promise<string> {
   return "NO_ERROR";
 }
 
-/** Faz a próxima transação cujo predicado bater falhar (simula RPC/execução quebrada). */
-function failOnce(t: Awaited<ReturnType<typeof setupService>>, nth: number) {
+/** A n-ésima transação enviada falha (simula RPC/execução quebrada). */
+function failNth(t: Awaited<ReturnType<typeof setupService>>, nth: number) {
   const orig = t.chain.sendTransaction.bind(t.chain);
   let n = 0;
   t.chain.sendTransaction = async (tx) => {
@@ -34,72 +34,69 @@ function failOnce(t: Awaited<ReturnType<typeof setupService>>, nth: number) {
 }
 
 describe("A2 — aprovada e não executada", () => {
-  it("o servidor simula de novo antes de votar: a segunda de 6 SOL num vault de 10 é rejeitada, não aprovada", async () => {
+  it("operação: aprovar e executar é atômico, então nunca sobra aprovada pendente", async () => {
     const t = await setupService({ depositSol: 10 });
     const r1 = await t.custody.createTransferSol(t.account.id, { destination: Keypair.generate().publicKey.toBase58(), amountLamports: (6n * SOL).toString() });
     const r2 = await t.custody.createTransferSol(t.account.id, { destination: Keypair.generate().publicKey.toBase58(), amountLamports: (6n * SOL).toString() });
-    expect((await t.custody.submitClientDecision(r1.intent.id, await t.decide(r1.intent.id))).status).toBe("EXECUTED");
-    const out2 = await t.custody.submitClientDecision(r2.intent.id, await t.decide(r2.intent.id));
-    expect(out2.status).toBe("REJECTED");
-    expect(out2.reasons.join()).toMatch(/SIMULATION_FAILED/);
-    expect((await readProposal(t.chain, new PublicKey(t.account.multisig), BigInt(r2.intent.transactionIndex)))?.status).toBe("Rejected");
-    // E a troca de aparelho segue normal.
-    expect((await t.custody.requestClientRotation(t.account.id, { newDeviceName: "novo" })).status).toBe("REQUESTED");
+    await t.sign(r1.intent.id);
+    expect(await code(t.sign(r2.intent.id))).toBe("WALLET_TX_FAILED");
+    expect((await readProposal(t.chain, new PublicKey(t.account.multisig), BigInt(r2.intent.transactionIndex)))?.status).toBe("Active");
+    // A troca de carteira segue normal (e drena a pendente).
+    expect((await t.custody.requestClientRotation(t.account.id)).rotation.status).toBe("REQUESTED");
   });
 
-  it("execução que falha vira APPROVED_PENDING_EXECUTION; rotação é recusada sem congelar; tentar de novo executa", async () => {
+  it("rotação cujo execute falha: APPROVED_PENDING_EXECUTION, segue congelada, e executar de novo conclui", async () => {
     const t = await setupService();
-    const dest = Keypair.generate().publicKey;
-    const r = await t.custody.createTransferSol(t.account.id, { destination: dest.toBase58(), amountLamports: SOL.toString() });
-    const payload = await t.decide(r.intent.id);
-    const restore = failOnce(t, 3); // 1: voto do cliente, 2: voto do servidor, 3: execute
-    const out = await t.custody.submitClientDecision(r.intent.id, payload);
+    const b = DevMemorySigner.generate("WALLET_B");
+    const { rotation, intent } = await t.rotateTo(b);
+    const signed = await t.walletTx(intent.id);
+    const restore = failNth(t, 2); // 1: transação da carteira, 2: execute do executor
+    const out = await t.custody.submitWalletTransaction(intent.id, signed);
     restore();
     expect(out.status).toBe("APPROVED_PENDING_EXECUTION");
-
-    expect(await code(t.custody.requestClientRotation(t.account.id, { newDeviceName: "novo" }))).toBe("APPROVED_PENDING");
-    expect((await t.store.getAccount(t.account.id))!.frozenBy).toBeNull();
+    expect((await t.store.getAccount(t.account.id))!.frozenBy).toBe(rotation.id);
     t.advance(3600);
     await t.custody.expireDue(t.account.id);
-    expect((await t.store.getIntent(r.intent.id))!.status).toBe("APPROVED_PENDING_EXECUTION");
-
-    expect((await t.custody.retryExecution(r.intent.id)).status).toBe("EXECUTED");
-    expect(await t.chain.getBalance(dest)).toBe(SOL);
+    expect((await t.store.getIntent(intent.id))!.status).toBe("APPROVED_PENDING_EXECUTION");
+    expect((await t.custody.retryExecution(intent.id)).status).toBe("EXECUTED");
+    expect((await t.store.getRotation(rotation.id))!.status).toBe("COMPLETED");
   });
 
-  it("aprovada não executada pode ser cancelada pelo cliente + servidor", async () => {
+  it("aprovada não executada pode ser cancelada pela carteira + servidor, e descongela", async () => {
     const t = await setupService();
-    const r = await t.custody.createTransferSol(t.account.id, { destination: Keypair.generate().publicKey.toBase58(), amountLamports: SOL.toString() });
-    const payload = await t.decide(r.intent.id);
-    const restore = failOnce(t, 3);
-    await t.custody.submitClientDecision(r.intent.id, payload);
+    const { rotation, intent } = await t.rotateTo(DevMemorySigner.generate("WALLET_B"));
+    const signed = await t.walletTx(intent.id);
+    const restore = failNth(t, 2);
+    await t.custody.submitWalletTransaction(intent.id, signed);
     restore();
-    const request = await t.custody.approvalRequest(r.intent.id);
-    const cancel = await signClientDecision({ chain: t.chain, request, signer: t.app, decision: "CANCEL", now: t.now() });
-    expect((await t.custody.submitClientDecision(r.intent.id, cancel)).status).toBe("CANCELLED");
-    expect((await readProposal(t.chain, new PublicKey(t.account.multisig), BigInt(r.intent.transactionIndex)))?.status).toBe("Cancelled");
-    expect(await code(t.custody.retryExecution(r.intent.id))).toBe("INTENT_NOT_PENDING_EXECUTION");
+    const request = await t.custody.approvalRequest(intent.id);
+    expect(request.mode).toBe("CANCEL");
+    const { transaction } = await buildWalletTransaction({ chain: t.chain, request, wallet: await t.wallet.publicKey(), now: t.now() });
+    expect((await t.custody.submitWalletTransaction(intent.id, await signAsWallet(transaction, t.wallet))).status).toBe("CANCELLED");
+    expect((await readProposal(t.chain, new PublicKey(t.account.multisig), BigInt(intent.transactionIndex)))?.status).toBe("Cancelled");
+    expect((await t.store.getRotation(rotation.id))!.status).toBe("REJECTED");
+    expect((await t.store.getAccount(t.account.id))!.frozenBy).toBeNull();
   });
 });
 
 describe("A3 — rotação que falha no meio", () => {
   it("falha ao criar a ConfigTransaction encerra a rotação e descongela", async () => {
     const t = await setupService();
-    const rot = await t.custody.requestClientRotation(t.account.id, { newDeviceName: "novo" });
-    const b = DevMemorySigner.generate("B");
-    const restore = failOnce(t, 1);
-    expect(await code(t.custody.proveClientRotationKey(rot.id, await signPossession({ signer: b, operation: "ROTATE_CLIENT_KEY", cluster: "localnet", multisig: t.account.multisig, rotationId: rot.id, challenge: rot.challenge, now: t.now() })))).toContain("falha simulada");
+    const { rotation, fields } = await t.custody.requestClientRotation(t.account.id);
+    const proof = await signWalletPossession(DevMemorySigner.generate("WALLET_B"), fields);
+    const restore = failNth(t, 1);
+    expect(await code(t.custody.proveClientRotationKey(rotation.id, proof))).toContain("falha simulada");
     restore();
-    expect((await t.store.getRotation(rot.id))!.status).toBe("FAILED");
+    expect((await t.store.getRotation(rotation.id))!.status).toBe("FAILED");
     expect((await t.store.getAccount(t.account.id))!.frozenBy).toBeNull();
     t.advance(24 * 3600);
     expect(await code(t.custody.expireDue(t.account.id))).toBe("NO_ERROR");
-    expect((await t.custody.requestClientRotation(t.account.id, { newDeviceName: "outro" })).status).toBe("REQUESTED");
+    expect((await t.custody.requestClientRotation(t.account.id)).rotation.status).toBe("REQUESTED");
   });
 });
 
-describe("A4 — papel da rotação", () => {
-  it("pedido do servidor que falha vai para FAILED; prova de chave do cliente não entra em rotação do servidor", async () => {
+describe("A4 — papel da rotação e prova de posse", () => {
+  it("pedido do servidor que falha vai para FAILED; prova de carteira não entra em rotação do servidor", async () => {
     const t = await setupService();
     const orig = t.serverKeys.create.bind(t.serverKeys);
     let fail = true;
@@ -115,54 +112,50 @@ describe("A4 — papel da rotação", () => {
     expect(stuck.status).toBe("FAILED");
     expect((await t.store.getAccount(t.account.id))!.frozenBy).toBeNull();
 
-    // Mesmo com uma rotação de SERVIDOR aberta, a prova de chave de cliente é recusada.
     await t.store.saveRotation({ ...stuck, id: crypto.randomUUID(), status: "REQUESTED", history: [] });
     const open = (await t.store.listRotations(t.account.id)).find((r) => r.status === "REQUESTED")!;
-    const mine = DevMemorySigner.generate("USER_SECOND_KEY");
-    expect(await code(t.custody.proveClientRotationKey(open.id, await signPossession({ signer: mine, operation: "ROTATE_CLIENT_KEY", cluster: "localnet", multisig: t.account.multisig, rotationId: open.id, challenge: open.challenge, now: t.now() })))).toBe("ROTATION_WRONG_ROLE");
+    const proof = await signWalletPossession(DevMemorySigner.generate("USER_SECOND"), { operation: "ROTATE_CLIENT_KEY", account: t.account.multisig, cluster: "localnet", challenge: open.challenge, expiresAt: open.expiresAt });
+    expect(await code(t.custody.proveClientRotationKey(open.id, proof))).toBe("ROTATION_WRONG_ROLE");
   });
 
   it("o app recusa rotação sem prova de posse válida", async () => {
     const t = await setupService();
     const { intent } = await t.custody.requestServerRotation(t.account.id, "programada");
     const request = await t.custody.approvalRequest(intent.id);
-    expect(await code(signClientDecision({ chain: t.chain, request: { ...request, possession: null }, signer: t.app, decision: "APPROVE", now: t.now() }))).toBe("ROTATION_PROOF_MISSING");
-    const other = await signPossession({ signer: DevMemorySigner.generate("X"), operation: "ROTATE_SERVER_KEY", cluster: "localnet", multisig: t.account.multisig, rotationId: intent.type === "ROTATE_MEMBER" ? intent.rotationId : "", challenge: "ab".repeat(32), now: t.now() });
-    expect(await code(signClientDecision({ chain: t.chain, request: { ...request, possession: other }, signer: t.app, decision: "APPROVE", now: t.now() }))).toBe("ROTATION_PROOF_INVALID");
+    const me = await t.wallet.publicKey();
+    expect(await code(buildWalletTransaction({ chain: t.chain, request: { ...request, possession: null }, wallet: me, now: t.now() }))).toBe("ROTATION_PROOF_MISSING");
+    const forged = { ...request.possession!, signature: request.possession!.signature.replace(/.$/, (c) => (c === "1" ? "2" : "1")) };
+    expect(await code(buildWalletTransaction({ chain: t.chain, request: { ...request, possession: forged }, wallet: me, now: t.now() }))).toBe("ROTATION_PROOF_INVALID");
   });
 
-  it("o app recusa troca da chave do cliente que não foi pedida nele", async () => {
+  it("o app recusa troca de carteira que não foi pedida nele", async () => {
     const t = await setupService();
-    const rot = await t.custody.requestClientRotation(t.account.id, { newDeviceName: "novo" });
-    const b = DevMemorySigner.generate("B");
-    const { intent } = await t.custody.proveClientRotationKey(rot.id, await signPossession({ signer: b, operation: "ROTATE_CLIENT_KEY", cluster: "localnet", multisig: t.account.multisig, rotationId: rot.id, challenge: rot.challenge, now: t.now() }));
-    const request = await t.custody.approvalRequest(intent.id);
-    expect(await code(signClientDecision({ chain: t.chain, request, signer: t.app, decision: "APPROVE", now: t.now(), initiatedHere: () => false }))).toBe("ROTATION_NOT_REQUESTED_HERE");
+    const { intent } = await t.rotateTo(DevMemorySigner.generate("WALLET_B"));
+    expect(await code(t.walletTx(intent.id, t.wallet, { initiatedHere: () => false }))).toBe("ROTATION_NOT_REQUESTED_HERE");
   });
 });
 
 describe("A5 — expiração concorrendo com a decisão", () => {
   it("expireDue espera a decisão em andamento: a rotação termina COMPLETED, não EXPIRED", async () => {
     const t = await setupService();
-    const rot = await t.custody.requestClientRotation(t.account.id, { newDeviceName: "novo" });
-    const b = DevMemorySigner.generate("B");
-    const { intent } = await t.custody.proveClientRotationKey(rot.id, await signPossession({ signer: b, operation: "ROTATE_CLIENT_KEY", cluster: "localnet", multisig: t.account.multisig, rotationId: rot.id, challenge: rot.challenge, now: t.now() }));
-    const payload = await t.decide(intent.id);
+    const b = DevMemorySigner.generate("WALLET_B");
+    const { rotation, intent } = await t.rotateTo(b);
+    const signed = await t.walletTx(intent.id);
     const orig = t.chain.sendTransaction.bind(t.chain);
     let n = 0;
     let concurrent: Promise<unknown> | null = null;
     t.chain.sendTransaction = async (tx) => {
       const sig = await orig(tx);
-      if (++n === 2) {
+      if (++n === 1) {
         t.advance(intent.expiresAt - t.now() + 1);
         concurrent = t.custody.expireDue(t.account.id); // o job de 30 s dispara aqui
       }
       return sig;
     };
-    expect((await t.custody.submitClientDecision(intent.id, payload)).status).toBe("EXECUTED");
+    expect((await t.custody.submitWalletTransaction(intent.id, signed)).status).toBe("EXECUTED");
     t.chain.sendTransaction = orig;
     await concurrent;
-    expect((await t.store.getRotation(rot.id))!.status).toBe("COMPLETED");
+    expect((await t.store.getRotation(rotation.id))!.status).toBe("COMPLETED");
     const state = await readMultisig(t.chain, new PublicKey(t.account.multisig));
     expect(state.members.some((m) => m.key === (b as unknown as { toJSON(): { publicKey: string } }).toJSON().publicKey)).toBe(true);
   });

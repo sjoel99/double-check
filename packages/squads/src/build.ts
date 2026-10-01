@@ -6,7 +6,12 @@ import { PERM, vaultPda } from "./state";
 const ix = multisig.instructions;
 const { Permissions } = multisig.types;
 
-/** As quatro chaves da multisig e o que cada uma pode fazer. */
+/**
+ * As quatro chaves da multisig e o que cada uma pode fazer.
+ * client = carteira comum do usuário (Phantom, Backpack…): vota e executa —
+ * executar não dá poder (só roda o que já tem 2 votos) e deixa a aprovação e a
+ * execução irem numa transação só.
+ */
 export type MultisigLayout = {
   client: PublicKey;
   server: PublicKey;
@@ -16,7 +21,7 @@ export type MultisigLayout = {
 
 export function layoutMembers(layout: MultisigLayout): multisig.types.Member[] {
   return [
-    { key: layout.client, permissions: Permissions.fromPermissions([PERM.Vote]) },
+    { key: layout.client, permissions: Permissions.fromPermissions([PERM.Vote, PERM.Execute]) },
     { key: layout.server, permissions: Permissions.fromPermissions([PERM.Vote]) },
     { key: layout.executor, permissions: Permissions.fromPermissions([PERM.Execute]) },
     { key: layout.proposer, permissions: Permissions.fromPermissions([PERM.Initiate]) },
@@ -116,9 +121,13 @@ export function createConfigProposalIxs(args: {
  * As duas ações executam juntas; o invariant do programa só roda no fim, e
  * nenhum estado intermediário com três votantes chega a existir na chain.
  */
-export function rotationActions(oldKey: PublicKey, newKey: PublicKey): multisig.types.ConfigAction[] {
+export const CLIENT_MASK = PERM.Vote | PERM.Execute;
+export const SERVER_MASK = PERM.Vote;
+
+export function rotationActions(oldKey: PublicKey, newKey: PublicKey, role: "CLIENT" | "SERVER" = "CLIENT"): multisig.types.ConfigAction[] {
+  const perms = role === "CLIENT" ? [PERM.Vote, PERM.Execute] : [PERM.Vote];
   return [
-    { __kind: "AddMember", newMember: { key: newKey, permissions: Permissions.fromPermissions([PERM.Vote]) } },
+    { __kind: "AddMember", newMember: { key: newKey, permissions: Permissions.fromPermissions(perms) } },
     { __kind: "RemoveMember", oldMember: oldKey },
   ];
 }

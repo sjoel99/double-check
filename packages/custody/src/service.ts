@@ -1,24 +1,26 @@
 import { randomUUID } from "node:crypto";
 import { Keypair, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { ed25519 } from "@noble/curves/ed25519.js";
+import bs58 from "bs58";
+import { type Cluster, deny, type IntentBody, SecurityError, sealIntent, type TransferSolIntent } from "@duplachave/shared";
 import {
-  ApprovalStatementSchema,
-  type Cluster,
-  deny,
-  type IntentBody,
-  PossessionStatementSchema,
-  SecurityError,
-  sealIntent,
-  type TransactionIntent,
-  type TransferSolIntent,
-} from "@duplachave/shared";
-import { randomHex, type Signed, type Signer, signStatement, verifyEd25519, verifyStatement } from "@duplachave/crypto";
-import { type Chain, ChainTxError, parseInstruction, type RawInstruction, SYSTEM_PROGRAM, sendInstructions } from "@duplachave/solana";
+  loginMessage,
+  possessionMessage,
+  type PossessionOperation,
+  randomHex,
+  type Signer,
+  verifyEd25519,
+  verifyWalletMessage,
+  verifyWalletProof,
+  type WalletProof,
+} from "@duplachave/crypto";
+import { ChainTxError, type Chain, parseInstruction, type RawInstruction, SYSTEM_PROGRAM, sendInstructions } from "@duplachave/solana";
 import {
   approvalMemo,
   approveIx,
   assertStrictTwoOfTwo,
   cancelIx,
+  CLIENT_MASK,
   compareIntent,
   createConfigProposalIxs,
   createStrictMultisigIx,
@@ -32,25 +34,19 @@ import {
   rejectIx,
   rotationActions,
   type MultisigState,
+  SERVER_MASK,
   vaultPda,
-  vaultMessageInstructions,
   viewConfigTransaction,
   viewVaultTransaction,
 } from "@duplachave/squads";
 import { DEFAULT_POLICY, type PolicyEngine, type User } from "@duplachave/policy-engine";
-import type { ApprovalRequest, ClientDecisionPayload } from "./client";
+import type { ApprovalRequest, SignMode } from "./client";
 import type { ServerKeyProvider, ServiceKeys } from "./keys";
 import type { NotificationService } from "./notifications";
-import type {
-  AuditInput,
-  ChallengeStore,
-  IntentRecord,
-  RotationRecord,
-  RotationStatus,
-  SmartAccountRecord,
-  Store,
-} from "./store";
+import type { AuditInput, ChallengeStore, IntentRecord, RotationRecord, RotationStatus, SmartAccountRecord, Store } from "./store";
 import { renderIntent } from "./display";
+
+const utf8 = (s: string) => new TextEncoder().encode(s);
 
 export type CustodyConfig = {
   cluster: Cluster;
@@ -73,9 +69,9 @@ export type CustodyConfig = {
 const ROTATION_TRANSITIONS: Record<RotationStatus, RotationStatus[]> = {
   REQUESTED: ["NEW_KEY_VERIFIED", "REJECTED", "EXPIRED", "FAILED"],
   NEW_KEY_VERIFIED: ["OPERATIONS_FROZEN", "EXPIRED", "FAILED"],
-  OPERATIONS_FROZEN: ["AWAITING_CLIENT_APPROVAL", "EXPIRED", "FAILED", "ROLLBACK_REQUIRED"],
-  AWAITING_CLIENT_APPROVAL: ["AWAITING_SERVER_APPROVAL", "REJECTED", "EXPIRED", "FAILED"],
-  AWAITING_SERVER_APPROVAL: ["EXECUTING", "REJECTED", "EXPIRED", "FAILED"],
+  OPERATIONS_FROZEN: ["AWAITING_SERVER_APPROVAL", "EXPIRED", "FAILED", "ROLLBACK_REQUIRED"],
+  AWAITING_SERVER_APPROVAL: ["AWAITING_CLIENT_APPROVAL", "REJECTED", "EXPIRED", "FAILED"],
+  AWAITING_CLIENT_APPROVAL: ["EXECUTING", "REJECTED", "EXPIRED", "FAILED"],
   EXECUTING: ["VERIFIED", "FAILED", "REJECTED", "ROLLBACK_REQUIRED"],
   VERIFIED: ["COMPLETED", "ROLLBACK_REQUIRED"],
   COMPLETED: [],
@@ -162,63 +158,83 @@ export class CustodyService {
     return sendInstructions(this.chain, ixs, [this.cfg.service.feePayer, ...signers]);
   }
 
-  private async serverReject(acc: SmartAccountRecord, index: bigint, memo: string) {
+  /**
+   * Voto do servidor. Rejeitar depois de ter aprovado troca o voto (o programa
+   * remove a aprovação) e, em 2-de-2, um voto de rejeição já encerra a proposta.
+   */
+  private async serverVote(acc: SmartAccountRecord, index: bigint, vote: "approve" | "reject" | "cancel", memo: string) {
     const server = await this.serverSigner(acc);
-    return this.send([rejectIx(new PublicKey(acc.multisig), index, await server.publicKey(), memo)], [server]);
+    const ms = new PublicKey(acc.multisig);
+    const pk = await server.publicKey();
+    const ix = vote === "approve" ? approveIx(ms, index, pk, memo) : vote === "reject" ? rejectIx(ms, index, pk, memo) : cancelIx(ms, index, pk, memo);
+    return this.send([ix], [server]);
   }
 
   // -------------------------------------------------------------------------
-  // cadastro
+  // desafios, cadastro e sessão
   // -------------------------------------------------------------------------
 
-  async createChallenge(purpose: "ENROLL_CLIENT_KEY" | "AUTH", subject: string) {
-    const c = { id: randomUUID(), purpose, subject, challenge: randomHex(32), expiresAt: this.now() + 300 };
+  /** Desafio + o texto exato que a carteira vai assinar (e mostrar ao usuário). */
+  async createChallenge(purpose: "ENROLL_CLIENT_KEY" | "AUTH", publicKey: string) {
+    new PublicKey(publicKey);
+    const c = { id: randomUUID(), purpose, subject: publicKey, challenge: randomHex(32), expiresAt: this.now() + 300 };
     await this.store.putChallenge(c);
-    return c;
+    const message =
+      purpose === "AUTH"
+        ? loginMessage({ publicKey, cluster: this.cfg.cluster, challenge: c.challenge, expiresAt: c.expiresAt })
+        : possessionMessage({ operation: "ENROLL_CLIENT_KEY", publicKey, account: "nova", cluster: this.cfg.cluster, challenge: c.challenge, expiresAt: c.expiresAt });
+    return { ...c, message };
   }
 
-  private async checkPossession(
-    signed: Signed<unknown>,
-    expected: { operation: "ENROLL_CLIENT_KEY" | "ROTATE_CLIENT_KEY" | "ROTATE_SERVER_KEY"; multisig: string; rotationId: string; challenge: string; newPublicKey?: string },
+  /** Prova de posse: o texto é remontado aqui a partir do que o servidor emitiu. */
+  private async checkWalletProof(
+    proof: WalletProof,
+    expected: { operation: PossessionOperation; account: string; challenge: string; expiresAt: number; publicKey?: string },
   ) {
-    const parsed = PossessionStatementSchema.safeParse(signed.statement);
-    if (!parsed.success) deny("POSSESSION_MALFORMED", parsed.error.message);
-    const st = parsed.data;
-    const now = this.now();
-    if (st.operation !== expected.operation) deny("POSSESSION_WRONG_OPERATION", st.operation);
-    if (st.cluster !== this.cfg.cluster) deny("POSSESSION_WRONG_CLUSTER", st.cluster);
-    if (st.multisig !== expected.multisig) deny("POSSESSION_WRONG_MULTISIG", st.multisig);
-    if (st.rotationId !== expected.rotationId) deny("POSSESSION_WRONG_ID", st.rotationId);
-    if (st.challenge !== expected.challenge) deny("POSSESSION_WRONG_CHALLENGE", "desafio diferente do emitido");
-    if (expected.newPublicKey && st.newPublicKey !== expected.newPublicKey) deny("POSSESSION_WRONG_KEY", st.newPublicKey);
-    if (st.expiresAt < now || st.createdAt > now + 60) deny("POSSESSION_EXPIRED", "prova fora da validade");
-    if (!verifyStatement(signed as Signed<object>, new PublicKey(st.newPublicKey))) deny("POSSESSION_BAD_SIGNATURE", "assinatura não é da chave nova");
-    if (!(await this.store.consumeNonce("possession", st.nonce, st.expiresAt))) deny("REPLAY", "prova de posse já usada");
-    if (await this.store.isRevokedKey(st.newPublicKey)) deny("REVOKED_KEY_REUSE", "chave revogada não volta");
-    return st;
+    if (!proof || typeof proof !== "object") deny("POSSESSION_MALFORMED", "prova ausente");
+    if (proof.operation !== expected.operation) deny("POSSESSION_WRONG_OPERATION", String(proof.operation));
+    if (proof.cluster !== this.cfg.cluster) deny("POSSESSION_WRONG_CLUSTER", String(proof.cluster));
+    if (proof.account !== expected.account) deny("POSSESSION_WRONG_ACCOUNT", String(proof.account));
+    if (proof.challenge !== expected.challenge) deny("POSSESSION_WRONG_CHALLENGE", "desafio diferente do emitido");
+    if (proof.expiresAt !== expected.expiresAt) deny("POSSESSION_WRONG_EXPIRY", "validade diferente da emitida");
+    if (expected.publicKey && proof.publicKey !== expected.publicKey) deny("POSSESSION_WRONG_KEY", String(proof.publicKey));
+    try {
+      new PublicKey(proof.publicKey);
+    } catch {
+      deny("POSSESSION_MALFORMED", "chave pública inválida");
+    }
+    if (this.now() > proof.expiresAt) deny("POSSESSION_EXPIRED", "prova fora da validade");
+    if (!verifyWalletProof(proof)) deny("POSSESSION_BAD_SIGNATURE", "assinatura não é da carteira declarada");
+    if (!(await this.store.consumeNonce("possession", proof.signature, proof.expiresAt))) deny("REPLAY", "prova de posse já usada");
+    if (await this.store.isRevokedKey(proof.publicKey)) deny("REVOKED_KEY_REUSE", "chave revogada não volta");
+    return proof;
   }
 
   /**
-   * Cria a Smart Account: multisig 2-de-2 com a chave do app (posse provada),
-   * uma chave nova do servidor, o executor e o proposer do serviço.
+   * Cadastro: a carteira comum do usuário (posse provada por signMessage) +
+   * uma chave nova do servidor, mais executor e proposer do serviço.
    */
-  async enroll(args: { userId: string; userName?: string; deviceName: string; challengeId: string; possession: Signed<unknown> }) {
+  async enroll(args: { challengeId: string; publicKey: string; signature: string; walletName: string; userName?: string }) {
     const ch = await this.store.takeChallenge(args.challengeId);
-    if (!ch || ch.purpose !== "ENROLL_CLIENT_KEY" || ch.subject !== args.userId) deny("CHALLENGE_INVALID", "desafio inexistente ou já usado");
+    if (!ch || ch.purpose !== "ENROLL_CLIENT_KEY" || ch.subject !== args.publicKey) deny("CHALLENGE_INVALID", "desafio inexistente ou já usado");
     if (ch.expiresAt < this.now()) deny("CHALLENGE_EXPIRED", "desafio expirado");
-    const st = await this.checkPossession(args.possession, { operation: "ENROLL_CLIENT_KEY", multisig: "", rotationId: ch.id, challenge: ch.challenge });
+    const proof = await this.checkWalletProof(
+      { operation: "ENROLL_CLIENT_KEY", publicKey: args.publicKey, account: "nova", cluster: this.cfg.cluster, challenge: ch.challenge, expiresAt: ch.expiresAt, signature: args.signature },
+      { operation: "ENROLL_CLIENT_KEY", account: "nova", challenge: ch.challenge, expiresAt: ch.expiresAt, publicKey: args.publicKey },
+    );
+    if (await this.store.findAccountByClientKey(proof.publicKey)) deny("WALLET_ALREADY_ENROLLED", "esta carteira já tem uma conta");
+    if (await this.cfg.serverKeys.get(proof.publicKey)) deny("CLIENT_KEY_IS_SERVER_KEY", "chave do servidor não pode ser a carteira do cliente");
 
-    if (!(await this.store.getUser(args.userId))) {
-      await this.store.saveUser({ id: args.userId, name: args.userName ?? args.userId, policy: DEFAULT_POLICY, createdAt: this.now() });
-    }
-    const server = await this.cfg.serverKeys.create(`server:${args.userId}`);
+    const userId = randomUUID();
+    await this.store.saveUser({ id: userId, name: args.userName ?? args.walletName, policy: DEFAULT_POLICY, createdAt: this.now() });
+    const server = await this.cfg.serverKeys.create(`server:${userId}`);
     const roles: ExpectedRoles = {
-      client: st.newPublicKey,
+      client: proof.publicKey,
       server: (await server.publicKey()).toBase58(),
       executor: (await this.cfg.service.executor.publicKey()).toBase58(),
       proposer: (await this.cfg.service.proposer.publicKey()).toBase58(),
     };
-    const createKey = randomCreateKey(this.cfg.cluster);
+    const createKey = randomCreateKey();
     const created = createStrictMultisigIx({
       createKey: await createKey.publicKey(),
       creator: await this.cfg.service.feePayer.publicKey(),
@@ -234,10 +250,10 @@ export class CustodyService {
 
     const deviceId = randomUUID();
     const now = this.now();
-    await this.store.saveDevice({ id: deviceId, userId: args.userId, name: args.deviceName, publicKey: roles.client, createdAt: now, revokedAt: null });
+    await this.store.saveDevice({ id: deviceId, userId, name: args.walletName, publicKey: roles.client, createdAt: now, revokedAt: null });
     const acc: SmartAccountRecord = {
       id: randomUUID(),
-      userId: args.userId,
+      userId,
       cluster: this.cfg.cluster,
       multisig: created.multisig.toBase58(),
       vault: created.vault.toBase58(),
@@ -249,22 +265,40 @@ export class CustodyService {
     await this.verifiedState(acc);
     const member = (publicKey: string, role: "CLIENT" | "SERVER" | "EXECUTOR" | "PROPOSER", permissions: number, dev: string | null = null) =>
       this.store.saveMember({ accountId: acc.id, publicKey, role, permissions, status: "ACTIVE", deviceId: dev, createdAt: now, revokedAt: null });
-    await member(roles.client, "CLIENT", 2, deviceId);
-    await member(roles.server, "SERVER", 2);
+    await member(roles.client, "CLIENT", CLIENT_MASK, deviceId);
+    await member(roles.server, "SERVER", SERVER_MASK);
     await member(roles.executor, "EXECUTOR", 4);
     await member(roles.proposer, "PROPOSER", 1);
-    await this.audit({ type: "SMART_ACCOUNT_CREATED", accountId: acc.id, userId: acc.userId, deviceId, multisig: acc.multisig, txSignature: sig, publicKey: roles.client });
+    await this.audit({ type: "SMART_ACCOUNT_CREATED", accountId: acc.id, userId: acc.userId, deviceId, multisig: acc.multisig, txSignature: sig, publicKey: roles.client, details: { wallet: args.walletName } });
     return { account: acc, deviceId };
+  }
+
+  /** Login: a carteira assina o texto de entrada. Sessão identifica; não autoriza nada. */
+  async login(args: { challengeId: string; publicKey: string; signature: string }) {
+    const ch = await this.store.takeChallenge(args.challengeId);
+    if (!ch || ch.purpose !== "AUTH" || ch.subject !== args.publicKey || ch.expiresAt < this.now()) deny("CHALLENGE_INVALID", "desafio inválido");
+    const text = loginMessage({ publicKey: args.publicKey, cluster: this.cfg.cluster, challenge: ch.challenge, expiresAt: ch.expiresAt });
+    if (!verifyWalletMessage(text, args.signature, args.publicKey)) deny("BAD_SIGNATURE", "assinatura inválida");
+    const acc = await this.store.findAccountByClientKey(args.publicKey);
+    if (!acc) {
+      if (await this.store.isRevokedKey(args.publicKey)) deny("KEY_REVOKED", "esta carteira foi substituída e não volta a valer");
+      deny("NOT_A_CLIENT_KEY", "esta carteira não é a carteira atual de nenhuma conta");
+    }
+    return acc;
   }
 
   // -------------------------------------------------------------------------
   // operações (VaultTransaction)
   // -------------------------------------------------------------------------
 
+  /**
+   * Monta a transferência, roda política + simulação, cria a proposta e o
+   * servidor já aprova. Falta só a carteira do cliente (que aprova e executa).
+   */
   async createTransferSol(accountId: string, req: { destination: string; amountLamports: string }) {
     return this.withLock(accountId, async () => {
       const acc = await this.account(accountId);
-      if (acc.frozenBy) deny("OPERATIONS_FROZEN", "rotação de chave em andamento");
+      if (acc.frozenBy) deny("OPERATIONS_FROZEN", "troca de carteira em andamento");
       const user = await this.user(acc.userId);
       const state = await this.verifiedState(acc);
       const ms = new PublicKey(acc.multisig);
@@ -294,13 +328,9 @@ export class CustodyService {
       const intent = sealIntent(body);
       const instructions = [SystemProgram.transfer({ fromPubkey: vault, toPubkey: destination, lamports: amount })];
 
-      // Política antes de criar qualquer coisa na chain, com a mesma visão que
-      // o servidor usará para assinar (a mensagem é reconstruída dos bytes).
       const preview = previewVaultView(vault, instructions);
       const vaultLamports = await this.chain.getBalance(vault);
       const pre = await this.cfg.policy.validate(user, intent, preview, { vaultLamports, verifiedNewKeys: [], revokedKeys: [] });
-
-      // Destino: programa (executável) não recebe SOL; conta de outro programa é marcada.
       const destInfo = await this.chain.getAccountInfo(destination);
       if (destInfo?.executable) {
         pre.allowed = false;
@@ -308,7 +338,6 @@ export class CustodyService {
       } else if (destInfo && !destInfo.owner.equals(SystemProgram.programId)) {
         pre.riskFlags.push("DESTINATION_NOT_WALLET");
       }
-      // Simulação como o vault: o que falharia na execução não vira proposta.
       if (pre.allowed && this.chain.simulate) {
         const sim = await this.chain.simulate(vault, instructions);
         if (!sim.ok) {
@@ -322,18 +351,20 @@ export class CustodyService {
       }
 
       const proposer = this.cfg.service.proposer;
-      const ixs = createVaultProposalIxs({
-        multisig: ms,
-        index,
-        proposer: await proposer.publicKey(),
-        rentPayer: await this.cfg.service.feePayer.publicKey(),
-        instructions,
-        recentBlockhash: await this.chain.getLatestBlockhash(),
-        memo: `dk1:intent:${intent.intentHash.slice(0, 32)}`,
-      });
-      const sig = await this.send(ixs, [proposer]);
+      const sig = await this.send(
+        createVaultProposalIxs({
+          multisig: ms,
+          index,
+          proposer: await proposer.publicKey(),
+          rentPayer: await this.cfg.service.feePayer.publicKey(),
+          instructions,
+          recentBlockhash: await this.chain.getLatestBlockhash(),
+          memo: `dk1:intent:${intent.intentHash.slice(0, 32)}`,
+        }),
+        [proposer],
+      );
 
-      // Relê da chain e confere: o que foi criado é o que a intenção diz.
+      // Relê da chain e confere antes de o servidor votar.
       const onchain = await readTransaction(this.chain, ms, index);
       if (!onchain || onchain.kind !== "VAULT") deny("TX_NOT_CREATED", "transação não apareceu na chain");
       const diffs = compareIntent(intent, viewVaultTransaction(onchain, vault));
@@ -352,6 +383,12 @@ export class CustodyService {
       await this.store.saveIntent(rec);
       await this.store.saveSquadsTransaction({ accountId, multisig: acc.multisig, transactionIndex: index.toString(), kind: "VAULT", address: onchain.address, hash: onchain.hash, intentId: intent.id, createSignature: sig, createdAt: now });
       await this.audit({ type: "TRANSACTION_PROPOSED", accountId, multisig: acc.multisig, transactionIndex: index.toString(), intentId: intent.id, intentHash: intent.intentHash, txSignature: sig });
+
+      const serverSig = await this.serverVote(acc, index, "approve", approvalMemo(intent.intentHash, onchain.hash));
+      rec.signatures.serverApprove = serverSig;
+      await this.store.saveIntent(rec);
+      await this.store.saveApproval({ id: randomUUID(), intentId: intent.id, accountId, publicKey: acc.roles.server, role: "SERVER", decision: "APPROVE", statement: { policy: "allowed", riskFlags: pre.riskFlags }, txSignature: serverSig, createdAt: this.now() });
+      await this.audit({ type: "SERVER_APPROVED", accountId, publicKey: acc.roles.server, multisig: acc.multisig, transactionIndex: index.toString(), intentId: intent.id, intentHash: intent.intentHash, txSignature: serverSig });
       await this.cfg.notifications.transactionApprovalRequested(
         { userId: acc.userId, accountId },
         { intentId: intent.id, summary: renderIntent(intent).rows.map((r) => `${r.label}: ${r.value}`).slice(0, 2).join(" · ") },
@@ -360,33 +397,35 @@ export class CustodyService {
     });
   }
 
-  /** O que o app recebe para revisar. O app confere tudo na chain antes de assinar. */
+  private modeFor(rec: IntentRecord): SignMode {
+    if (rec.status === "APPROVED_PENDING_EXECUTION") return "CANCEL";
+    return rec.intent.kind === "OPERATION" ? "APPROVE_AND_EXECUTE" : "APPROVE";
+  }
+
+  /** O que o app recebe para revisar e montar a transação da carteira. */
   async approvalRequest(intentId: string): Promise<ApprovalRequest> {
     const rec = await this.store.getIntent(intentId);
     if (!rec) deny("INTENT_NOT_FOUND", intentId);
-    let deviceName: string | null = null;
-    let possession: Signed<unknown> | null = null;
+    let possession: WalletProof | null = null;
     if (rec.intent.type === "ROTATE_MEMBER") {
       const rot = await this.store.getRotation(rec.intent.rotationId);
-      deviceName = rot?.newDeviceName ?? null;
-      possession = (rot?.possession as Signed<unknown> | null) ?? null;
+      possession = (rot?.possession as WalletProof | null) ?? null;
     }
     return {
       intent: rec.intent,
       riskFlags: rec.riskFlags,
       feePayer: (await this.cfg.service.feePayer.publicKey()).toBase58(),
       recentBlockhash: await this.chain.getLatestBlockhash(),
-      deviceName,
+      mode: this.modeFor(rec),
       possession,
     };
   }
 
   /**
-   * Recebe a decisão assinada pelo app. Para APPROVE: confere a declaração e o
-   * voto do cliente, envia o voto, roda a política com estado fresco da chain,
-   * e só então o servidor assina e o executor executa.
+   * Recebe a transação assinada pela carteira do cliente, confere que ela é
+   * exatamente a esperada para esta intenção, paga a taxa e envia.
    */
-  async submitClientDecision(intentId: string, payload: ClientDecisionPayload) {
+  async submitWalletTransaction(intentId: string, transactionB64: string) {
     const first = await this.store.getIntent(intentId);
     if (!first) deny("INTENT_NOT_FOUND", intentId);
     return this.withLock(first.accountId, async () => {
@@ -395,163 +434,129 @@ export class CustodyService {
       const intent = rec.intent;
       const index = BigInt(intent.transactionIndex);
       const ms = new PublicKey(acc.multisig);
+      const mode = this.modeFor(rec);
       const refuse = async (code: string, msg: string): Promise<never> => {
         await this.audit({ type: "APPROVAL_REFUSED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId, intentHash: intent.intentHash, details: { code, msg } });
         throw new SecurityError(code, msg);
       };
 
-      const cancelling = (payload.statement?.statement as { decision?: string } | undefined)?.decision === "CANCEL";
-      if (cancelling) {
-        if (rec.status !== "APPROVED_PENDING_EXECUTION") return refuse("INTENT_NOT_CANCELLABLE", `intenção em ${rec.status}`);
-      } else if (rec.status !== "AWAITING_CLIENT") return refuse("INTENT_NOT_PENDING", `intenção em ${rec.status}`);
-      if (!cancelling && this.now() > intent.expiresAt) {
+      if (mode !== "CANCEL" && rec.status !== "AWAITING_CLIENT") return refuse("INTENT_NOT_PENDING", `intenção em ${rec.status}`);
+      if (mode !== "CANCEL" && this.now() > intent.expiresAt) {
         await this.expireIntent(rec, acc);
         return refuse("INTENT_EXPIRED", "intenção expirada; proposta rejeitada on-chain");
       }
 
-      // 1. Declaração assinada: formato, vínculos e validade.
-      const parsed = ApprovalStatementSchema.safeParse(payload.statement?.statement);
-      if (!parsed.success) return refuse("STATEMENT_MALFORMED", parsed.error.message);
-      const st = parsed.data;
-      const mismatch =
-        st.cluster !== this.cfg.cluster ||
-        st.multisig !== acc.multisig ||
-        st.transactionIndex !== intent.transactionIndex ||
-        st.intentId !== intent.id ||
-        st.intentHash !== intent.intentHash ||
-        st.transactionKind !== (intent.kind === "OPERATION" ? "VAULT" : "CONFIG");
-      if (mismatch) return refuse("STATEMENT_MISMATCH", "declaração não corresponde a esta intenção");
-      const now = this.now();
-      if (st.expiresAt < now || st.createdAt > now + 60 || (!cancelling && st.expiresAt > intent.expiresAt)) return refuse("STATEMENT_EXPIRED", "declaração fora da validade");
-
-      // 2. Quem assinou é o CLIENT atual segundo a chain (não segundo o banco).
+      // Quem assina é a carteira atual segundo a chain; o conteúdo on-chain é o da intenção.
       const state = await this.verifiedState(acc);
-      if (st.signer !== acc.roles.client) return refuse("NOT_CURRENT_CLIENT", "a chave que assinou não é a CLIENT_APPROVAL_KEY atual");
-      if (!state.members.some((m) => m.key === st.signer && m.vote)) return refuse("NOT_CURRENT_CLIENT", "chave não é votante on-chain");
-      if (!verifyStatement(payload.statement as Signed<object>, new PublicKey(st.signer))) return refuse("BAD_SIGNATURE", "assinatura da declaração inválida");
-
-      // 3. O conteúdo on-chain é o mesmo que o app viu e o mesmo da intenção.
       const onchain = await readTransaction(this.chain, ms, index);
-      if (!onchain) return refuse("TX_NOT_FOUND", "transação sumiu da chain");
-      if (onchain.hash !== st.transactionHash || onchain.hash !== rec.transactionHash) return refuse("TX_HASH_MISMATCH", "conteúdo on-chain difere do aprovado");
+      if (!onchain || onchain.hash !== rec.transactionHash) return refuse("TX_HASH_MISMATCH", "conteúdo on-chain difere do proposto");
       const view = onchain.kind === "VAULT" ? viewVaultTransaction(onchain, vaultPda(ms, 0)) : viewConfigTransaction(onchain, state, acc.roles);
       const diffs = compareIntent(intent, view);
       if (diffs.length) return refuse("INTENT_MISMATCH", diffs.join("; "));
 
-      // 4. Uso único.
-      if (!(await this.store.consumeNonce(`approval:${acc.multisig}`, st.nonce, st.expiresAt))) return refuse("REPLAY", "declaração já usada");
-
-      const target = { userId: acc.userId, accountId: acc.id };
-      if (st.decision === "CANCEL") return this.cancelApproved(acc, rec, payload, st.signer);
-      if (st.decision === "REJECT") {
-        const sig = await this.serverReject(acc, index, `dk1:client-reject:${intent.intentHash.slice(0, 32)}`);
-        rec.status = "REJECTED";
-        rec.signatures.reject = sig;
-        rec.updatedAt = now;
-        await this.store.saveIntent(rec);
-        await this.store.saveApproval({ id: randomUUID(), intentId, accountId: acc.id, publicKey: st.signer, role: "CLIENT", decision: "REJECT", statement: payload.statement, txSignature: sig, createdAt: now });
-        await this.audit({ type: "CLIENT_REJECTED", accountId: acc.id, publicKey: st.signer, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId, intentHash: intent.intentHash, txSignature: sig });
-        if (intent.type === "ROTATE_MEMBER") await this.finishRotation(intent.rotationId, "REJECTED", "cliente rejeitou");
-        return rec;
+      let sig: string;
+      try {
+        sig = await this.relayWalletTransaction(acc, rec, transactionB64, mode);
+      } catch (e) {
+        if (e instanceof SecurityError) return refuse(e.code, e.message);
+        throw e;
       }
-
-      // 5. O voto do cliente: exatamente proposal_approve(multisig, índice, cliente).
-      const clientSig = await this.relayClientVote(acc, intent, onchain.hash, payload.approveTransaction, "APPROVE").catch((e) => refuse("CLIENT_VOTE_INVALID", String(e)));
-      rec.status = "AWAITING_SERVER";
-      rec.signatures.clientApprove = clientSig;
+      const wallet = acc.roles.client;
+      rec.signatures.clientApprove = sig;
       rec.updatedAt = this.now();
-      await this.store.saveIntent(rec);
-      await this.store.saveApproval({ id: randomUUID(), intentId, accountId: acc.id, publicKey: st.signer, role: "CLIENT", decision: "APPROVE", statement: payload.statement, txSignature: clientSig, createdAt: this.now() });
-      await this.audit({ type: "CLIENT_APPROVED", accountId: acc.id, publicKey: st.signer, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId, intentHash: intent.intentHash, txSignature: clientSig });
-      if (intent.type === "ROTATE_MEMBER") await this.advanceRotation(intent.rotationId, "AWAITING_SERVER_APPROVAL");
+      await this.store.saveApproval({ id: randomUUID(), intentId, accountId: acc.id, publicKey: wallet, role: "CLIENT", decision: mode === "CANCEL" ? "CANCEL" : "APPROVE", statement: { mode }, txSignature: sig, createdAt: this.now() });
 
-      // 6. Política com estado fresco, e só então o servidor assina.
-      const user = await this.user(acc.userId);
-      const rotation = intent.type === "ROTATE_MEMBER" ? await this.store.getRotation(intent.rotationId) : null;
-      const decision = await this.cfg.policy.validate(user, intent, view, {
-        vaultLamports: await this.chain.getBalance(vaultPda(ms, 0)),
-        verifiedNewKeys: rotation?.newKey && rotation.history.some((h) => h.status === "NEW_KEY_VERIFIED") ? [rotation.newKey] : [],
-        revokedKeys: rotation?.newKey && (await this.store.isRevokedKey(rotation.newKey)) ? [rotation.newKey] : [],
-      });
-      if (intent.type === "ROTATE_MEMBER") {
-        // A chave nova do SERVIDOR tem que ser uma chave que o servidor controla; a do CLIENTE, nunca.
-        const serverControls = Boolean(await this.cfg.serverKeys.get(intent.newKey));
-        if (intent.role === "SERVER" && !serverControls) decision.reasons.push("SERVER_KEY_NOT_CONTROLLED: a chave nova do servidor não está no provedor de chaves");
-        if (intent.role === "CLIENT" && serverControls) decision.reasons.push("CLIENT_KEY_IS_SERVER_KEY");
-        if (rotation?.role !== intent.role) decision.reasons.push("ROTATION_ROLE_MISMATCH");
-        decision.allowed = decision.reasons.length === 0;
-      } else if (view.kind === "VAULT" && this.chain.simulate) {
-        // Estado mudou desde a proposta (saldo, contas): simula de novo antes de votar.
-        const sim = await this.chain.simulate(vaultPda(ms, 0), vaultMessageInstructions(onchain.kind === "VAULT" ? onchain.account : (null as never)).map(toInstruction));
-        if (!sim.ok) {
-          decision.allowed = false;
-          decision.reasons.push(`SIMULATION_FAILED: ${sim.error}`);
-        }
-      }
-      if (!decision.allowed) {
-        const sig = await this.serverReject(acc, index, `dk1:policy-reject:${intent.intentHash.slice(0, 32)}`);
-        rec.status = "REJECTED";
-        rec.reasons = decision.reasons;
-        rec.signatures.reject = sig;
+      if (mode === "CANCEL") {
+        const serverSig = await this.serverVote(acc, index, "cancel", `dk1:cancel:${intent.intentHash.slice(0, 32)}`);
+        const p = await readProposal(this.chain, ms, index);
+        if (p?.status !== "Cancelled") deny("NOT_CANCELLED", `proposta em ${p?.status}`);
+        rec.status = "CANCELLED";
+        rec.signatures.reject = serverSig;
         await this.store.saveIntent(rec);
-        await this.audit({ type: "SERVER_REJECTED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId, intentHash: intent.intentHash, txSignature: sig, details: { reasons: decision.reasons } });
-        if (intent.type === "ROTATE_MEMBER") await this.finishRotation(intent.rotationId, "REJECTED", "política recusou");
-        await this.cfg.notifications.securityAlert(target, { code: "POLICY_DENIED", message: decision.reasons.join("; ") });
+        await this.audit({ type: "TRANSACTION_CANCELLED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId, intentHash: intent.intentHash, txSignature: serverSig });
+        if (intent.type === "ROTATE_MEMBER") await this.finishRotation(intent.rotationId, "REJECTED", "aprovada e cancelada");
         return rec;
       }
 
-      const server = await this.serverSigner(acc);
-      const serverSig = await this.send([approveIx(ms, index, await server.publicKey(), approvalMemo(intent.intentHash, onchain.hash))], [server]);
-      rec.signatures.serverApprove = serverSig;
-      rec.status = "EXECUTING";
-      await this.store.saveIntent(rec);
-      await this.store.saveApproval({ id: randomUUID(), intentId, accountId: acc.id, publicKey: acc.roles.server, role: "SERVER", decision: "APPROVE", statement: { policy: "allowed", riskFlags: decision.riskFlags }, txSignature: serverSig, createdAt: this.now() });
-      await this.audit({ type: "SERVER_APPROVED", accountId: acc.id, publicKey: acc.roles.server, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId, intentHash: intent.intentHash, txSignature: serverSig });
-
-      const proposal = await readProposal(this.chain, ms, index);
-      if (proposal?.status !== "Approved") deny("NOT_APPROVED", `proposta em ${proposal?.status}`);
-      await this.audit({ type: "TRANSACTION_APPROVED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId, intentHash: intent.intentHash });
-
-      // 7. Execução.
-      if (intent.type === "ROTATE_MEMBER") {
-        await this.executeRotation(acc, rec);
-      } else {
-        await this.executeVault(acc, rec);
+      await this.audit({ type: "CLIENT_APPROVED", accountId: acc.id, publicKey: wallet, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId, intentHash: intent.intentHash, txSignature: sig });
+      if (mode === "APPROVE_AND_EXECUTE") {
+        // Aprovação e execução foram na mesma transação: se chegou aqui, executou.
+        rec.status = "EXECUTED";
+        rec.signatures.execute = sig;
+        await this.store.saveIntent(rec);
+        await this.audit({ type: "TRANSACTION_EXECUTED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId, intentHash: intent.intentHash, txSignature: sig });
+        return rec;
       }
+
+      // Mudança de segurança: o executor do serviço executa e confere na chain.
+      await this.store.saveIntent(rec);
+      await this.executeRotation(acc, rec);
       return (await this.store.getIntent(intentId))!;
     });
   }
 
-  /**
-   * Executa uma VaultTransaction aprovada. Se falhar, a proposta continua
-   * executável on-chain: a intenção vai para APPROVED_PENDING_EXECUTION (nunca
-   * "falhou"), e o usuário escolhe tentar de novo ou cancelar (CLIENT + SERVER).
-   */
-  private async executeVault(acc: SmartAccountRecord, rec: IntentRecord) {
-    const intent = rec.intent;
-    const ms = new PublicKey(acc.multisig);
-    const index = BigInt(intent.transactionIndex);
-    const executor = this.cfg.service.executor;
+  /** Confere instrução por instrução a transação da carteira e a envia, pagando a taxa. */
+  private async relayWalletTransaction(acc: SmartAccountRecord, rec: IntentRecord, b64: string, mode: SignMode): Promise<string> {
+    if (!b64) deny("NO_TRANSACTION", "sem a transação assinada pela carteira");
+    let tx: VersionedTransaction;
     try {
-      const { instruction, lookupTableAccounts } = await executeVaultIx(this.chain, ms, index, await executor.publicKey());
-      const execSig = await sendInstructions(this.chain, [instruction], [this.cfg.service.feePayer, executor], lookupTableAccounts);
-      rec.signatures.execute = execSig;
-      rec.status = "EXECUTED";
-      rec.reasons = [];
-      rec.updatedAt = this.now();
-      await this.store.saveIntent(rec);
-      await this.audit({ type: "TRANSACTION_EXECUTED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId: intent.id, intentHash: intent.intentHash, txSignature: execSig });
+      tx = VersionedTransaction.deserialize(Buffer.from(b64, "base64"));
+    } catch {
+      deny("TX_MALFORMED", "transação ilegível");
+    }
+    const feePayer = await this.cfg.service.feePayer.publicKey();
+    const wallet = new PublicKey(acc.roles.client);
+    if (tx.message.addressTableLookups.length) deny("ALT_IN_TX", "transação com lookup table");
+    if (!tx.message.staticAccountKeys[0]?.equals(feePayer)) deny("WRONG_PAYER", "pagador inesperado");
+    const signers = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
+    if (signers.length !== 2 || !signers.some((k) => k.equals(wallet))) deny("UNEXPECTED_SIGNERS", "a transação deve ter só o pagador e a carteira como signatários");
+
+    const ms = new PublicKey(acc.multisig);
+    const index = BigInt(rec.intent.transactionIndex);
+    const memo = approvalMemo(rec.intent.intentHash, rec.transactionHash);
+    const expected =
+      mode === "CANCEL"
+        ? [cancelIx(ms, index, wallet, memo)]
+        : mode === "APPROVE"
+          ? [approveIx(ms, index, wallet, memo)]
+          : [approveIx(ms, index, wallet, memo), (await executeVaultIx(this.chain, ms, index, wallet)).instruction];
+    // Bytes idênticos aos da mensagem esperada (mesmo pagador e blockhash que a carteira assinou):
+    // nenhuma instrução, conta ou flag a mais ou a menos.
+    const expectedMessage = new TransactionMessage({ payerKey: feePayer, recentBlockhash: tx.message.recentBlockhash, instructions: expected }).compileToV0Message();
+    if (!Buffer.from(expectedMessage.serialize()).equals(Buffer.from(tx.message.serialize()))) deny("TX_NOT_EXPECTED", "a transação assinada não é a esperada para esta intenção");
+    const wi = signers.findIndex((k) => k.equals(wallet));
+    if (!verifyEd25519(tx.message.serialize(), tx.signatures[wi]!, wallet)) deny("WALLET_BAD_SIGNATURE", "assinatura da carteira inválida");
+    tx.addSignature(feePayer, await this.cfg.service.feePayer.sign(tx.message.serialize()));
+    try {
+      return await this.chain.sendTransaction(tx);
     } catch (e) {
-      rec.status = "APPROVED_PENDING_EXECUTION";
-      rec.reasons = [`EXECUTION_FAILED: ${e instanceof ChainTxError ? (e.programError ?? e.message) : String(e)}`];
-      rec.updatedAt = this.now();
-      await this.store.saveIntent(rec);
-      await this.audit({ type: "EXECUTION_FAILED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId: intent.id, intentHash: intent.intentHash, details: { reasons: rec.reasons } });
-      await this.store.saveSecurityEvent({ id: randomUUID(), accountId: acc.id, code: "APPROVED_NOT_EXECUTED", message: `proposta ${intent.transactionIndex} aprovada e não executada: executar de novo ou cancelar`, at: this.now() });
+      if (e instanceof ChainTxError) deny("WALLET_TX_FAILED", e.programError ?? e.message);
+      throw e;
     }
   }
 
-  /** Tenta de novo a execução de uma aprovada (VaultTransaction ou rotação). */
+  /** O cliente recusa no app: o servidor troca o voto para rejeição e a proposta morre. */
+  async rejectByClient(intentId: string) {
+    const first = await this.store.getIntent(intentId);
+    if (!first) deny("INTENT_NOT_FOUND", intentId);
+    return this.withLock(first.accountId, async () => {
+      const rec = (await this.store.getIntent(intentId))!;
+      const acc = await this.account(rec.accountId);
+      if (rec.status !== "AWAITING_CLIENT") deny("INTENT_NOT_PENDING", rec.status);
+      const index = BigInt(rec.intent.transactionIndex);
+      const p = await readProposal(this.chain, new PublicKey(acc.multisig), index);
+      if (p?.status === "Active") rec.signatures.reject = await this.serverVote(acc, index, "reject", `dk1:client-reject:${rec.intent.intentHash.slice(0, 32)}`);
+      rec.status = "REJECTED";
+      rec.reasons = ["recusada pelo cliente"];
+      rec.updatedAt = this.now();
+      await this.store.saveIntent(rec);
+      await this.audit({ type: "CLIENT_REJECTED", accountId: acc.id, multisig: acc.multisig, transactionIndex: rec.intent.transactionIndex, intentId, intentHash: rec.intent.intentHash, txSignature: rec.signatures.reject ?? null });
+      if (rec.intent.type === "ROTATE_MEMBER") await this.finishRotation(rec.intent.rotationId, "REJECTED", "cliente recusou");
+      return rec;
+    });
+  }
+
+  /** Tenta de novo a execução de uma aprovada (rotação cujo execute falhou). */
   async retryExecution(intentId: string) {
     const first = await this.store.getIntent(intentId);
     if (!first) deny("INTENT_NOT_FOUND", intentId);
@@ -567,64 +572,35 @@ export class CustodyService {
     });
   }
 
-  /** Cancela uma aprovada não executada: voto de cancelamento do cliente + do servidor. */
-  private async cancelApproved(acc: SmartAccountRecord, rec: IntentRecord, payload: ClientDecisionPayload, signer: string) {
+  private async executeVault(acc: SmartAccountRecord, rec: IntentRecord) {
     const intent = rec.intent;
     const ms = new PublicKey(acc.multisig);
-    const index = BigInt(intent.transactionIndex);
-    const clientSig = await this.relayClientVote(acc, intent, rec.transactionHash, payload.approveTransaction, "CANCEL").catch((e) => {
-      throw new SecurityError("CLIENT_VOTE_INVALID", String(e));
-    });
-    const server = await this.serverSigner(acc);
-    const serverSig = await this.send([cancelIx(ms, index, await server.publicKey(), `dk1:cancel:${intent.intentHash.slice(0, 32)}`)], [server]);
-    const p = await readProposal(this.chain, ms, index);
-    if (p?.status !== "Cancelled") deny("NOT_CANCELLED", `proposta em ${p?.status}`);
-    rec.status = "CANCELLED";
-    rec.signatures.reject = serverSig;
-    rec.updatedAt = this.now();
-    await this.store.saveIntent(rec);
-    await this.store.saveApproval({ id: randomUUID(), intentId: intent.id, accountId: acc.id, publicKey: signer, role: "CLIENT", decision: "CANCEL", statement: payload.statement, txSignature: clientSig, createdAt: this.now() });
-    await this.audit({ type: "TRANSACTION_CANCELLED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId: intent.id, intentHash: intent.intentHash, txSignature: serverSig });
-    if (intent.type === "ROTATE_MEMBER") await this.finishRotation(intent.rotationId, "REJECTED", "aprovada e cancelada");
-    return rec;
-  }
-
-  /** Confere a transação de voto montada pelo app e a envia, pagando a taxa. */
-  private async relayClientVote(acc: SmartAccountRecord, intent: TransactionIntent, txHash: string, b64: string | undefined, kind: "APPROVE" | "CANCEL"): Promise<string> {
-    if (!b64) deny("NO_VOTE", "aprovação sem a transação de voto");
-    const tx = VersionedTransaction.deserialize(Buffer.from(b64, "base64"));
-    const feePayer = await this.cfg.service.feePayer.publicKey();
-    const client = new PublicKey(acc.roles.client);
-    const msg = TransactionMessage.decompile(tx.message);
-    if (!msg.payerKey.equals(feePayer)) deny("WRONG_PAYER", "pagador inesperado");
-    if (tx.message.addressTableLookups.length) deny("ALT_IN_VOTE", "voto com lookup table");
-    if (msg.instructions.length !== 1) deny("VOTE_EXTRA_INSTRUCTIONS", "voto deve ter exatamente uma instrução");
-    const expected = (kind === "CANCEL" ? cancelIx : approveIx)(new PublicKey(acc.multisig), BigInt(intent.transactionIndex), client, approvalMemo(intent.intentHash, txHash));
-    const got = msg.instructions[0]!;
-    const sameKeys =
-      got.keys.length === expected.keys.length &&
-      got.keys.every((k, i) => k.pubkey.equals(expected.keys[i]!.pubkey) && k.isSigner === expected.keys[i]!.isSigner && k.isWritable === expected.keys[i]!.isWritable);
-    if (!got.programId.equals(expected.programId) || !sameKeys || !Buffer.from(got.data).equals(Buffer.from(expected.data)))
-      deny("VOTE_NOT_EXPECTED", "a instrução não é o voto esperado para esta intenção");
-    const signers = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
-    const ci = signers.findIndex((k) => k.equals(client));
-    if (ci < 0 || !verifyEd25519(tx.message.serialize(), tx.signatures[ci]!, client)) deny("VOTE_BAD_SIGNATURE", "voto sem assinatura válida do cliente");
-    tx.addSignature(feePayer, await this.cfg.service.feePayer.sign(tx.message.serialize()));
+    const executor = this.cfg.service.executor;
     try {
-      return await this.chain.sendTransaction(tx);
+      const { instruction, lookupTableAccounts } = await executeVaultIx(this.chain, ms, BigInt(intent.transactionIndex), await executor.publicKey());
+      const execSig = await sendInstructions(this.chain, [instruction], [this.cfg.service.feePayer, executor], lookupTableAccounts);
+      rec.signatures.execute = execSig;
+      rec.status = "EXECUTED";
+      rec.reasons = [];
+      rec.updatedAt = this.now();
+      await this.store.saveIntent(rec);
+      await this.audit({ type: "TRANSACTION_EXECUTED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId: intent.id, intentHash: intent.intentHash, txSignature: execSig });
     } catch (e) {
-      if (e instanceof ChainTxError) deny("CLIENT_VOTE_FAILED", e.programError ?? e.message);
-      throw e;
+      rec.status = "APPROVED_PENDING_EXECUTION";
+      rec.reasons = [`EXECUTION_FAILED: ${e instanceof ChainTxError ? (e.programError ?? e.message) : String(e)}`];
+      rec.updatedAt = this.now();
+      await this.store.saveIntent(rec);
+      await this.audit({ type: "EXECUTION_FAILED", accountId: acc.id, multisig: acc.multisig, transactionIndex: intent.transactionIndex, intentId: intent.id, details: { reasons: rec.reasons } });
     }
   }
 
   private async expireIntent(rec: IntentRecord, acc: SmartAccountRecord) {
     const index = BigInt(rec.intent.transactionIndex);
     const p = await readProposal(this.chain, new PublicKey(acc.multisig), index);
-    // Já aprovada pelos dois: não é "vencida", é execução pendente — nunca descongela nem esconde.
+    // Já aprovada pelos dois: não é "vencida", é execução pendente.
     if (p?.status === "Approved") return;
     let sig: string | undefined;
-    if (p?.status === "Active") sig = await this.serverReject(acc, index, `dk1:expired:${rec.intent.intentHash.slice(0, 32)}`);
+    if (p?.status === "Active") sig = await this.serverVote(acc, index, "reject", `dk1:expired:${rec.intent.intentHash.slice(0, 32)}`);
     rec.status = "EXPIRED";
     if (sig) rec.signatures.reject = sig;
     rec.updatedAt = this.now();
@@ -634,15 +610,15 @@ export class CustodyService {
   }
 
   /**
-   * Varre intenções vencidas e as encerra on-chain (um voto de rejeição basta em 2-de-2).
-   * Roda sob o mesmo lock das decisões; um item com erro não impede os outros.
+   * Encerra pendências vencidas: o servidor troca o voto para rejeição (em
+   * 2-de-2 isso mata a proposta). Sob o mesmo lock das decisões.
    */
   async expireDue(accountId: string) {
     return this.withLock(accountId, async () => {
       const acc = await this.account(accountId);
       const now = this.now();
       for (const rec of await this.store.listIntents(accountId)) {
-        if ((rec.status === "AWAITING_CLIENT" || rec.status === "AWAITING_SERVER") && now > rec.intent.expiresAt) {
+        if (rec.status === "AWAITING_CLIENT" && now > rec.intent.expiresAt) {
           try {
             await this.expireIntent(rec, acc);
           } catch (e) {
@@ -652,11 +628,11 @@ export class CustodyService {
       }
       for (const rot of await this.store.listRotations(accountId)) {
         if (TERMINAL.includes(rot.status) || now <= rot.expiresAt) continue;
-        if (["EXECUTING", "VERIFIED"].includes(rot.status)) continue; // em execução: quem resolve é a execução
+        if (["EXECUTING", "VERIFIED"].includes(rot.status)) continue;
         const rec = rot.intentId ? await this.store.getIntent(rot.intentId) : null;
-        if (rec && ["AWAITING_CLIENT", "AWAITING_SERVER", "APPROVED_PENDING_EXECUTION", "EXECUTING"].includes(rec.status)) continue;
+        if (rec && ["AWAITING_CLIENT", "APPROVED_PENDING_EXECUTION"].includes(rec.status)) continue;
         try {
-          await this.finishRotation(rot.id, "EXPIRED", "prazo da rotação venceu");
+          await this.finishRotation(rot.id, "EXPIRED", "prazo da troca venceu");
         } catch (e) {
           this.cfg.log?.(`expirar rotação ${rot.id}: ${String(e)}`);
         }
@@ -665,7 +641,7 @@ export class CustodyService {
   }
 
   // -------------------------------------------------------------------------
-  // rotação (ConfigTransaction)
+  // troca de carteira / chave do servidor (ConfigTransaction)
   // -------------------------------------------------------------------------
 
   private async advanceRotation(id: string, to: RotationStatus, note?: string, patch: Partial<RotationRecord> = {}) {
@@ -684,9 +660,9 @@ export class CustodyService {
     const acc = await this.account(rot.accountId);
     if (rot.intentId) {
       const rec = await this.store.getIntent(rot.intentId);
-      if (rec && !["REJECTED", "EXPIRED", "EXECUTED"].includes(rec.status)) {
+      if (rec && !["REJECTED", "EXPIRED", "EXECUTED", "CANCELLED"].includes(rec.status)) {
         const p = await readProposal(this.chain, new PublicKey(acc.multisig), BigInt(rec.intent.transactionIndex));
-        if (p?.status === "Active") rec.signatures.reject = await this.serverReject(acc, BigInt(rec.intent.transactionIndex), `dk1:rotation-${to.toLowerCase()}`);
+        if (p?.status === "Active") rec.signatures.reject = await this.serverVote(acc, BigInt(rec.intent.transactionIndex), "reject", `dk1:rotation-${to.toLowerCase()}`);
         rec.status = to === "EXPIRED" ? "EXPIRED" : to === "FAILED" ? "FAILED" : "REJECTED";
         await this.store.saveIntent(rec);
       }
@@ -710,66 +686,80 @@ export class CustodyService {
     }
   }
 
-  /** Passo 1 (CLIENT): o app atual pede a troca; o backend emite o desafio para a chave nova. */
-  async requestClientRotation(accountId: string, args: { newDeviceName: string }) {
+  private newRotation(acc: SmartAccountRecord, role: "CLIENT" | "SERVER", note?: string): RotationRecord {
+    const now = this.now();
+    return {
+      id: randomUUID(),
+      accountId: acc.id,
+      role,
+      oldKey: role === "CLIENT" ? acc.roles.client : acc.roles.server,
+      newKey: null,
+      newDeviceName: null,
+      status: "REQUESTED",
+      challenge: randomHex(32),
+      createdAt: now,
+      expiresAt: now + this.rotationTtl,
+      intentId: null,
+      possession: null,
+      history: [{ status: "REQUESTED", at: now, note }],
+    };
+  }
+
+  /** Campos que a carteira nova assina (falta só a chave pública dela). */
+  possessionFieldsFor(rot: RotationRecord, multisig: string) {
+    return {
+      operation: (rot.role === "CLIENT" ? "ROTATE_CLIENT_KEY" : "ROTATE_SERVER_KEY") as PossessionOperation,
+      account: multisig,
+      cluster: this.cfg.cluster,
+      challenge: rot.challenge,
+      expiresAt: rot.expiresAt,
+    };
+  }
+
+  /** Passo 1: a carteira atual (com sessão) pede a troca. */
+  async requestClientRotation(accountId: string, args: { newWalletName?: string } = {}) {
     return this.withLock(accountId, async () => {
       const acc = await this.account(accountId);
       const state = await this.verifiedState(acc);
       const open = (await this.store.listRotations(accountId)).find((r) => !TERMINAL.includes(r.status));
       if (open) deny("ROTATION_IN_PROGRESS", open.id);
       await this.assertNoApprovedPending(acc, state);
-      const now = this.now();
-      const rot: RotationRecord = {
-        id: randomUUID(),
-        accountId,
-        role: "CLIENT",
-        oldKey: acc.roles.client,
-        newKey: null,
-        newDeviceName: args.newDeviceName,
-        status: "REQUESTED",
-        challenge: randomHex(32),
-        createdAt: now,
-        expiresAt: now + this.rotationTtl,
-        intentId: null,
-        possession: null,
-        history: [{ status: "REQUESTED", at: now }],
-      };
+      const rot = { ...this.newRotation(acc, "CLIENT"), newDeviceName: args.newWalletName ?? null };
       await this.store.saveRotation(rot);
-      await this.audit({ type: "CLIENT_KEY_ROTATION_REQUESTED", accountId, multisig: acc.multisig, publicKey: acc.roles.client, details: { rotationId: rot.id, newDeviceName: args.newDeviceName } });
-      return rot;
+      await this.audit({ type: "CLIENT_KEY_ROTATION_REQUESTED", accountId, multisig: acc.multisig, publicKey: acc.roles.client, details: { rotationId: rot.id } });
+      return { rotation: rot, fields: this.possessionFieldsFor(rot, acc.multisig) };
     });
   }
 
-  /** Passo 2 (CLIENT): o dispositivo novo prova posse; o backend congela, drena e propõe. */
-  async proveClientRotationKey(rotationId: string, possession: Signed<unknown>) {
+  /** Passo 2: a carteira nova assina o texto de posse; o backend congela, drena, propõe e o servidor aprova. */
+  async proveClientRotationKey(rotationId: string, proof: WalletProof) {
     const rot0 = await this.store.getRotation(rotationId);
     if (!rot0) deny("ROTATION_NOT_FOUND", rotationId);
     return this.withLock(rot0.accountId, async () => {
       const rot = (await this.store.getRotation(rotationId))!;
       const acc = await this.account(rot.accountId);
-      if (rot.role !== "CLIENT") deny("ROTATION_WRONG_ROLE", "esta rotação não é da chave do cliente");
+      if (rot.role !== "CLIENT") deny("ROTATION_WRONG_ROLE", "esta rotação não é da carteira do cliente");
       if (rot.status !== "REQUESTED") deny("ROTATION_BAD_STATE", rot.status);
       if (this.now() > rot.expiresAt) {
         await this.finishRotation(rot.id, "EXPIRED", "prova chegou depois do prazo");
-        deny("ROTATION_EXPIRED", "rotação expirada");
+        deny("ROTATION_EXPIRED", "troca expirada");
       }
-      let st;
       try {
-        st = await this.checkPossession(possession, { operation: "ROTATE_CLIENT_KEY", multisig: acc.multisig, rotationId, challenge: rot.challenge });
+        await this.checkWalletProof(proof, { operation: "ROTATE_CLIENT_KEY", account: acc.multisig, challenge: rot.challenge, expiresAt: rot.expiresAt });
       } catch (e) {
         await this.audit({ type: "NEW_KEY_PROOF_REFUSED", accountId: acc.id, multisig: acc.multisig, details: { rotationId, error: String(e) } });
         throw e;
       }
       const state = await this.verifiedState(acc);
-      if (state.members.some((m) => m.key === st.newPublicKey)) deny("KEY_ALREADY_MEMBER", "a chave nova já é membro");
-      if (await this.cfg.serverKeys.get(st.newPublicKey)) deny("CLIENT_KEY_IS_SERVER_KEY", "chave do servidor não pode virar chave do cliente");
-      await this.advanceRotation(rotationId, "NEW_KEY_VERIFIED", undefined, { newKey: st.newPublicKey, possession });
-      await this.audit({ type: "NEW_KEY_PROOF_VERIFIED", accountId: acc.id, multisig: acc.multisig, publicKey: st.newPublicKey, details: { rotationId } });
+      if (state.members.some((m) => m.key === proof.publicKey)) deny("KEY_ALREADY_MEMBER", "essa carteira já é membro");
+      if (await this.cfg.serverKeys.get(proof.publicKey)) deny("CLIENT_KEY_IS_SERVER_KEY", "chave do servidor não pode virar carteira do cliente");
+      await this.advanceRotation(rotationId, "NEW_KEY_VERIFIED", undefined, { newKey: proof.publicKey, possession: proof });
+      await this.audit({ type: "NEW_KEY_PROOF_VERIFIED", accountId: acc.id, multisig: acc.multisig, publicKey: proof.publicKey, details: { rotationId } });
       return this.freezeAndPropose(rotationId);
     });
   }
 
-  /** Rotação da chave do servidor: o backend gera a nova, prova posse sozinho, e o app precisa aprovar. */
+  /** Rotação da chave do servidor: o backend gera e prova a nova; a carteira do cliente precisa aprovar. */
   async requestServerRotation(accountId: string, reason: string) {
     return this.withLock(accountId, async () => {
       const acc = await this.account(accountId);
@@ -777,42 +767,16 @@ export class CustodyService {
       const open = (await this.store.listRotations(accountId)).find((r) => !TERMINAL.includes(r.status));
       if (open) deny("ROTATION_IN_PROGRESS", open.id);
       await this.assertNoApprovedPending(acc, state);
-      const now = this.now();
-      const rot: RotationRecord = {
-        id: randomUUID(),
-        accountId,
-        role: "SERVER",
-        oldKey: acc.roles.server,
-        newKey: null,
-        newDeviceName: null,
-        status: "REQUESTED",
-        challenge: randomHex(32),
-        createdAt: now,
-        expiresAt: now + this.rotationTtl,
-        intentId: null,
-        possession: null,
-        history: [{ status: "REQUESTED", at: now, note: reason }],
-      };
+      const rot = this.newRotation(acc, "SERVER", reason);
       await this.store.saveRotation(rot);
       await this.audit({ type: "SERVER_KEY_ROTATION_REQUESTED", accountId, multisig: acc.multisig, publicKey: acc.roles.server, details: { rotationId: rot.id, reason } });
-
       try {
-      const newKey = await this.cfg.serverKeys.create(`server:${acc.userId}:rot:${rot.id}`);
-      const possession = await signStatement(newKey, {
-        domain: "duplachave/possession/v1",
-        operation: "ROTATE_SERVER_KEY",
-        cluster: this.cfg.cluster,
-        multisig: acc.multisig,
-        rotationId: rot.id,
-        newPublicKey: (await newKey.publicKey()).toBase58(),
-        challenge: rot.challenge,
-        nonce: randomHex(16),
-        createdAt: now,
-        expiresAt: now + 300,
-      });
-      const st = await this.checkPossession(possession, { operation: "ROTATE_SERVER_KEY", multisig: acc.multisig, rotationId: rot.id, challenge: rot.challenge });
-      await this.advanceRotation(rot.id, "NEW_KEY_VERIFIED", undefined, { newKey: st.newPublicKey, possession });
-      await this.audit({ type: "NEW_KEY_PROOF_VERIFIED", accountId, multisig: acc.multisig, publicKey: st.newPublicKey, details: { rotationId: rot.id } });
+        const newKey = await this.cfg.serverKeys.create(`server:${acc.userId}:rot:${rot.id}`);
+        const fields = { ...this.possessionFieldsFor(rot, acc.multisig), publicKey: (await newKey.publicKey()).toBase58() };
+        const proof: WalletProof = { ...fields, signature: bs58.encode(await newKey.sign(utf8(possessionMessage(fields)))) };
+        await this.checkWalletProof(proof, { operation: "ROTATE_SERVER_KEY", account: acc.multisig, challenge: rot.challenge, expiresAt: rot.expiresAt });
+        await this.advanceRotation(rot.id, "NEW_KEY_VERIFIED", undefined, { newKey: proof.publicKey, possession: proof });
+        await this.audit({ type: "NEW_KEY_PROOF_VERIFIED", accountId, multisig: acc.multisig, publicKey: proof.publicKey, details: { rotationId: rot.id } });
       } catch (e) {
         await this.finishRotation(rot.id, "FAILED", `pedido do servidor falhou: ${String(e)}`);
         throw e;
@@ -821,11 +785,6 @@ export class CustodyService {
     });
   }
 
-  /**
-   * Congela operações, drena a fila (rejeita propostas ativas; uma vault
-   * transaction já aprovada continua executável depois da rotação, então
-   * aprovadas pendentes bloqueiam) e cria a ConfigTransaction atômica.
-   */
   private async freezeAndPropose(rotationId: string) {
     let created: bigint | null = null;
     try {
@@ -836,13 +795,17 @@ export class CustodyService {
       if (rot && !rot.intentId && created !== null) {
         const acc = await this.account(rot.accountId);
         const p = await readProposal(this.chain, new PublicKey(acc.multisig), created).catch(() => null);
-        if (p?.status === "Active") await this.serverReject(acc, created, "dk1:rotation-failed").catch(() => {});
+        if (p?.status === "Active") await this.serverVote(acc, created, "reject", "dk1:rotation-failed").catch(() => {});
       }
       await this.finishRotation(rotationId, "FAILED", String(e)).catch(() => {});
       throw e;
     }
   }
 
+  /**
+   * Congela, drena a fila (rejeita propostas ativas), cria a ConfigTransaction
+   * atômica [AddMember, RemoveMember], roda a política e o servidor aprova.
+   */
   private async freezeAndProposeInner(rotationId: string, onCreate: (index: bigint) => void) {
     let rot = (await this.store.getRotation(rotationId))!;
     let acc = await this.account(rot.accountId);
@@ -856,10 +819,10 @@ export class CustodyService {
       const p = await readProposal(this.chain, ms, i);
       if (!p) continue;
       if (p.status === "Active") {
-        const sig = await this.serverReject(acc, i, "dk1:rotation-drain");
+        const sig = await this.serverVote(acc, i, "reject", "dk1:rotation-drain");
         await this.audit({ type: "PENDING_PROPOSAL_REJECTED", accountId: acc.id, multisig: acc.multisig, transactionIndex: i.toString(), txSignature: sig, details: { rotationId } });
         const pending = (await this.store.listIntents(acc.id)).find((r) => r.intent.transactionIndex === i.toString());
-        if (pending && pending.status !== "EXECUTED") await this.store.saveIntent({ ...pending, status: "REJECTED", reasons: ["rotação de chave"], updatedAt: this.now() });
+        if (pending && pending.status !== "EXECUTED") await this.store.saveIntent({ ...pending, status: "REJECTED", reasons: ["troca de carteira"], updatedAt: this.now() });
       } else if (p.status === "Approved") {
         deny("APPROVED_PENDING", `proposta ${i} aprovada e não executada: execute ou cancele antes de trocar chaves`);
       }
@@ -893,24 +856,44 @@ export class CustodyService {
         index,
         proposer: await proposer.publicKey(),
         rentPayer: await this.cfg.service.feePayer.publicKey(),
-        actions: rotationActions(new PublicKey(rot.oldKey), new PublicKey(rot.newKey!)),
+        actions: rotationActions(new PublicKey(rot.oldKey), new PublicKey(rot.newKey!), rot.role),
         memo: `dk1:rotation:${intent.intentHash.slice(0, 32)}`,
       }),
       [proposer],
     );
     const onchain = await readTransaction(this.chain, ms, index);
     if (!onchain || onchain.kind !== "CONFIG") deny("TX_NOT_CREATED", "config transaction não apareceu");
-    const diffs = compareIntent(intent, viewConfigTransaction(onchain, state, acc.roles));
+    const view = viewConfigTransaction(onchain, state, acc.roles);
+    const diffs = compareIntent(intent, view);
     if (diffs.length) deny("INTENT_MISMATCH", diffs.join("; "));
 
     const flags = ["SECURITY_CHANGE", rot.role === "CLIENT" ? "CLIENT_KEY_ROTATION" : "SERVER_KEY_ROTATION"];
-    await this.store.saveIntent({ intent, accountId: acc.id, transactionHash: onchain.hash, status: "AWAITING_CLIENT", riskFlags: flags, reasons: [], signatures: { create: sig }, updatedAt: now });
+    const rec: IntentRecord = { intent, accountId: acc.id, transactionHash: onchain.hash, status: "AWAITING_CLIENT", riskFlags: flags, reasons: [], signatures: { create: sig }, updatedAt: now };
+    await this.store.saveIntent(rec);
     await this.store.saveSquadsTransaction({ accountId: acc.id, multisig: acc.multisig, transactionIndex: index.toString(), kind: "CONFIG", address: onchain.address, hash: onchain.hash, intentId: intent.id, createSignature: sig, createdAt: now });
     await this.audit({ type: "TRANSACTION_PROPOSED", accountId: acc.id, multisig: acc.multisig, transactionIndex: index.toString(), intentId: intent.id, intentHash: intent.intentHash, txSignature: sig, details: { rotationId } });
-    const updated = await this.advanceRotation(rotationId, "AWAITING_CLIENT_APPROVAL", undefined, { intentId: intent.id });
+    await this.advanceRotation(rotationId, "AWAITING_SERVER_APPROVAL", undefined, { intentId: intent.id });
+
+    // Política do servidor para mudança de segurança, antes do voto dele.
+    const user = await this.user(acc.userId);
+    const decision = await this.cfg.policy.validate(user, intent, view, {
+      vaultLamports: 0n,
+      verifiedNewKeys: [rot.newKey!],
+      revokedKeys: (await this.store.isRevokedKey(rot.newKey!)) ? [rot.newKey!] : [],
+    });
+    const serverControls = Boolean(await this.cfg.serverKeys.get(rot.newKey!));
+    if (rot.role === "SERVER" && !serverControls) decision.reasons.push("SERVER_KEY_NOT_CONTROLLED");
+    if (rot.role === "CLIENT" && serverControls) decision.reasons.push("CLIENT_KEY_IS_SERVER_KEY");
+    if (decision.reasons.length) deny("POLICY_DENIED", decision.reasons.join("; "));
+
+    const serverSig = await this.serverVote(acc, index, "approve", approvalMemo(intent.intentHash, onchain.hash));
+    rec.signatures.serverApprove = serverSig;
+    await this.store.saveIntent(rec);
+    await this.audit({ type: "SERVER_APPROVED", accountId: acc.id, publicKey: acc.roles.server, multisig: acc.multisig, transactionIndex: index.toString(), intentId: intent.id, intentHash: intent.intentHash, txSignature: serverSig });
+    const updated = await this.advanceRotation(rotationId, "AWAITING_CLIENT_APPROVAL");
     await this.cfg.notifications.keyRotationRequested(
       { userId: acc.userId, accountId: acc.id },
-      { rotationId, role: rot.role, summary: rot.role === "CLIENT" ? "Troca da chave de aprovação" : "O serviço pede atualização da chave de segurança" },
+      { rotationId, role: rot.role, summary: rot.role === "CLIENT" ? "Troca da carteira da conta" : "O serviço pede atualização da chave de segurança" },
     );
     return { rotation: updated, intent };
   }
@@ -928,7 +911,6 @@ export class CustodyService {
     try {
       sig = await sendInstructions(this.chain, [executeConfigIx(ms, index, await executor.publicKey(), await this.cfg.service.feePayer.publicKey())], [this.cfg.service.feePayer, executor]);
     } catch (e) {
-      // Aprovada on-chain: continua congelada (a troca ainda pode acontecer). Tentar de novo ou cancelar.
       rec.status = "APPROVED_PENDING_EXECUTION";
       rec.reasons = [`EXECUTION_FAILED: ${e instanceof ChainTxError ? (e.programError ?? e.message) : String(e)}`];
       rec.updatedAt = this.now();
@@ -962,7 +944,7 @@ export class CustodyService {
     let deviceId: string | null = null;
     if (intent.role === "CLIENT") {
       deviceId = randomUUID();
-      await this.store.saveDevice({ id: deviceId, userId: acc.userId, name: rot.newDeviceName ?? "novo dispositivo", publicKey: intent.newKey, createdAt: now, revokedAt: null });
+      await this.store.saveDevice({ id: deviceId, userId: acc.userId, name: rot.newDeviceName ?? "carteira nova", publicKey: intent.newKey, createdAt: now, revokedAt: null });
       if (old?.deviceId) {
         const dev = await this.store.getDevice(old.deviceId);
         if (dev) await this.store.saveDevice({ ...dev, revokedAt: now });
@@ -970,7 +952,7 @@ export class CustodyService {
     } else {
       await this.cfg.serverKeys.retire(intent.oldKey);
     }
-    await this.store.saveMember({ accountId: acc.id, publicKey: intent.newKey, role: intent.role, permissions: 2, status: "ACTIVE", deviceId, createdAt: now, revokedAt: null });
+    await this.store.saveMember({ accountId: acc.id, publicKey: intent.newKey, role: intent.role, permissions: intent.role === "CLIENT" ? CLIENT_MASK : SERVER_MASK, status: "ACTIVE", deviceId, createdAt: now, revokedAt: null });
     await this.store.saveAccount({ ...acc, roles, frozenBy: null });
     await this.advanceRotation(intent.rotationId, "COMPLETED");
     await this.audit({ type: "ROTATION_COMPLETED", accountId: acc.id, multisig: acc.multisig, publicKey: intent.newKey, intentId: intent.id, txSignature: sig, details: { rotationId: intent.rotationId, role: intent.role } });
@@ -998,14 +980,14 @@ export class CustodyService {
       mode: "STRICT_2_OF_2" as const,
       invariantOk,
       invariantError,
-      vaultLamports: (await this.chain.getBalance(new PublicKey(acc.vault))).toString(),
+      vaultLamports: (await this.chain.getBalance(new PublicKey(acc.vault)).catch(() => 0n)).toString(),
       members: await this.store.listMembers(accountId),
     };
   }
 }
 
 /** createKey só semeia o PDA da multisig e assina a criação; não tem poder nenhum depois. */
-function randomCreateKey(_cluster: Cluster): Signer {
+function randomCreateKey(): Signer {
   const kp = Keypair.generate();
   return {
     publicKey: async () => kp.publicKey,
@@ -1031,6 +1013,6 @@ function previewVaultView(vault: PublicKey, instructions: TransactionInstruction
   };
 }
 
-function toInstruction(r: RawInstruction): TransactionInstruction {
+export function toInstruction(r: RawInstruction): TransactionInstruction {
   return new TransactionInstruction({ programId: r.programId, keys: r.keys, data: Buffer.from(r.data) });
 }

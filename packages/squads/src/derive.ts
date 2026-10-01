@@ -103,8 +103,10 @@ export function viewConfigTransaction(tx: OnchainConfigTransaction, state: Multi
   const actions = normalizeConfigActions(tx.actions);
   let rotation: DerivedRotation | null = null;
   const [add, remove] = actions;
-  if (actions.length === 2 && add?.kind === "AddMember" && remove?.kind === "RemoveMember" && add.mask === 2) {
+  if (actions.length === 2 && add?.kind === "AddMember" && remove?.kind === "RemoveMember") {
     const role = remove.key === roles.client ? "CLIENT" : remove.key === roles.server ? "SERVER" : null;
+    // A chave nova herda exatamente as permissões do papel: cliente 6, servidor 2.
+    if (add.mask !== (role === "CLIENT" ? 6 : 2)) return { kind: "CONFIG", actions, rotation: null };
     const isNew = !state.members.some((m) => m.key === add.key);
     if (role && isNew) rotation = { role, oldKey: remove.key, newKey: add.key };
   }

@@ -70,6 +70,7 @@ const app = await buildServer({
   sessionSecret,
   adminToken,
   feePayer: feePayer.toBase58(),
+  signAsFeePayer: (m) => service.feePayer.sign(m),
   airdrop: cfg.SOLANA_CLUSTER === "localnet" ? airdrop : undefined,
   log: true,
 });

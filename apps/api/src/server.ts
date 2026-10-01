@@ -1,13 +1,12 @@
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import rateLimit from "@fastify/rate-limit";
-import { randomUUID } from "node:crypto";
-import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
+import { LAMPORTS_PER_SOL, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { z } from "zod";
 import { SecurityError } from "@duplachave/shared";
-import { randomHex, verifyStatement } from "@duplachave/crypto";
+import { verifyEd25519, type WalletProof } from "@duplachave/crypto";
 import type { CustodyService, Store, ChallengeStore, IntentRecord } from "@duplachave/custody";
 import { renderIntent } from "@duplachave/custody";
-import type { Chain } from "@duplachave/solana";
+import { type Chain, ChainTxError, parseInstruction } from "@duplachave/solana";
 import { issueSession, readSession, type Session } from "./session";
 
 export type ApiDeps = {
@@ -18,13 +17,14 @@ export type ApiDeps = {
   sessionSecret: string;
   adminToken: string | null;
   feePayer: string;
+  /** Assina como pagador de taxas (depósito vindo da carteira). */
+  signAsFeePayer: (message: Uint8Array) => Promise<Uint8Array>;
   /** Só em localnet: airdrop para testar. */
   airdrop?: (address: PublicKey, lamports: number) => Promise<void>;
   now?: () => number;
   log?: boolean;
 };
 
-const signed = z.object({ statement: z.record(z.string(), z.unknown()), signature: z.string() });
 const pubkey = z.string().refine((s) => {
   try {
     new PublicKey(s);
@@ -33,6 +33,8 @@ const pubkey = z.string().refine((s) => {
     return false;
   }
 }, "chave pública inválida");
+const signature = z.string().min(64).max(100);
+const txB64 = z.string().min(100).max(4096);
 
 /** Converte "1,5" ou "1.5" SOL em lamports, sem float. */
 export function solToLamports(input: string): string {
@@ -59,9 +61,9 @@ export async function buildServer(d: ApiDeps) {
     const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
     const s = readSession(d.sessionSecret, token, now());
     if (!s) throw Object.assign(new Error("sessão inválida"), { statusCode: 401 });
-    // Sessão de chave revogada morre junto com a chave.
+    // Sessão de carteira substituída morre junto com ela.
     const acc = await d.store.getAccount(s.acc);
-    if (!acc || acc.roles.client !== s.key) throw Object.assign(new Error("sessão de chave que não é mais a CLIENT atual"), { statusCode: 401 });
+    if (!acc || acc.roles.client !== s.key) throw Object.assign(new Error("sessão de uma carteira que não é mais a da conta"), { statusCode: 401 });
     return s;
   };
   const ownAccount = async (req: FastifyRequest, accountId: string) => {
@@ -69,61 +71,49 @@ export async function buildServer(d: ApiDeps) {
     if (s.acc !== accountId) throw Object.assign(new Error("conta de outro usuário"), { statusCode: 403 });
     return s;
   };
-  const view = async (rec: IntentRecord) => ({
-    ...rec,
-    display: renderIntent(rec.intent, { riskFlags: rec.riskFlags }),
-  });
+  const ownIntent = async (req: FastifyRequest, id: string) => {
+    const rec = await d.store.getIntent(id);
+    if (!rec) throw new SecurityError("INTENT_NOT_FOUND", id);
+    await ownAccount(req, rec.accountId);
+    return rec;
+  };
+  const view = (rec: IntentRecord) => ({ ...rec, display: renderIntent(rec.intent, { riskFlags: rec.riskFlags }) });
+  const tokenFor = (acc: { userId: string; id: string; roles: { client: string } }) =>
+    issueSession(d.sessionSecret, { sub: acc.userId, acc: acc.id, key: acc.roles.client, exp: now() + 12 * 3600 });
 
   app.get("/healthz", async () => ({ ok: true }));
 
   // A RPC que o app usa para conferir NÃO vem daqui: é fixada no build do app.
-  // Se viesse da API, um backend comprometido apontaria o app para uma RPC falsa.
-  app.get("/v1/config", async () => ({
-    cluster: d.cluster,
-    feePayer: d.feePayer,
-    mode: "STRICT_2_OF_2",
-    devTools: Boolean(d.airdrop),
-  }));
+  app.get("/v1/config", async () => ({ cluster: d.cluster, feePayer: d.feePayer, mode: "STRICT_2_OF_2", devTools: Boolean(d.airdrop) }));
 
   // ---------------------------------------------------------------- cadastro
   // Cadastro cria multisig paga pelo serviço: limite apertado por IP (produção: convite/captcha + cota).
   const enrollLimit = { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } };
+
+  /** Devolve o texto exato que a carteira vai assinar (e mostrar na janela dela). */
   app.post("/v1/enrollment/challenge", enrollLimit, async (req) => {
-    // Sempre um usuário novo: vincular contas a um usuário existente exige
-    // autenticação dele, o que esta versão ainda não tem.
-    const userId = randomUUID();
-    const c = await d.custody.createChallenge("ENROLL_CLIENT_KEY", userId);
-    return { userId, challengeId: c.id, challenge: c.challenge, expiresAt: c.expiresAt, cluster: d.cluster };
+    const { publicKey } = z.object({ publicKey: pubkey }).parse(req.body);
+    const c = await d.custody.createChallenge("ENROLL_CLIENT_KEY", publicKey);
+    return { challengeId: c.id, message: c.message, expiresAt: c.expiresAt };
   });
 
   app.post("/v1/enrollment", enrollLimit, async (req) => {
-    const body = z.object({ userId: z.string().uuid(), userName: z.string().max(80).optional(), deviceName: z.string().min(1).max(60), challengeId: z.string().uuid(), possession: signed }).parse(req.body);
-    const { account, deviceId } = await d.custody.enroll(body);
-    const token = issueSession(d.sessionSecret, { sub: account.userId, acc: account.id, key: account.roles.client, exp: now() + 12 * 3600 });
-    return { account, deviceId, token };
+    const body = z.object({ challengeId: z.string().uuid(), publicKey: pubkey, signature, walletName: z.string().min(1).max(40) }).parse(req.body);
+    const { account } = await d.custody.enroll(body);
+    return { account, token: tokenFor(account) };
   });
 
   // ---------------------------------------------------------------- sessão
   app.post("/v1/auth/challenge", async (req) => {
     const { publicKey } = z.object({ publicKey: pubkey }).parse(req.body);
     const c = await d.custody.createChallenge("AUTH", publicKey);
-    return { challengeId: c.id, challenge: c.challenge, expiresAt: c.expiresAt, cluster: d.cluster };
+    return { challengeId: c.id, message: c.message, expiresAt: c.expiresAt };
   });
 
   app.post("/v1/auth/verify", async (req) => {
-    const body = z.object({ challengeId: z.string().uuid(), signed }).parse(req.body);
-    const ch = await d.store.takeChallenge(body.challengeId);
-    if (!ch || ch.purpose !== "AUTH" || ch.expiresAt < now()) throw new SecurityError("CHALLENGE_INVALID", "desafio inválido");
-    const st = z.object({ domain: z.literal("duplachave/auth/v1"), challenge: z.literal(ch.challenge), publicKey: z.literal(ch.subject), cluster: z.literal(d.cluster) }).passthrough().safeParse(body.signed.statement);
-    if (!st.success) throw new SecurityError("AUTH_STATEMENT_INVALID", st.error.message);
-    if (!verifyStatement(body.signed, new PublicKey(ch.subject))) throw new SecurityError("BAD_SIGNATURE", "assinatura inválida");
-    const acc = await d.store.findAccountByClientKey(ch.subject);
-    if (!acc) {
-      if (await d.store.isRevokedKey(ch.subject)) throw new SecurityError("KEY_REVOKED", "esta chave foi substituída e não volta a valer");
-      throw new SecurityError("NOT_A_CLIENT_KEY", "chave não é a CLIENT atual de nenhuma conta");
-    }
-    const token = issueSession(d.sessionSecret, { sub: acc.userId, acc: acc.id, key: ch.subject, exp: now() + 12 * 3600 });
-    return { token, account: acc };
+    const body = z.object({ challengeId: z.string().uuid(), publicKey: pubkey, signature }).parse(req.body);
+    const acc = await d.custody.login(body);
+    return { token: tokenFor(acc), account: acc };
   });
 
   // ---------------------------------------------------------------- conta
@@ -140,91 +130,111 @@ export async function buildServer(d: ApiDeps) {
     return { events: await d.store.listAudit(id) };
   });
 
+  /**
+   * Depósito vindo da carteira: só aceita UMA transferência de SOL da carteira
+   * da conta para o Vault dela. O serviço paga a taxa.
+   */
+  app.post("/v1/accounts/:id/deposit", async (req) => {
+    const { id } = req.params as { id: string };
+    await ownAccount(req, id);
+    const { transaction } = z.object({ transaction: txB64 }).parse(req.body);
+    const acc = (await d.store.getAccount(id))!;
+    const tx = VersionedTransaction.deserialize(Buffer.from(transaction, "base64"));
+    if (tx.message.addressTableLookups.length) throw new SecurityError("ALT_IN_TX", "lookup table não é aceita");
+    const msg = TransactionMessage.decompile(tx.message);
+    const fee = new PublicKey(d.feePayer);
+    const wallet = new PublicKey(acc.roles.client);
+    if (!msg.payerKey.equals(fee) || msg.instructions.length !== 1) throw new SecurityError("DEPOSIT_NOT_EXPECTED", "depósito deve ser uma transferência paga pelo serviço");
+    const ix = msg.instructions[0]!;
+    const p = parseInstruction({ programId: ix.programId, keys: ix.keys, data: new Uint8Array(ix.data) });
+    if (p.kind !== "SYSTEM_TRANSFER" || p.from !== wallet.toBase58() || p.to !== acc.vault) throw new SecurityError("DEPOSIT_NOT_EXPECTED", "só transferência de SOL da sua carteira para o seu Vault");
+    const signers = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
+    const wi = signers.findIndex((k) => k.equals(wallet));
+    if (signers.length !== 2 || wi < 0 || !verifyEd25519(tx.message.serialize(), tx.signatures[wi]!, wallet)) throw new SecurityError("WALLET_BAD_SIGNATURE", "assinatura da carteira inválida");
+    tx.addSignature(fee, await d.signAsFeePayer(tx.message.serialize()));
+    try {
+      return { signature: await d.chain.sendTransaction(tx), lamports: p.lamports.toString() };
+    } catch (e) {
+      if (e instanceof ChainTxError) throw new SecurityError("DEPOSIT_FAILED", e.programError ?? e.message);
+      throw e;
+    }
+  });
+
   // ---------------------------------------------------------------- operações
   app.post("/v1/accounts/:id/intents", async (req) => {
     const { id } = req.params as { id: string };
     await ownAccount(req, id);
     const body = z.object({ type: z.literal("TRANSFER_SOL"), destination: pubkey, amountSol: z.string().max(32) }).parse(req.body);
-    const rec = await d.custody.createTransferSol(id, { destination: body.destination, amountLamports: solToLamports(body.amountSol) });
-    return view(rec);
+    return view(await d.custody.createTransferSol(id, { destination: body.destination, amountLamports: solToLamports(body.amountSol) }));
   });
 
   app.get("/v1/accounts/:id/intents", async (req) => {
     const { id } = req.params as { id: string };
     await ownAccount(req, id);
     await d.custody.expireDue(id);
-    const list = await d.store.listIntents(id);
-    return { intents: await Promise.all(list.map(view)) };
+    return { intents: (await d.store.listIntents(id)).map(view) };
   });
 
   app.get("/v1/intents/:id", async (req) => {
     const { id } = req.params as { id: string };
-    const rec = await d.store.getIntent(id);
-    if (!rec) throw new SecurityError("INTENT_NOT_FOUND", id);
-    await ownAccount(req, rec.accountId);
-    const approvals = await d.store.listApprovals(id);
-    return { record: await view(rec), approvals, approvalRequest: rec.status === "AWAITING_CLIENT" ? await d.custody.approvalRequest(id) : null };
+    const rec = await ownIntent(req, id);
+    const pending = rec.status === "AWAITING_CLIENT" || rec.status === "APPROVED_PENDING_EXECUTION";
+    return { record: view(rec), approvals: await d.store.listApprovals(id), approvalRequest: pending ? await d.custody.approvalRequest(id) : null };
+  });
+
+  /** Transação assinada pela carteira do cliente (aprovar + executar, aprovar, ou cancelar). */
+  app.post("/v1/intents/:id/sign", async (req) => {
+    const { id } = req.params as { id: string };
+    await ownIntent(req, id);
+    const { transaction } = z.object({ transaction: txB64 }).parse(req.body);
+    return view(await d.custody.submitWalletTransaction(id, transaction));
+  });
+
+  app.post("/v1/intents/:id/reject", async (req) => {
+    const { id } = req.params as { id: string };
+    await ownIntent(req, id);
+    return view(await d.custody.rejectByClient(id));
   });
 
   app.post("/v1/intents/:id/execute", async (req) => {
     const { id } = req.params as { id: string };
-    const rec = await d.store.getIntent(id);
-    if (!rec) throw new SecurityError("INTENT_NOT_FOUND", id);
-    await ownAccount(req, rec.accountId);
+    await ownIntent(req, id);
     return view(await d.custody.retryExecution(id));
   });
 
-  app.get("/v1/intents/:id/cancel-request", async (req) => {
-    const { id } = req.params as { id: string };
-    const rec = await d.store.getIntent(id);
-    if (!rec) throw new SecurityError("INTENT_NOT_FOUND", id);
-    await ownAccount(req, rec.accountId);
-    if (rec.status !== "APPROVED_PENDING_EXECUTION") throw new SecurityError("INTENT_NOT_CANCELLABLE", rec.status);
-    return d.custody.approvalRequest(id);
-  });
-
-  app.post("/v1/intents/:id/decision", async (req) => {
-    const { id } = req.params as { id: string };
-    const rec = await d.store.getIntent(id);
-    if (!rec) throw new SecurityError("INTENT_NOT_FOUND", id);
-    await ownAccount(req, rec.accountId);
-    const body = z.object({ statement: signed, approveTransaction: z.string().max(4096).optional() }).parse(req.body);
-    const out = await d.custody.submitClientDecision(id, body as never);
-    return view(out);
-  });
-
-  // ---------------------------------------------------------------- rotação
+  // ---------------------------------------------------------------- troca de carteira
   app.post("/v1/accounts/:id/rotations/client", async (req) => {
     const { id } = req.params as { id: string };
     await ownAccount(req, id);
-    const { newDeviceName } = z.object({ newDeviceName: z.string().min(1).max(60) }).parse(req.body);
-    const rot = await d.custody.requestClientRotation(id, { newDeviceName });
-    const acc = (await d.store.getAccount(id))!;
-    // O desafio vai no QR/link mostrado pelo aparelho atual: é ele que autoriza o novo a provar posse.
-    return { rotation: rot, pairing: { rotationId: rot.id, challenge: rot.challenge, multisig: acc.multisig, cluster: d.cluster, expiresAt: rot.expiresAt } };
+    const { newWalletName } = z.object({ newWalletName: z.string().min(1).max(40).optional() }).parse(req.body ?? {});
+    const { rotation, fields } = await d.custody.requestClientRotation(id, { newWalletName });
+    // fields inclui o desafio: só a sessão da carteira atual o recebe, uma vez.
+    return { rotationId: rotation.id, status: rotation.status, expiresAt: rotation.expiresAt, fields };
   });
 
-  // Desafio no corpo (não na URL): URLs vão para logs.
-  app.post("/v1/rotations/:id/pairing", async (req) => {
-    const { id } = req.params as { id: string };
-    const { challenge } = z.object({ challenge: z.string().regex(/^[0-9a-f]{64}$/) }).parse(req.body);
-    const rot = await d.store.getRotation(id);
-    if (!rot || rot.role !== "CLIENT" || rot.challenge !== challenge) throw new SecurityError("ROTATION_NOT_FOUND", id);
-    const acc = (await d.store.getAccount(rot.accountId))!;
-    return { rotationId: rot.id, status: rot.status, role: rot.role, newKey: rot.newKey, multisig: acc.multisig, cluster: d.cluster, expiresAt: rot.expiresAt, newDeviceName: rot.newDeviceName };
-  });
-
+  /** A carteira nova prova posse (o app está logado com a carteira atual da mesma conta). */
   app.post("/v1/rotations/:id/proof", async (req) => {
     const { id } = req.params as { id: string };
-    const { possession } = z.object({ possession: signed }).parse(req.body);
-    const out = await d.custody.proveClientRotationKey(id, possession);
-    return out;
+    const rot = await d.store.getRotation(id);
+    if (!rot) throw new SecurityError("ROTATION_NOT_FOUND", id);
+    await ownAccount(req, rot.accountId);
+    const proof = z
+      .object({
+        operation: z.literal("ROTATE_CLIENT_KEY"),
+        publicKey: pubkey,
+        account: z.string(),
+        cluster: z.string(),
+        challenge: z.string().regex(/^[0-9a-f]{64}$/),
+        expiresAt: z.number().int(),
+        signature,
+      })
+      .parse((req.body as { proof?: unknown })?.proof);
+    return d.custody.proveClientRotationKey(id, proof as WalletProof);
   });
 
   app.get("/v1/accounts/:id/rotations", async (req) => {
     const { id } = req.params as { id: string };
     await ownAccount(req, id);
-    // Sem o desafio: ele só sai uma vez, na resposta de quem pediu a troca.
     const list = await d.store.listRotations(id);
     return { rotations: list.map(({ challenge: _c, possession: _p, ...r }) => r) };
   });
@@ -244,18 +254,16 @@ export async function buildServer(d: ApiDeps) {
       await d.airdrop!(new PublicKey(address), Math.round(sol * LAMPORTS_PER_SOL));
       return { ok: true };
     });
-    // Atalho de dev para o pedido de rotação do servidor (continua exigindo o app).
+    // Atalho de dev para o pedido de rotação do servidor (continua exigindo a carteira do cliente).
     app.post("/v1/dev/accounts/:id/rotations/server", async (req) => {
       const { id } = req.params as { id: string };
       await ownAccount(req, id);
       return d.custody.requestServerRotation(id, "rotação programada (simulada)");
     });
-    // Simula um ataque de servidor malicioso para ver o app recusar (só dev).
+    // Simula um servidor malicioso para ver o app recusar (só dev).
     app.get("/v1/dev/intents/:id/tampered", async (req) => {
       const { id } = req.params as { id: string };
-      const rec = await d.store.getIntent(id);
-      if (!rec) throw new SecurityError("INTENT_NOT_FOUND", id);
-      await ownAccount(req, rec.accountId);
+      await ownIntent(req, id);
       const request = await d.custody.approvalRequest(id);
       const { sealIntent, intentBody } = await import("@duplachave/shared");
       if (request.intent.type !== "TRANSFER_SOL") return request;
@@ -265,6 +273,6 @@ export async function buildServer(d: ApiDeps) {
     });
   }
 
-  void randomHex;
+  void SystemProgram;
   return app;
 }

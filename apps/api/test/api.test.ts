@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { Keypair, LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
-import { DevMemorySigner, randomHex, signStatement } from "@duplachave/crypto";
+import { Keypair, LAMPORTS_PER_SOL, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
+import bs58 from "bs58";
+import { DevMemorySigner, possessionMessage } from "@duplachave/crypto";
 import { DefaultPolicyEngine } from "@duplachave/policy-engine";
-import { CustodyService, DevServerKeyProvider, LogNotificationService, MemoryStore, signClientDecision, signPossession } from "@duplachave/custody";
+import { buildWalletTransaction, CustodyService, DevServerKeyProvider, LogNotificationService, MemoryStore, signAsWallet } from "@duplachave/custody";
 import { LiteSvmChain } from "../../../tests/support/litesvm-chain";
 import { buildServer, solToLamports } from "../src/server";
 
@@ -17,21 +18,32 @@ async function setup() {
   const app = await buildServer({
     custody, store, chain, cluster: "localnet", sessionSecret: "s".repeat(64), adminToken: "admin-token-123456",
     feePayer: (await service.feePayer.publicKey()).toBase58(),
+    signAsFeePayer: (m) => service.feePayer.sign(m),
     airdrop: async (a, l) => chain.airdrop(a, BigInt(l)),
   });
   const call = async (method: "GET" | "POST", url: string, body?: unknown, token?: string, headers: Record<string, string> = {}) => {
     const r = await app.inject({ method, url, payload: body as object, headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers } });
     return { status: r.statusCode, json: r.json() as any };
   };
-  return { chain, app, call, now, store };
+  return { chain, app, call, now, store, service };
 }
 
-async function enroll(t: Awaited<ReturnType<typeof setup>>, device = DevMemorySigner.generate("APP")) {
-  const ch = await t.call("POST", "/v1/enrollment/challenge", {});
-  const possession = await signPossession({ signer: device, operation: "ENROLL_CLIENT_KEY", cluster: "localnet", multisig: "", rotationId: ch.json.challengeId, challenge: ch.json.challenge, now: t.now() });
-  const r = await t.call("POST", "/v1/enrollment", { userId: ch.json.userId, deviceName: "Pixel 9", challengeId: ch.json.challengeId, possession });
+const signText = async (w: DevMemorySigner, text: string) => bs58.encode(await w.sign(new TextEncoder().encode(text)));
+
+/** "Conectar carteira" + assinar o texto de vínculo, como a Phantom faria. */
+async function enroll(t: Awaited<ReturnType<typeof setup>>, wallet = DevMemorySigner.generate("PHANTOM")) {
+  const publicKey = (await wallet.publicKey()).toBase58();
+  const ch = await t.call("POST", "/v1/enrollment/challenge", { publicKey });
+  expect(ch.json.message).toContain("Vincular esta carteira");
+  const r = await t.call("POST", "/v1/enrollment", { challengeId: ch.json.challengeId, publicKey, signature: await signText(wallet, ch.json.message), walletName: "Phantom" });
   expect(r.status).toBe(200);
-  return { device, token: r.json.token as string, account: r.json.account };
+  return { wallet, token: r.json.token as string, account: r.json.account };
+}
+
+async function signIntent(t: Awaited<ReturnType<typeof setup>>, token: string, intentId: string, wallet: DevMemorySigner) {
+  const got = await t.call("GET", `/v1/intents/${intentId}`, undefined, token);
+  const { transaction } = await buildWalletTransaction({ chain: t.chain, request: got.json.approvalRequest, wallet: await wallet.publicKey(), now: t.now() });
+  return t.call("POST", `/v1/intents/${intentId}/sign`, { transaction: await signAsWallet(transaction, wallet) }, token);
 }
 
 describe("API", () => {
@@ -41,47 +53,51 @@ describe("API", () => {
     expect(() => solToLamports("1.000,00")).toThrow();
   });
 
-  it("cadastro → envio → aprovação pelo app → executado", async () => {
+  it("cadastro com a carteira → envio → carteira assina uma vez → executado", async () => {
     const t = await setup();
-    const { device, token, account } = await enroll(t);
+    const { wallet, token, account } = await enroll(t);
     await t.call("POST", "/v1/dev/airdrop", { address: account.vault, sol: 5 });
-    const dest = Keypair.generate().publicKey.toBase58();
-    const created = await t.call("POST", `/v1/accounts/${account.id}/intents`, { type: "TRANSFER_SOL", destination: dest, amountSol: "1,25" }, token);
+    const to = Keypair.generate().publicKey.toBase58();
+    const created = await t.call("POST", `/v1/accounts/${account.id}/intents`, { type: "TRANSFER_SOL", destination: to, amountSol: "1,25" }, token);
     expect(created.status).toBe(200);
     expect(created.json.display.rows[0].value).toBe("1,25 SOL");
-
-    const got = await t.call("GET", `/v1/intents/${created.json.intent.id}`, undefined, token);
-    const payload = await signClientDecision({ chain: t.chain, request: got.json.approvalRequest, signer: device, decision: "APPROVE", now: t.now() });
-    const done = await t.call("POST", `/v1/intents/${created.json.intent.id}/decision`, payload, token);
+    const done = await signIntent(t, token, created.json.intent.id, wallet);
     expect(done.json.status).toBe("EXECUTED");
-    expect(await t.chain.getBalance(new PublicKey(dest))).toBe(1_250_000_000n);
+    expect(await t.chain.getBalance(new PublicKey(to))).toBe(1_250_000_000n);
   });
 
-  it("sessão não substitui assinatura: decisão com assinatura de outra chave é recusada", async () => {
+  it("sessão não substitui assinatura: transação assinada por outra chave é recusada", async () => {
     const t = await setup();
     const { token, account } = await enroll(t);
     await t.call("POST", "/v1/dev/airdrop", { address: account.vault, sol: 5 });
     const created = await t.call("POST", `/v1/accounts/${account.id}/intents`, { type: "TRANSFER_SOL", destination: Keypair.generate().publicKey.toBase58(), amountSol: "1" }, token);
-    const got = await t.call("GET", `/v1/intents/${created.json.intent.id}`, undefined, token);
     const intruder = DevMemorySigner.generate("X");
-    await expect(signClientDecision({ chain: t.chain, request: got.json.approvalRequest, signer: intruder, decision: "APPROVE", now: t.now() })).rejects.toThrow(/NOT_A_VOTER/);
-    // Mesmo forjando a declaração com o campo signer certo, a assinatura não confere.
-    const st = { domain: "duplachave/approval/v1", decision: "APPROVE", cluster: "localnet", multisig: account.multisig, transactionIndex: created.json.intent.transactionIndex, transactionKind: "VAULT", intentId: created.json.intent.id, intentHash: created.json.intent.intentHash, transactionHash: created.json.transactionHash, signer: account.roles.client, nonce: randomHex(16), createdAt: t.now(), expiresAt: t.now() + 60 };
-    const forged = await signStatement(intruder, st);
-    const r = await t.call("POST", `/v1/intents/${created.json.intent.id}/decision`, { statement: forged }, token);
-    expect(r.json.error).toBe("BAD_SIGNATURE");
+    const got = await t.call("GET", `/v1/intents/${created.json.intent.id}`, undefined, token);
+    await expect(buildWalletTransaction({ chain: t.chain, request: got.json.approvalRequest, wallet: await intruder.publicKey(), now: t.now() })).rejects.toThrow(/NOT_A_VOTER/);
+    const r = await signIntent(t, token, created.json.intent.id, intruder).catch(() => null);
+    expect(r).toBeNull();
   });
 
-  it("/v1/config não indica RPC ao app (o app fixa a dele no build)", async () => {
+  it("depósito da carteira para o Vault: só aceita transferência da carteira da conta para o Vault dela", async () => {
     const t = await setup();
-    const r = await t.call("GET", "/v1/config");
-    expect(r.json.rpcUrl).toBeUndefined();
+    const { wallet, token, account } = await enroll(t);
+    const pk = await wallet.publicKey();
+    t.chain.airdrop(pk, 3n * BigInt(LAMPORTS_PER_SOL));
+    const mk = async (to: PublicKey) => {
+      const msg = new TransactionMessage({ payerKey: await t.service.feePayer.publicKey(), recentBlockhash: await t.chain.getLatestBlockhash(), instructions: [SystemProgram.transfer({ fromPubkey: pk, toPubkey: to, lamports: BigInt(LAMPORTS_PER_SOL) })] }).compileToV0Message();
+      return signAsWallet(new VersionedTransaction(msg), wallet);
+    };
+    expect((await t.call("POST", `/v1/accounts/${account.id}/deposit`, { transaction: await mk(Keypair.generate().publicKey) }, token)).json.error).toBe("DEPOSIT_NOT_EXPECTED");
+    const ok = await t.call("POST", `/v1/accounts/${account.id}/deposit`, { transaction: await mk(new PublicKey(account.vault)) }, token);
+    expect(ok.status).toBe(200);
+    expect(await t.chain.getBalance(new PublicKey(account.vault))).toBe(BigInt(LAMPORTS_PER_SOL));
   });
 
-  it("lista de rotações não expõe o desafio", async () => {
+  it("/v1/config não indica RPC ao app; lista de rotações não expõe o desafio", async () => {
     const t = await setup();
+    expect((await t.call("GET", "/v1/config")).json.rpcUrl).toBeUndefined();
     const { token, account } = await enroll(t);
-    await t.call("POST", `/v1/accounts/${account.id}/rotations/client`, { newDeviceName: "x" }, token);
+    await t.call("POST", `/v1/accounts/${account.id}/rotations/client`, {}, token);
     const list = await t.call("GET", `/v1/accounts/${account.id}/rotations`, undefined, token);
     expect(list.json.rotations[0].challenge).toBeUndefined();
   });
@@ -92,45 +108,37 @@ describe("API", () => {
     const b = await enroll(t);
     expect((await t.call("GET", `/v1/accounts/${a.account.id}/security`)).status).toBe(401);
     expect((await t.call("GET", `/v1/accounts/${a.account.id}/security`, undefined, b.token)).status).toBe(403);
-    const ok = await t.call("GET", `/v1/accounts/${a.account.id}/security`, undefined, a.token);
-    expect(ok.json.invariantOk).toBe(true);
+    expect((await t.call("GET", `/v1/accounts/${a.account.id}/security`, undefined, a.token)).json.invariantOk).toBe(true);
   });
 
-  it("troca de aparelho pela API: pareamento, prova, aprovação do antigo; sessão antiga morre", async () => {
+  it("troca de carteira pela API: a nova prova posse, a atual aprova; sessão antiga morre e a nova entra", async () => {
     const t = await setup();
-    const { device, token, account } = await enroll(t);
-    const rot = await t.call("POST", `/v1/accounts/${account.id}/rotations/client`, { newDeviceName: "Galaxy S26" }, token);
-    const { rotationId, challenge, multisig } = rot.json.pairing;
-
-    // Aparelho novo, só com o QR.
-    const pairing = await t.call("POST", `/v1/rotations/${rotationId}/pairing`, { challenge });
-    expect(pairing.json.status).toBe("REQUESTED");
-    const fresh = DevMemorySigner.generate("NEW");
-    const proof = await t.call("POST", `/v1/rotations/${rotationId}/proof`, { possession: await signPossession({ signer: fresh, operation: "ROTATE_CLIENT_KEY", cluster: "localnet", multisig, rotationId, challenge, now: t.now() }) });
+    const { wallet, token, account } = await enroll(t);
+    const rot = await t.call("POST", `/v1/accounts/${account.id}/rotations/client`, { newWalletName: "Backpack" }, token);
+    const next = DevMemorySigner.generate("BACKPACK");
+    const nextPk = (await next.publicKey()).toBase58();
+    const fields = { ...rot.json.fields, publicKey: nextPk };
+    const proof = await t.call("POST", `/v1/rotations/${rot.json.rotationId}/proof`, { proof: { ...fields, signature: await signText(next, possessionMessage(fields)) } }, token);
     expect(proof.status).toBe(200);
+    expect((await signIntent(t, token, proof.json.intent.id, wallet)).json.status).toBe("EXECUTED");
 
-    // Aparelho antigo aprova.
-    const intentId = proof.json.intent.id;
-    const got = await t.call("GET", `/v1/intents/${intentId}`, undefined, token);
-    const payload = await signClientDecision({ chain: t.chain, request: got.json.approvalRequest, signer: device, decision: "APPROVE", now: t.now() });
-    expect((await t.call("POST", `/v1/intents/${intentId}/decision`, payload, token)).json.status).toBe("EXECUTED");
-
-    // Sessão do aparelho antigo não vale mais; o novo entra assinando um desafio.
     expect((await t.call("GET", `/v1/accounts/${account.id}/security`, undefined, token)).status).toBe(401);
-    const pk = (await fresh.publicKey()).toBase58();
-    const ch = await t.call("POST", "/v1/auth/challenge", { publicKey: pk });
-    const login = await t.call("POST", "/v1/auth/verify", { challengeId: ch.json.challengeId, signed: await signStatement(fresh, { domain: "duplachave/auth/v1", challenge: ch.json.challenge, publicKey: pk, cluster: "localnet", nonce: randomHex(16), createdAt: t.now() }) });
+    const ch = await t.call("POST", "/v1/auth/challenge", { publicKey: nextPk });
+    const login = await t.call("POST", "/v1/auth/verify", { challengeId: ch.json.challengeId, publicKey: nextPk, signature: await signText(next, ch.json.message) });
     expect(login.status).toBe(200);
-    expect((await t.call("GET", `/v1/accounts/${account.id}/security`, undefined, login.json.token)).json.account.roles.client).toBe(pk);
+    expect((await t.call("GET", `/v1/accounts/${account.id}/security`, undefined, login.json.token)).json.account.roles.client).toBe(nextPk);
+
+    const old = await t.call("POST", "/v1/auth/challenge", { publicKey: (await wallet.publicKey()).toBase58() });
+    const denied = await t.call("POST", "/v1/auth/verify", { challengeId: old.json.challengeId, publicKey: (await wallet.publicKey()).toBase58(), signature: await signText(wallet, old.json.message) });
+    expect(denied.json.error).toBe("KEY_REVOKED");
   });
 
-  it("rotação do servidor só com token de admin, e ainda depende do app", async () => {
+  it("rotação do servidor só com token de admin, e ainda depende da carteira", async () => {
     const t = await setup();
     const { token, account } = await enroll(t);
     expect((await t.call("POST", `/v1/admin/accounts/${account.id}/rotations/server`, { reason: "x" })).status).toBe(401);
     const r = await t.call("POST", `/v1/admin/accounts/${account.id}/rotations/server`, { reason: "trimestral" }, undefined, { "x-admin-token": "admin-token-123456" });
     expect(r.json.rotation.status).toBe("AWAITING_CLIENT_APPROVAL");
-    const sec = await t.call("GET", `/v1/accounts/${account.id}/security`, undefined, token);
-    expect(sec.json.account.frozenBy).toBe(r.json.rotation.id);
+    expect((await t.call("GET", `/v1/accounts/${account.id}/security`, undefined, token)).json.account.frozenBy).toBe(r.json.rotation.id);
   });
 });
