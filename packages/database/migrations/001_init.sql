@@ -169,3 +169,17 @@ BEGIN
 END $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS audit_log_append_only ON audit_log;
 CREATE TRIGGER audit_log_append_only BEFORE UPDATE OR DELETE ON audit_log FOR EACH ROW EXECUTE FUNCTION audit_log_append_only();
+
+-- Biometria (passkey/WebAuthn) por aparelho.
+CREATE TABLE IF NOT EXISTS passkeys (
+  id           text PRIMARY KEY,
+  account_id   text NOT NULL REFERENCES smart_accounts(id),
+  public_key   text NOT NULL,
+  counter      bigint NOT NULL,
+  rp_id        text NOT NULL,
+  device_name  text NOT NULL,
+  created_at   bigint NOT NULL,
+  active_at    bigint NOT NULL,
+  revoked_at   bigint
+);
+CREATE INDEX IF NOT EXISTS passkeys_account ON passkeys(account_id);

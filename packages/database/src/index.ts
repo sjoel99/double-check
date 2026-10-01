@@ -5,6 +5,7 @@ import type {
   AuditEvent,
   AuditInput,
   ChallengeRecord,
+  PasskeyRecord,
   ChallengeStore,
   DeviceRecord,
   IntentRecord,
@@ -258,6 +259,29 @@ export class PgStore implements Store, ChallengeStore {
     const { rows } = await this.db.query<Record<string, unknown>>(`DELETE FROM challenges WHERE id = $1 RETURNING *`, [id]);
     const r = rows[0];
     return r ? { id: r.id as string, purpose: r.purpose as ChallengeRecord["purpose"], subject: r.subject as string, challenge: r.challenge as string, expiresAt: Number(r.expires_at) } : null;
+  }
+
+  // biometria -----------------------------------------------------------------
+  async savePasskey(p: PasskeyRecord) {
+    await this.db.query(
+      `INSERT INTO passkeys (id, account_id, public_key, counter, rp_id, device_name, created_at, active_at, revoked_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (id) DO UPDATE SET counter = EXCLUDED.counter, active_at = EXCLUDED.active_at, revoked_at = EXCLUDED.revoked_at`,
+      [p.id, p.accountId, p.publicKey, p.counter, p.rpId, p.deviceName, p.createdAt, p.activeAt, p.revokedAt],
+    );
+  }
+  async listPasskeys(accountId: string) {
+    const { rows } = await this.db.query<Record<string, unknown>>(`SELECT * FROM passkeys WHERE account_id = $1 ORDER BY created_at`, [accountId]);
+    return rows.map((r) => ({
+      id: r.id as string,
+      accountId: r.account_id as string,
+      publicKey: r.public_key as string,
+      counter: Number(r.counter),
+      rpId: r.rp_id as string,
+      deviceName: r.device_name as string,
+      createdAt: Number(r.created_at),
+      activeAt: Number(r.active_at),
+      revokedAt: r.revoked_at === null ? null : Number(r.revoked_at),
+    }));
   }
 
   // evidências ----------------------------------------------------------------

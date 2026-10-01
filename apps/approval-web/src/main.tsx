@@ -10,13 +10,15 @@ import { Deposit, Home } from "./screens/home";
 import { IntentScreen, Send } from "./screens/intent";
 import { Activity, RotateWallet, Security } from "./screens/security";
 import { Welcome } from "./screens/welcome";
-import { PhoneSimulator } from "./screens/phone";
+import { MobileHandoff } from "./screens/handoff";
+import { PasskeySetup } from "./screens/passkey";
 
 function Router() {
   const { route, session } = useApp();
   const [path, query = ""] = route.split("?");
-  if (path === "/phone") return <PhoneSimulator url={new URLSearchParams(query).get("u") ?? ""} />;
+  if (path?.startsWith("/m/")) return <MobileHandoff key={path} token={path.slice(3)} />;
   if (!session) return <Welcome />;
+  if (path === "/passkey") return <PasskeySetup then={new URLSearchParams(query).get("then") ?? "/"} />;
   if (path === "/send") return <Send />;
   if (path === "/deposit") return <Deposit />;
   if (path?.startsWith("/intent/")) return <IntentScreen key={path} id={path.slice("/intent/".length)} />;

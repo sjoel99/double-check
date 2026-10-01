@@ -1,5 +1,8 @@
 import { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { verifyEnrollmentTransaction } from "@duplachave/custody/src/client";
+import { passkeyBindingMessage } from "@duplachave/crypto";
+import { createDefaultAuthorizationCache, createDefaultChainSelector, createDefaultWalletNotFoundHandler, registerMwa } from "@solana-mobile/wallet-standard-mobile";
+import { type BiometricConfirm, challengeForText, confirmPasskey, createPasskey, deviceName } from "./lib/passkey";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Chain } from "@duplachave/solana";
 import type { Cluster } from "@duplachave/shared";
@@ -29,6 +32,8 @@ type Ctx = {
   go: (path: string) => void;
   toast: (msg: string) => void;
   initiatedHere: (rotationId: string) => boolean;
+  /** Janela da biometria de teste (localnet). */
+  biometric: BiometricConfirm;
   dev: { malicious: boolean; setMalicious: (v: boolean) => void };
 };
 
@@ -64,6 +69,20 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
     if (config.devTools) {
       registerWallet(makeDevWallet("Carteira de teste A", () => devConfirm.current) as unknown as StandardWallet);
       registerWallet(makeDevWallet("Carteira de teste B", () => devConfirm.current) as unknown as StandardWallet);
+    }
+    // No Android, a Phantom do celular entra pelo Mobile Wallet Adapter (a página chama o app da carteira).
+    if (/Android/i.test(navigator.userAgent) && config.cluster !== "localnet") {
+      try {
+        registerMwa({
+          appIdentity: { name: "Dupla Chave", uri: location.origin, icon: "icon.svg" },
+          authorizationCache: createDefaultAuthorizationCache(),
+          chains: [config.cluster === "devnet" ? "solana:devnet" : "solana:mainnet"],
+          chainSelector: createDefaultChainSelector(),
+          onWalletNotFound: createDefaultWalletNotFoundHandler(),
+        });
+      } catch (e) {
+        console.warn("MWA indisponível", e);
+      }
     }
     return stop;
   }, [config.devTools]);
@@ -111,6 +130,7 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
       toastTimer.current = window.setTimeout(() => setToast(null), 4200);
     },
     initiatedHere: (rotationId) => Boolean(session?.myRotations.includes(rotationId)),
+    biometric: (text) => devConfirm.current({ walletName: "Biometria de teste", kind: "biometric", text }),
     dev: { malicious, setMalicious },
   };
 
@@ -148,7 +168,7 @@ function DevWalletSheet({ req, onDone }: { req: ConfirmReq; onDone: (ok: boolean
           <div className="grow">
             <div style={{ fontWeight: 600 }}>{req.walletName}</div>
             <div className="muted" style={{ fontSize: 12 }}>
-              {req.kind === "message" ? "Pedido de assinatura de mensagem" : "Pedido de assinatura de transação"}
+              {req.kind === "message" ? "Pedido de assinatura de mensagem" : req.kind === "biometric" ? "Confirmação por biometria (digital, rosto)" : "Pedido de assinatura de transação"}
             </div>
           </div>
           <span className="pill">localnet</span>
@@ -159,11 +179,11 @@ function DevWalletSheet({ req, onDone }: { req: ConfirmReq; onDone: (ok: boolean
             Recusar
           </button>
           <button type="button" className="btn primary" style={{ flex: 1 }} onClick={() => onDone(true)}>
-            Assinar
+            {req.kind === "biometric" ? "Confirmar" : "Assinar"}
           </button>
         </div>
         <div className="subtle" style={{ fontSize: 11, textAlign: "center" }}>
-          Carteira de teste do ambiente local. Com a Phantom, esta janela é a da própria Phantom.
+          {req.kind === "biometric" ? "Biometria de teste do ambiente local. No celular, é a digital ou o rosto do próprio aparelho." : "Carteira de teste do ambiente local. Com a Phantom, esta janela é a da própria Phantom."}
         </div>
       </div>
     </div>
@@ -175,7 +195,7 @@ function DevWalletSheet({ req, onDone }: { req: ConfirmReq; onDone: (ok: boolean
  * custo); se não, assina e paga a criação da conta 2-de-2 (~0,003 SOL), depois
  * de o app conferir a transação.
  */
-export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: string) => void): Promise<Session> {
+export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: string) => void): Promise<Session & { created?: boolean }> {
   const publicKey = c.publicKey;
   const status = await api<{ enrolled: boolean; revoked: boolean }>("GET", `/v1/wallets/${publicKey}`, undefined, { auth: false });
   if (status.revoked && !status.enrolled) throw new Error("Esta carteira foi substituída em uma conta e não volta a valer. Use outra carteira.");
@@ -202,7 +222,38 @@ export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: st
   const r = await api("POST", "/v1/enrollment/submit", { enrollmentId: p.enrollmentId, transaction: signed }, { auth: false });
   const s: Session = { token: r.token, accountId: r.account.id, walletName: c.name, publicKey, myRotations: [], via: "extension" };
   await ctx.setSession(s);
-  return s;
+  return { ...s, created: true };
+}
+
+/**
+ * Ativa a biometria deste aparelho: cria a passkey, a carteira da conta assina
+ * o texto de vínculo e, se já houver outra biometria ativa, ela aprova (sem
+ * aprovação, a nova espera o prazo de segurança antes de valer).
+ */
+export async function activatePasskey(ctx: Ctx, c: ConnectedWallet, onStep: (s: string) => void): Promise<{ status: "ACTIVE" | "PENDING"; activeAt: number }> {
+  const s = ctx.session!;
+  const device = deviceName();
+  const sec = await api<{ account: { multisig: string } }>("GET", `/v1/accounts/${s.accountId}/security`);
+  const o = await api("POST", `/v1/accounts/${s.accountId}/passkeys/options`, { deviceName: device });
+  onStep("Confirme a biometria deste aparelho…");
+  const response = await createPasskey(o.options, { devTools: ctx.config.devTools, confirm: ctx.biometric });
+  const tag = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(response.id))))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 16);
+  const text = passkeyBindingMessage({ publicKey: s.publicKey, account: sec.account.multisig, cluster: ctx.config.cluster, credential: tag, device, challenge: o.options.challenge });
+  onStep(`Assine o vínculo na ${c.name}…`);
+  const walletSignature = await c.signMessage(text);
+  let approval = null;
+  if (!o.firstPasskey && o.existing.length) {
+    try {
+      onStep("Aprove com uma biometria que já está ativa nesta conta…");
+      approval = await confirmPasskey(await challengeForText(text), o.existing, { devTools: ctx.config.devTools, confirm: ctx.biometric, what: "Aprovar a biometria nova deste aparelho" });
+    } catch {
+      approval = null; // sem aprovação: a nova espera o prazo
+    }
+  }
+  return api("POST", `/v1/accounts/${s.accountId}/passkeys`, { challengeId: o.challengeId, response, walletSignature, approval });
 }
 
 export function errorText(e: unknown): string {
@@ -210,6 +261,7 @@ export function errorText(e: unknown): string {
   const m = (e as Error)?.message ?? String(e);
   if (/User rejected|rejected the request|recusad/i.test(m)) return "Assinatura recusada na carteira.";
   if (/insufficient|Attempt to debit an account but found no record/i.test(m)) return "Sua carteira não tem SOL suficiente para a taxa.";
+  if (/NotAllowedError|The operation either timed out or was not allowed|biometria recusada/i.test(m)) return "Biometria cancelada.";
   return m;
 }
 

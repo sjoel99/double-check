@@ -7,7 +7,7 @@ import { kvGet, kvSet } from "./storage";
  * exportável, no IndexedDB. Antes de assinar, pede confirmação numa janela
  * parecida com a de uma carteira.
  */
-export type DevConfirm = (req: { walletName: string; kind: "message" | "transaction"; text: string }) => Promise<boolean>;
+export type DevConfirm = (req: { walletName: string; kind: "message" | "transaction" | "biometric"; text: string }) => Promise<boolean>;
 
 const ICON =
   "data:image/svg+xml," +

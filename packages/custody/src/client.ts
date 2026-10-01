@@ -9,18 +9,22 @@ import { atomicConfigInstructions, atomicVaultInstructions, innerVaultInstructio
 const utf8ToBytes = (s: string) => new TextEncoder().encode(s);
 
 /**
- * O que o backend entrega ao app para a carteira assinar: a intenção e a
- * transação atômica (criar + voto do serviço + voto da carteira + executar +
- * fechar), já assinada pelo serviço e pelo proponente. A carteira paga a taxa
- * e assina por último. Nada disso é confiável até `reviewPrepared`.
+ * O que o backend entrega ao app: a intenção e a transação atômica (criar +
+ * voto do serviço + voto da carteira + executar + fechar), ainda SEM as
+ * assinaturas do serviço. Fluxo: o app confere (`reviewPrepared`), a
+ * biometria confirma os bytes, o serviço assina (`authorize`), o app confere
+ * as assinaturas (`verifyAuthorized`) e a carteira assina por último e paga.
+ * Nada disso é confiável até ser conferido.
  */
 export type ApprovalRequest = {
   intent: TransactionIntent;
   riskFlags: string[];
-  /** Transação parcialmente assinada (base64). */
+  /** Transação sem assinaturas (base64). */
   transaction: string;
   /** Rotação: a prova de posse assinada pela chave nova. O app confere a assinatura. */
   possession?: WalletProof | null;
+  /** Biometrias ativas da conta (para o app pedir a certa). */
+  passkeys?: { id: string; rpId: string }[];
 };
 
 export const MAX_INTENT_TTL = 60 * 60;
@@ -86,7 +90,7 @@ export function verifyRotationProof(request: ApprovalRequest): void {
   if (!verifyWalletProof(p)) deny("ROTATION_PROOF_INVALID", "assinatura da prova não é da chave nova");
 }
 
-export type Review = { transaction: VersionedTransaction; state: MultisigState };
+export type Review = { transaction: VersionedTransaction; state: MultisigState; roles: AtomicRoles; message: Uint8Array };
 
 const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((x, i) => x === b[i]);
 
@@ -100,9 +104,9 @@ function decodeTransaction(b64: string): VersionedTransaction {
 
 /**
  * Conferência do lado do app, com a RPC fixada no build (nunca indicada pelo
- * backend): a multisig está no modelo 2-de-2, e a transação que a carteira vai
- * assinar é, byte a byte, a que o app monta sozinho a partir da intenção
- * exibida e do estado da chain. O serviço já assinou exatamente esses bytes.
+ * backend): a multisig está no modelo 2-de-2, e a transação é, byte a byte, a
+ * que o app monta sozinho a partir da intenção exibida e do estado da chain.
+ * Só depois disso o app pede a biometria sobre esses bytes.
  */
 export async function reviewPrepared(
   chain: Chain,
@@ -128,14 +132,24 @@ export async function reviewPrepared(
   const expected = compileAtomic(atomicInstructionsFor(intent, roles, state), wallet, tx.message.recentBlockhash);
   const bytes = tx.message.serialize();
   if (!sameBytes(expected.serialize(), bytes)) deny("INTENT_MISMATCH", "a transação recebida é diferente da que o app monta a partir da tela");
+  return { transaction: tx, state, roles, message: bytes };
+}
 
-  // Serviço e proponente assinaram de verdade; senão a carteira assinaria algo que nem entra.
+/**
+ * Depois da biometria: a transação que o serviço devolveu tem exatamente os
+ * bytes conferidos, e as assinaturas do serviço e do proponente são válidas.
+ * Só esta transação vai para a carteira.
+ */
+export function verifyAuthorized(review: Review, transactionB64: string): VersionedTransaction {
+  const tx = decodeTransaction(transactionB64);
+  const bytes = tx.message.serialize();
+  if (!sameBytes(bytes, review.message)) deny("INTENT_MISMATCH", "o serviço devolveu outra transação depois da biometria");
   const signers = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
-  for (const who of [roles.server, roles.proposer]) {
+  for (const who of [review.roles.server, review.roles.proposer]) {
     const i = signers.findIndex((k) => k.equals(who));
     if (i < 0 || !verifyEd25519(bytes, tx.signatures[i]!, who)) deny("SERVER_NOT_SIGNED", "falta a assinatura do serviço");
   }
-  return { transaction: tx, state };
+  return tx;
 }
 
 export type Inspection = { ok: true; review: Review } | { ok: false; code: string; message: string; actual: ParsedInstruction[] | null };

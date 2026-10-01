@@ -63,7 +63,7 @@ export type IntentRecord = {
 };
 
 /** Uma transação preparada: mensagem (base64) e o índice da multisig que ela usa. */
-export type PreparedEntry = { index: string; message: string; preparedAt: number };
+export type PreparedEntry = { index: string; message: string; preparedAt: number; authorizedAt?: number | null };
 
 export const ROTATION_STATUSES = [
   "REQUESTED",
@@ -126,7 +126,10 @@ export type AuditEventType =
   | "ROTATION_REJECTED"
   | "ROTATION_EXPIRED"
   | "ROTATION_FAILED"
-  | "INVARIANT_VIOLATION";
+  | "INVARIANT_VIOLATION"
+  | "PASSKEY_ADDED"
+  | "PASSKEY_PENDING"
+  | "PASSKEY_REFUSED";
 
 export type AuditEvent = {
   seq: number;
@@ -175,6 +178,25 @@ export type SquadsTransactionRecord = {
   createdAt: number;
 };
 
+/**
+ * Biometria (passkey/WebAuthn) de um aparelho. O servidor só assina a parte
+ * dele depois de uma confirmação válida de uma biometria ativa da conta.
+ * `activeAt` no futuro = vinculada sem aprovação de outra biometria: espera o prazo.
+ */
+export type PasskeyRecord = {
+  /** credential id (base64url) */
+  id: string;
+  accountId: string;
+  /** chave pública COSE (base64url) */
+  publicKey: string;
+  counter: number;
+  rpId: string;
+  deviceName: string;
+  createdAt: number;
+  activeAt: number;
+  revokedAt: number | null;
+};
+
 export type SecurityEventRecord = {
   id: string;
   accountId: string | null;
@@ -211,6 +233,9 @@ export interface Store {
   saveIntent(r: IntentRecord): Promise<void>;
   getIntent(id: string): Promise<IntentRecord | null>;
   listIntents(accountId: string): Promise<IntentRecord[]>;
+
+  savePasskey(p: PasskeyRecord): Promise<void>;
+  listPasskeys(accountId: string): Promise<PasskeyRecord[]>;
 
   saveRotation(r: RotationRecord): Promise<void>;
   getRotation(id: string): Promise<RotationRecord | null>;
@@ -287,6 +312,10 @@ export class MemoryStore implements Store, ChallengeStore {
   async getIntent(id: string) { const r = this.intents.get(id); return r ? clone(r) : null; }
   async listIntents(accountId: string) { return [...this.intents.values()].filter((r) => r.accountId === accountId).map(clone); }
 
+  private passkeys = new Map<string, PasskeyRecord>();
+  async savePasskey(p: PasskeyRecord) { this.passkeys.set(p.id, clone(p)); }
+  async listPasskeys(accountId: string) { return [...this.passkeys.values()].filter((p) => p.accountId === accountId).map(clone); }
+
   async saveRotation(r: RotationRecord) { this.rotations.set(r.id, clone(r)); }
   async getRotation(id: string) { const r = this.rotations.get(id); return r ? clone(r) : null; }
   async listRotations(accountId: string) { return [...this.rotations.values()].filter((r) => r.accountId === accountId).map(clone); }
@@ -328,7 +357,7 @@ export class MemoryStore implements Store, ChallengeStore {
 
 export type ChallengeRecord = {
   id: string;
-  purpose: "ENROLL_CLIENT_KEY" | "AUTH";
+  purpose: "ENROLL_CLIENT_KEY" | "AUTH" | "PASSKEY_REG";
   subject: string;
   challenge: string;
   expiresAt: number;

@@ -60,6 +60,24 @@ export function loginMessage(f: { publicKey: string; cluster: string; challenge:
   ].join("\n");
 }
 
+/**
+ * Vínculo de uma biometria (passkey) à conta: a carteira atual assina este
+ * texto, que ela mostra. `credential` = primeiros 16 hex do sha256 do id da credencial.
+ */
+export function passkeyBindingMessage(f: { publicKey: string; account: string; cluster: string; credential: string; device: string; challenge: string }): string {
+  return [
+    "Dupla Chave",
+    "Ativar a confirmação por biometria neste aparelho.",
+    "",
+    `Carteira: ${f.publicKey}`,
+    `Conta: ${f.account}`,
+    `Rede: ${f.cluster}`,
+    `Biometria: ${f.credential}`,
+    `Aparelho: ${f.device}`,
+    `Desafio: ${f.challenge}`,
+  ].join("\n");
+}
+
 export function verifyWalletMessage(message: string, signatureB58: string, publicKey: string): boolean {
   let sig: Uint8Array;
   try {

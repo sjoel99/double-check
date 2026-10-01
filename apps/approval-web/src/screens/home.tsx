@@ -6,6 +6,7 @@ import { now, sendSigned, short, sol } from "../lib/chain";
 import { verifyAccountOnChain } from "@duplachave/custody/src/client";
 import { Icon, Logo } from "../icons";
 import QRCode from "qrcode";
+import { usePasskeys } from "./passkey";
 
 export type AccountView = {
   account: { id: string; multisig: string; vault: string; roles: { client: string; server: string; executor: string; proposer: string }; frozenBy: string | null };
@@ -123,6 +124,7 @@ export function Home() {
   const pending = intents.filter((i) => i.status === "AWAITING_CLIENT" || i.status === "APPROVED_PENDING_EXECUTION");
   const recent = intents.filter((i) => !pending.includes(i)).slice(0, 5);
   const s = ctx.session!;
+  const passkeys = usePasskeys();
 
   return (
     <>
@@ -190,6 +192,15 @@ export function Home() {
             <Icon name="arrowdown" /> Depositar
           </button>
         </div>
+
+        {passkeys.list !== null && !passkeys.active && s.via !== "phone" && (
+          <button type="button" className="banner warn" style={{ textAlign: "left", cursor: "pointer", border: 0 }} onClick={() => ctx.go("/passkey")}>
+            <Icon name="finger" size={18} color="#F2B33D" />
+            <div>
+              {passkeys.pending ? <b>Biometria aguardando o prazo de segurança.</b> : <b>Ative a biometria deste aparelho.</b>} Sem ela, o serviço não assina nenhuma transação. <u>Abrir</u>
+            </div>
+          </button>
+        )}
 
         {acc && BigInt(acc.walletLamports) < WALLET_NEEDS && (
           <div className="banner warn">

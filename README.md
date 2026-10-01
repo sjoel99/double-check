@@ -28,18 +28,16 @@ Quem garante isso é o programa da Squads. Backend, banco e app podem falhar sem
 
 **Transação**
 1. O cliente pede o envio no app. O serviço confere a política e simula; nada vai para a chain.
-2. O serviço prepara a transação atômica e assina a parte dele.
+2. O serviço prepara a transação atômica (ainda sem assinar).
 3. O app remonta a transação sozinho, a partir do que mostra na tela, e compara byte a byte.
-4. O cliente assina **uma vez** na carteira, que paga a taxa. Se algo falhar, nada acontece na Solana.
+4. **Biometria:** o app pede a digital ou o rosto do aparelho (passkey) sobre esses bytes exatos. Só então o serviço assina a parte dele.
+5. O cliente assina **uma vez** na carteira, que paga a taxa. Se algo falhar, nada acontece na Solana.
+
+A biometria é ativada uma vez por aparelho: a carteira assina um texto vinculando a passkey à conta. Uma biometria nova precisa da aprovação de uma já ativa; sem isso, espera 48 h antes de valer.
 
 ## Pelo celular (QR)
 
-Em qualquer ponto que precise de assinatura, o app mostra um QR do **Solana Pay**. A Phantom ou a Solflare do celular lê o código, busca a transação no nosso servidor e mostra a mensagem (por exemplo "Aprovar e executar #3: Enviar 2,5 SOL · Destino 9xQe…"). Depois a carteira assina, paga e **envia ela mesma**. O backend acha a transação na chain, confere que é exatamente a preparada, e o computador segue sozinho.
-
-O Solana Pay não tem assinatura de mensagem. Por isso, pelo celular:
-- **Cadastro:** um memo de vínculo assinado pela carteira, na mesma transação que cria a multisig (atômico).
-- **Entrada:** um memo de entrada (0,000005 SOL).
-- **Prova da carteira nova (na troca):** um memo com o texto de posse, pago pela carteira nova, que precisa de 0,000005 SOL. A prova guardada é a mensagem da transação + a assinatura da carteira, e qualquer um confere offline.
+O QR do computador abre **o nosso app** no navegador do celular. Ali o app confere a transação, pede a biometria do celular e só então chama a Phantom, pelo Mobile Wallet Adapter (Android). A Phantom assina e o computador segue sozinho. Entrar e provar a carteira nova são assinaturas de texto, sem custo.
 
 ### Testar com o seu celular (devnet)
 
@@ -48,22 +46,24 @@ pnpm dev:devnet
 ```
 
 O script:
-- sobe um túnel HTTPS (cloudflared) para a API, porque o celular exige HTTPS;
+- sobe um túnel HTTPS (cloudflared) para o app, porque o celular e a biometria exigem HTTPS;
 - sobe um Postgres em Docker e chaves persistentes;
 - aponta tudo para a devnet.
 
 Quem paga é a sua Phantom: ela precisa de SOL de devnet (https://faucet.solana.com; 0,05 SOL dá para muitos testes).
 
-Na Phantom do celular, ative o modo devnet: Configurações → Configurações de desenvolvedor → Modo testnet → Solana Devnet. Depois, no computador, abra http://127.0.0.1:5173 e use **Usar a carteira do celular**.
+Na Phantom do celular, ative o modo devnet: Configurações → Configurações de desenvolvedor → Modo testnet → Solana Devnet. No computador, abra o endereço do túnel que o script imprime (ou http://localhost:5173). O 127.0.0.1 não serve para biometria.
 
-Em localnet (`pnpm dev`), o botão **Abrir no celular de teste** abre uma aba que faz o papel da carteira do celular. Assim dá para testar o caminho do QR sem aparelho.
+A biometria fica presa ao domínio. O túnel muda a cada `pnpm dev:devnet`, então cada reinício pede uma biometria nova, que vale 5 minutos depois (`DK_PASSKEY_RESET_DELAY`).
+
+Em localnet (`pnpm dev`), há a **biometria de teste** e o botão **Abrir no celular de teste**, que abre o link do QR em outra aba. Assim dá para testar o caminho do QR sem aparelho.
 
 ## Testar agora
 
 ```bash
 cd ~/Desenvolvimento/Pessoal/duplachave
 pnpm install
-pnpm test     # 80 testes, ~4 s, sem rede: o Squads v4 da mainnet rodando no LiteSVM
+pnpm test     # 84 testes, ~4 s, sem rede: o Squads v4 da mainnet rodando no LiteSVM
 pnpm dev      # surfpool offline (Squads v4 das fixtures) + API :8787 + app :5173
 ```
 
@@ -71,9 +71,9 @@ Abra **http://127.0.0.1:5173**.
 
 ### Roteiro (5 minutos)
 
-1. **Escolha a carteira.** Em localnet há duas **Carteiras de teste** (A e B) que imitam a janela da Phantom: dá para testar sem extensão e sem SOL de verdade. O app pede SOL de teste para ela, prepara a criação da conta e a carteira assina (pagando ~0,003 SOL).
+1. **Escolha a carteira.** Em localnet há duas **Carteiras de teste** (A e B) que imitam a janela da Phantom: dá para testar sem extensão e sem SOL de verdade. O app pede SOL de teste para ela, prepara a criação da conta e a carteira assina (pagando ~0,003 SOL). Em seguida, **ative a biometria de teste**: confirme a janela da biometria e a carteira assina o vínculo.
 2. **Depositar:** toque em **Depositar** e informe o valor. A carteira assina e paga a transferência para o Vault, e o app envia. Também dá para usar "10 SOL no Vault" direto.
-3. **Enviar:** cole um endereço de carteira e o valor, depois toque em **Revisar**. A tela mostra "Conferido: a carteira vai assinar exatamente isto…". **Assinar** abre a carteira uma vez e a transação executa; a carteira paga 0,000015 SOL.
+3. **Enviar:** cole um endereço de carteira e o valor, depois toque em **Revisar**. A tela mostra "Conferido: a transação faz exatamente isto…". **Confirmar e assinar** pede a biometria, o serviço assina, a carteira abre uma vez e a transação executa; a carteira paga 0,000015 SOL. Em "Ou continuar no celular (QR)" → **Abrir no celular de teste**, a outra aba faz o mesmo papel do celular.
 4. **Servidor malicioso:** marque a opção nas ferramentas de teste e faça outro envio. O servidor mostra 1/10 do valor; o app remonta a transação, vê que não bate, mostra **Transação bloqueada** com o valor real e não pede assinatura.
 5. **Trocar de carteira:** Segurança → Trocar a carteira → Começar → escolha a **Carteira de teste B** e assine o texto. Depois toque em **Revisar e assinar a troca**: a carteira **atual** (A) assina e paga. Por fim, entre com a B (ela precisa de SOL para os próximos envios: "5 SOL na carteira").
 6. **Troca da chave do serviço:** use "Simular pedido de troca da chave do serviço" e assine (ou recuse: nada muda).

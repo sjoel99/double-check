@@ -1,79 +1,100 @@
 import { randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { PublicKey } from "@solana/web3.js";
 import { z } from "zod";
 import { SecurityError } from "@duplachave/shared";
+import type { WalletProof } from "@duplachave/crypto";
 import { type CustodyService, qrLabel, type Store } from "@duplachave/custody";
 
 /**
- * Assinatura pelo celular com Solana Pay "transaction request".
+ * Continuar no celular. O computador mostra um QR com `<URL do app>/#/m/<token>`:
+ * a câmera abre o NOSSO app no navegador do celular, que confere a transação,
+ * pede a biometria e só então chama a carteira (Mobile Wallet Adapter). Antes
+ * era Solana Pay e a carteira recebia a transação direto do servidor, sem
+ * conferência independente (THREAT_MODEL #26).
  *
- * O app mostra um QR com `solana:<URL HTTPS>/pay/<token>`. A carteira do celular:
- *   GET  → { label, icon }
- *   POST { account } → { transaction (paga por ela; o serviço já assinou o que
- *                        precisava), message }
- * e então assina, paga e ENVIA a transação ela mesma. O backend procura a
- * transação na chain pela conta que ela toca e compara os bytes com a
- * preparada. O desktop acompanha por GET /v1/pay/:token.
+ * O token só diz o que abrir; quem assina continua sendo a carteira da conta
+ * (o celular entra com ela) e a biometria. O computador acompanha por GET /v1/pay/:token.
  */
 
 type Kind = "CONNECT" | "SIGN_INTENT" | "ROTATION_PROOF";
 
-type PayRequest = {
+type Handoff = {
   token: string;
   kind: Kind;
-  /** O que a carteira mostra (a Phantom exibe o rótulo, não a mensagem do POST). */
   label: string;
   /** intentId ou rotationId */
   subject: string | null;
   accountId: string | null;
   createdAt: number;
   expiresAt: number;
-  status: "WAITING_SCAN" | "WAITING_SIGNATURE" | "DONE" | "FAILED" | "EXPIRED";
-  wallet: string | null;
+  status: "WAITING" | "DONE" | "FAILED" | "EXPIRED";
   error: string | null;
   result: Record<string, unknown> | null;
-  /** Dados para concluir (transação montada, plano de cadastro…). Nunca sai pela API. */
-  pending: any;
-  attempts: number;
 };
 
-const TTL = 5 * 60;
+const TTL = 10 * 60;
 
 export type PayDeps = {
   custody: CustodyService;
   store: Store;
-  publicUrl: string;
+  /** URL pública do app (HTTPS para o celular de verdade). */
+  appUrl: string;
   issueToken: (acc: { userId: string; id: string; roles: { client: string } }) => string;
   now: () => number;
   ownAccount: (req: FastifyRequest, accountId: string) => Promise<unknown>;
-  log: (m: string) => void;
 };
 
+const proofSchema = z.object({
+  operation: z.literal("ROTATE_CLIENT_KEY"),
+  publicKey: z.string().min(32).max(44),
+  account: z.string(),
+  cluster: z.string(),
+  challenge: z.string().regex(/^[0-9a-f]{64}$/),
+  expiresAt: z.number().int(),
+  signature: z.string().min(64).max(100),
+});
+
 export function registerPay(app: FastifyInstance, d: PayDeps) {
-  const requests = new Map<string, PayRequest>();
-  const base = d.publicUrl.replace(/\/$/, "");
+  const handoffs = new Map<string, Handoff>();
+  const base = d.appUrl.replace(/\/$/, "");
 
   const create = (kind: Kind, subject: string | null, accountId: string | null, label: string) => {
+    for (const [k, h] of handoffs) if (d.now() > h.expiresAt + 600) handoffs.delete(k);
     const token = randomBytes(24).toString("hex");
     const now = d.now();
-    const r: PayRequest = { token, kind, label, subject, accountId, createdAt: now, expiresAt: now + TTL, status: "WAITING_SCAN", wallet: null, error: null, result: null, pending: null, attempts: 0 };
-    requests.set(token, r);
-    const url = `${base}/pay/${token}`;
-    return { token, url, link: `solana:${encodeURIComponent(url)}`, expiresAt: r.expiresAt, https: url.startsWith("https://") };
+    handoffs.set(token, { token, kind, label, subject, accountId, createdAt: now, expiresAt: now + TTL, status: "WAITING", error: null, result: null });
+    const url = `${base}/#/m/${token}`;
+    return { token, url, link: url, expiresAt: now + TTL, https: url.startsWith("https://") };
   };
 
-  const publicView = (r: PayRequest) => ({ status: r.status, kind: r.kind, wallet: r.wallet, error: r.error, result: r.result, expiresAt: r.expiresAt });
+  const get = (token: string) => {
+    const h = handoffs.get(token);
+    if (!h) throw new SecurityError("PAY_NOT_FOUND", "pedido não existe ou expirou; gere outro QR");
+    if (h.status === "WAITING" && d.now() > h.expiresAt) h.status = "EXPIRED";
+    return h;
+  };
 
-  // ------------------------------------------------------------ o desktop cria e acompanha
-  app.post("/v1/pay/connect", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async () => create("CONNECT", null, null, "Dupla Chave · Entrar ou criar sua conta"));
+  /** Para o computador: em assinatura, o estado vem da própria intenção. */
+  const view = async (h: Handoff) => {
+    if (h.kind === "SIGN_INTENT" && h.status === "WAITING") {
+      const rec = await d.store.getIntent(h.subject!);
+      if (rec && rec.status !== "AWAITING_CLIENT") {
+        h.status = "DONE";
+        h.result = { status: rec.status };
+      }
+    }
+    return { status: h.status, kind: h.kind, error: h.error, result: h.result, expiresAt: h.expiresAt };
+  };
+
+  // ------------------------------------------------------------ o computador cria e acompanha
+  app.post("/v1/pay/connect", { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } }, async () => create("CONNECT", null, null, "Entrar ou criar sua conta"));
 
   app.post("/v1/intents/:id/pay", async (req) => {
     const { id } = req.params as { id: string };
     const rec = await d.store.getIntent(id);
     if (!rec) throw new SecurityError("INTENT_NOT_FOUND", id);
     await d.ownAccount(req, rec.accountId);
-    return create("SIGN_INTENT", id, rec.accountId, qrLabel(rec.intent));
+    return create("SIGN_INTENT", id, rec.accountId, qrLabel(rec.intent).replace(/^Dupla Chave · /, ""));
   });
 
   app.post("/v1/rotations/:id/pay-proof", async (req) => {
@@ -81,107 +102,56 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
     const rot = await d.store.getRotation(id);
     if (!rot) throw new SecurityError("ROTATION_NOT_FOUND", id);
     await d.ownAccount(req, rot.accountId);
-    return create("ROTATION_PROOF", id, rot.accountId, "Dupla Chave · Provar que a carteira nova é sua");
+    return create("ROTATION_PROOF", id, rot.accountId, "Provar que a carteira nova é sua");
   });
 
-  /** Quem criou o pedido acompanha. O token é segredo do desktop (só aparece no QR que ele mostra). */
-  app.get("/v1/pay/:token", async (req) => {
-    const { token } = req.params as { token: string };
-    const r = requests.get(token);
-    if (!r) throw new SecurityError("PAY_NOT_FOUND", "pedido não existe ou expirou");
-    return publicView(r);
-  });
+  /** Quem criou o pedido acompanha. O token é segredo do QR que o computador mostra. */
+  app.get("/v1/pay/:token", async (req) => view(get((req.params as { token: string }).token)));
 
-  // ------------------------------------------------------------ o celular (Solana Pay)
-  app.get("/pay/icon.svg", async (_req, reply) => {
-    reply.header("content-type", "image/svg+xml").header("cache-control", "public, max-age=86400");
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="18" fill="#14171C"/><circle cx="25" cy="32" r="10" fill="none" stroke="#C8F169" stroke-width="4"/><circle cx="39" cy="32" r="10" fill="none" stroke="#EDEEF0" stroke-width="4"/></svg>`;
-  });
-
-  app.get("/pay/:token", async (req) => {
-    const { token } = req.params as { token: string };
-    const r = requests.get(token);
-    if (!r || r.status === "EXPIRED") throw new SecurityError("PAY_NOT_FOUND", "pedido não existe ou expirou");
-    return { label: r.label, icon: `${base}/pay/icon.svg` };
-  });
-
-  app.post("/pay/:token", async (req) => {
-    const { token } = req.params as { token: string };
-    const { account } = z.object({ account: z.string() }).parse(req.body);
-    new PublicKey(account);
-    const r = requests.get(token);
-    if (!r || d.now() > r.expiresAt) throw new SecurityError("PAY_NOT_FOUND", "pedido não existe ou expirou");
-    if (r.status === "DONE" || r.status === "FAILED") throw new SecurityError("PAY_USED", "este QR já foi usado");
-    if (++r.attempts > 5) throw new SecurityError("PAY_TOO_MANY", "tentativas demais; gere outro QR");
-    // Um QR, uma carteira: depois do primeiro POST, outra carteira não troca o pedido.
-    if (r.wallet && r.wallet !== account) throw new SecurityError("PAY_WRONG_WALLET", "este QR já está com outra carteira");
-
-    let built: { transaction: string; message: string };
-    if (r.kind === "CONNECT") {
-      const tx = await d.custody.phoneConnectTransaction(account, token);
-      r.pending = tx;
-      built = tx;
-    } else if (r.kind === "SIGN_INTENT") {
-      const tx = await d.custody.phoneSignTransaction(r.subject!, account);
-      built = tx;
-    } else {
-      const tx = await d.custody.phoneRotationProofTransaction(r.subject!, account);
-      r.pending = tx;
-      built = tx;
+  // ------------------------------------------------------------ o celular (nosso app)
+  /** O que o celular vai fazer. Na troca, inclui os campos do texto de posse (o token é o segredo). */
+  app.get("/v1/handoff/:token", async (req) => {
+    const h = get((req.params as { token: string }).token);
+    if (h.status !== "WAITING") throw new SecurityError("PAY_USED", "este QR já foi usado ou expirou");
+    let fields: unknown = null;
+    if (h.kind === "ROTATION_PROOF") {
+      const rot = await d.store.getRotation(h.subject!);
+      const acc = rot && (await d.store.getAccount(rot.accountId));
+      if (!rot || !acc || rot.status !== "REQUESTED") throw new SecurityError("ROTATION_BAD_STATE", rot?.status ?? "inexistente");
+      fields = d.custody.possessionFieldsFor(rot, acc.multisig);
     }
-    r.wallet = account;
-    r.status = "WAITING_SIGNATURE";
-    r.error = null;
-    return { transaction: built.transaction, message: built.message };
+    return { kind: h.kind, label: h.label, intentId: h.kind === "SIGN_INTENT" ? h.subject : null, accountId: h.accountId, fields };
   });
 
-  // ------------------------------------------------------------ acompanhamento na chain
-  const tick = async () => {
-    const now = d.now();
-    for (const r of requests.values()) {
-      if (r.status === "DONE" || r.status === "FAILED" || r.status === "EXPIRED") {
-        if (now > r.expiresAt + 600) requests.delete(r.token);
-        continue;
-      }
-      if (now > r.expiresAt + 120) {
-        r.status = "EXPIRED";
-        continue;
-      }
-      if (r.status !== "WAITING_SIGNATURE" || !r.wallet) continue;
-      try {
-        if (r.kind === "CONNECT") {
-          const out = await d.custody.phoneConnectComplete(r.pending, r.wallet);
-          if (!out) continue;
-          r.result = { accountId: out.account.id, created: out.created, sessionToken: d.issueToken(out.account), walletName: "Carteira do celular", publicKey: r.wallet };
-        } else if (r.kind === "SIGN_INTENT") {
-          const out = await d.custody.phoneSignComplete(r.subject!);
-          if (!out) continue;
-          r.result = { status: out.status };
-        } else {
-          const out = await d.custody.phoneRotationProofComplete(r.subject!, r.pending);
-          if (!out) continue;
-          r.result = { intentId: out.intent.id, newKey: r.wallet };
-        }
-        r.status = "DONE";
-      } catch (e) {
-        r.status = "FAILED";
-        r.error = e instanceof SecurityError ? e.message : String(e);
-        d.log(`pay ${r.kind} ${r.token.slice(0, 8)}: ${r.error}`);
-      }
-    }
-  };
-  let running = false;
-  const timer = setInterval(async () => {
-    if (running) return;
-    running = true;
+  /** Entrar pelo celular: o celular já entrou com a carteira; o computador recebe uma sessão da mesma conta. */
+  app.post("/v1/handoff/:token/claim", async (req) => {
+    const h = get((req.params as { token: string }).token);
+    if (h.kind !== "CONNECT" || h.status !== "WAITING") throw new SecurityError("PAY_USED", "este QR já foi usado ou expirou");
+    const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
+    if (!token) throw Object.assign(new Error("entre no celular primeiro"), { statusCode: 401 });
+    const { accountId } = z.object({ accountId: z.string().uuid() }).parse(req.body);
+    await d.ownAccount(req, accountId);
+    const acc = (await d.store.getAccount(accountId))!;
+    h.status = "DONE";
+    h.result = { accountId, sessionToken: d.issueToken(acc), walletName: "Carteira do celular", publicKey: acc.roles.client };
+    return { ok: true };
+  });
+
+  /** A carteira nova (no celular) prova posse; o token autoriza só esta rotação. */
+  app.post("/v1/handoff/:token/proof", async (req) => {
+    const h = get((req.params as { token: string }).token);
+    if (h.kind !== "ROTATION_PROOF" || h.status !== "WAITING") throw new SecurityError("PAY_USED", "este QR já foi usado ou expirou");
+    const proof = proofSchema.parse((req.body as { proof?: unknown })?.proof);
     try {
-      await tick();
-    } finally {
-      running = false;
+      const out = await d.custody.proveClientRotationKey(h.subject!, proof as WalletProof);
+      h.status = "DONE";
+      h.result = { intentId: out.intent.id, newKey: proof.publicKey };
+      return { ok: true };
+    } catch (e) {
+      h.error = e instanceof SecurityError ? e.message : String(e);
+      throw e;
     }
-  }, 1500);
-  timer.unref();
-  app.addHook("onClose", async () => clearInterval(timer));
+  });
 
-  return { requests, tick };
+  return { handoffs };
 }

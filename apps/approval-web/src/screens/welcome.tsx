@@ -3,7 +3,7 @@ import { errorText, loginOrEnroll, useApp } from "../app";
 import { Icon, Logo } from "../icons";
 import type { StandardWallet } from "../lib/wallets";
 import { api } from "../lib/api";
-import { PhoneQr, SCAN_STEPS } from "../components/PhoneQr";
+import { PhoneQr } from "../components/PhoneQr";
 
 const INSTALL = [
   { name: "Phantom", url: "https://phantom.com/download" },
@@ -61,10 +61,10 @@ export function Welcome() {
   const [err, setErr] = useState<string | null>(null);
   const [phone, setPhone] = useState(false);
 
-  const fromPhone = async (r: { sessionToken: string; accountId: string; publicKey: string; created: boolean }) => {
+  const fromPhone = async (r: { sessionToken: string; accountId: string; publicKey: string }) => {
     await ctx.setSession({ token: r.sessionToken, accountId: r.accountId, walletName: "Carteira do celular", publicKey: r.publicKey, myRotations: [], via: "phone" });
     ctx.go("/");
-    ctx.toast(r.created ? "Pronto. Sua conta 2 de 2 foi criada." : "Você entrou pela carteira do celular.");
+    ctx.toast("Você entrou pelo celular. As assinaturas continuam no celular.");
   };
 
   const pick = async (w: StandardWallet) => {
@@ -72,9 +72,9 @@ export function Welcome() {
     try {
       setStep(`Conectando à ${w.name}…`);
       const c = await ctx.connect(w);
-      await loginOrEnroll(ctx, c, setStep);
-      ctx.go("/");
-      ctx.toast("Pronto. Sua conta 2 de 2 está ativa.");
+      const s = await loginOrEnroll(ctx, c, setStep);
+      ctx.go(s.created ? "/passkey" : "/");
+      ctx.toast(s.created ? "Conta 2 de 2 criada. Agora ative a biometria." : "Você entrou.");
     } catch (e) {
       setErr(errorText(e));
     } finally {
@@ -110,8 +110,8 @@ export function Welcome() {
         <div className="card">
           <PhoneQr
             create={() => api("POST", "/v1/pay/connect", {}, { auth: false })}
-            title="Escaneie com a carteira do celular"
-            steps={[...SCAN_STEPS.slice(0, 2), "Confirme: carteira nova cria a conta (~0,003 SOL); com conta, você entra (0,000005 SOL)"]}
+            title="Continue no celular"
+            steps={["Aponte a câmera do celular para o código e abra o link", "No celular, entre com a Phantom (carteira nova cria a conta: ~0,003 SOL)", "Este computador entra na mesma conta"]}
             onDone={fromPhone}
           />
           <button type="button" className="linkbtn" onClick={() => setPhone(false)}>
@@ -125,7 +125,7 @@ export function Welcome() {
           </div>
           <div className="grow">
             <div className="t">Usar a carteira do celular</div>
-            <div className="s">Escaneie um QR com a Phantom ou Solflare</div>
+            <div className="s">Escaneie com a câmera; a Phantom abre pelo app</div>
           </div>
           <Icon name="chev" size={18} color="var(--muted)" />
         </button>

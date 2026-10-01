@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { PublicKey } from "@solana/web3.js";
-import { inspectPrepared, type ApprovalRequest, type Inspection } from "@duplachave/custody/src/client";
+import { inspectPrepared, verifyAuthorized, type ApprovalRequest, type Inspection } from "@duplachave/custody/src/client";
+import { challengeFor, confirmPasskey } from "../lib/passkey";
+import { ApiError } from "../lib/api";
 import { KNOWN_PROGRAM_NAMES } from "@duplachave/solana";
 import { errorText, useApp } from "../app";
 import { api } from "../lib/api";
@@ -100,6 +102,14 @@ export function Send() {
 
 // ---------------------------------------------------------------- Revisar e assinar
 
+/** O que a janela da biometria de teste mostra (no celular de verdade, o sistema mostra o nome do app). */
+function summaryOf(r: ApprovalRequest): string {
+  const i = r.intent;
+  if (i.type === "TRANSFER_SOL") return `Confirmar: enviar ${sol(i.amountLamports, 9)} SOL para ${short(i.destination)}`;
+  if (i.type === "ROTATE_MEMBER") return i.role === "CLIENT" ? `Confirmar: trocar a carteira da conta por ${short(i.newKey)}` : "Confirmar: nova chave do serviço";
+  return "Confirmar transação";
+}
+
 /** Uma transação preparada vale ~60–90 s (blockhash). Passou disso, o app prepara de novo antes de assinar. */
 const PREPARED_FRESH_MS = 40_000;
 
@@ -110,6 +120,7 @@ export function IntentScreen({ id }: { id: string }) {
   const [data, setData] = useState<Loaded | null>(null);
   const [check, setCheck] = useState<Inspection | null>(null);
   const [busy, setBusy] = useState<null | "sign" | "reject">(null);
+  const [stepText, setStepText] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [handedOver, setHandedOver] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
@@ -143,6 +154,12 @@ export function IntentScreen({ id }: { id: string }) {
     void load();
   }, [load]);
 
+  /**
+   * 1. (de novo, se passou do prazo) prepara e confere os bytes;
+   * 2. biometria sobre esses bytes — o desafio é calculado aqui;
+   * 3. o serviço assina; o app confere que é a mesma transação e a assinatura;
+   * 4. a carteira assina por último e paga.
+   */
   const sign = async () => {
     if (!data?.request || !check?.ok) return;
     setErr(null);
@@ -152,6 +169,7 @@ export function IntentScreen({ id }: { id: string }) {
       let review = check.review;
       let request = data.request;
       if (Date.now() - data.preparedAt > PREPARED_FRESH_MS) {
+        setStepText("Conferindo de novo…");
         const again = await prepare();
         setCheck(again.inspection);
         setData({ ...data, request: again.request, preparedAt: Date.now() });
@@ -159,15 +177,26 @@ export function IntentScreen({ id }: { id: string }) {
         review = again.inspection.review;
         request = again.request;
       }
-      const signed = await c.signTransaction(review.transaction);
+      setStepText("Confirme com a biometria…");
+      const allow = (request.passkeys ?? []).filter((p) => p.rpId === location.hostname).map((p) => p.id);
+      if (!allow.length) return ctx.go(`/passkey?then=${encodeURIComponent(`/intent/${id}`)}`);
+      const assertion = await confirmPasskey(await challengeFor(review.message), allow, { devTools: ctx.config.devTools, confirm: ctx.biometric, what: summaryOf(request) });
+      setStepText("O serviço está assinando…");
+      const auth = await api<{ transaction: string }>("POST", `/v1/intents/${id}/authorize`, { message: Buffer.from(review.message).toString("base64"), assertion });
+      const tx = verifyAuthorized(review, auth.transaction);
+      setStepText(`Confirme na ${c.name}…`);
+      const signed = await c.signTransaction(tx);
+      setStepText("Enviando para a Solana…");
       const out = await api<IntentView>("POST", `/v1/intents/${id}/submit`, { transaction: signed });
       const intent = request.intent;
       if (intent.type === "ROTATE_MEMBER" && intent.role === "CLIENT" && out.status === "EXECUTED") return setHandedOver(true);
       await load();
     } catch (e) {
+      if (e instanceof ApiError && e.code === "PASSKEY_REQUIRED") return ctx.go(`/passkey?then=${encodeURIComponent(`/intent/${id}`)}`);
       setErr(errorText(e));
     } finally {
       setBusy(null);
+      setStepText(null);
     }
   };
 
@@ -194,7 +223,7 @@ export function IntentScreen({ id }: { id: string }) {
   const qrSheet = qrOpen && (
     <PhoneQrSheet
       create={() => api("POST", `/v1/intents/${id}/pay`, {})}
-      title={data?.request?.intent.type === "ROTATE_MEMBER" && data.request.intent.role === "CLIENT" ? "Escaneie com a carteira ATUAL" : "Escaneie com a carteira do celular"}
+      title={data?.request?.intent.type === "ROTATE_MEMBER" && data.request.intent.role === "CLIENT" ? "Continue no celular (com a carteira ATUAL)" : "Continue no celular"}
       steps={SCAN_STEPS}
       onDone={phoneDone}
       onClose={() => setQrOpen(false)}
@@ -220,17 +249,22 @@ export function IntentScreen({ id }: { id: string }) {
         </button>
         {viaPhone ? (
           <button type="button" className={primaryClass} disabled={Boolean(busy)} onClick={() => setQrOpen(true)}>
-            <Icon name="phone" color="#0B0D10" sw={2} /> Assinar no celular
+            <Icon name="phone" color="#0B0D10" sw={2} /> Continuar no celular
           </button>
         ) : (
           <button type="button" className={primaryClass} disabled={Boolean(busy)} onClick={sign}>
-            {busy === "sign" ? <span className="spinner" /> : <Icon name="key" color="#0B0D10" sw={2} />}
-            {walletName.length <= 12 ? `Assinar na ${walletName}` : "Assinar na carteira"}
+            {busy === "sign" ? <span className="spinner" /> : <Icon name="finger" color="#0B0D10" sw={2} />}
+            Confirmar e assinar
           </button>
         )}
-        {!viaPhone && (
+        {stepText && (
+          <div className="status" style={{ flexBasis: "100%", justifyContent: "center" }}>
+            <span className="spinner" /> {stepText}
+          </div>
+        )}
+        {!viaPhone && !busy && (
           <button type="button" className="linkbtn" style={{ flexBasis: "100%", padding: "2px 0 0" }} onClick={() => setQrOpen(true)}>
-            Ou assinar no celular (QR)
+            Ou continuar no celular (QR)
           </button>
         )}
       </div>
@@ -241,7 +275,7 @@ export function IntentScreen({ id }: { id: string }) {
     <div className="banner ok">
       <Icon name="shieldcheck" size={18} color="var(--accent)" />
       <div className="grow">
-        Conferido: a carteira vai assinar exatamente isto, e o serviço já conferiu a política e assinou a parte dele.
+        Conferido: a transação faz exatamente isto. O serviço conferiu a política e assina depois da sua biometria.
       </div>
       <div className="mono" style={{ color: "#8fa36b" }}>
         #{intent.transactionIndex}
@@ -290,7 +324,7 @@ export function IntentScreen({ id }: { id: string }) {
         </div>
         <div className="banner info">
           <Icon name="key" size={18} />
-          <div>{viaPhone ? "A carteira do celular" : `A ${walletName}`} assina uma vez: a transação cria, aprova e executa junto. Se algo falhar, nada acontece na Solana.</div>
+          <div>Primeiro a sua biometria confirma exatamente esta transação; só então o serviço assina e {viaPhone ? "a carteira do celular" : `a ${walletName}`} abre para assinar uma vez. Se algo falhar, nada acontece na Solana.</div>
         </div>
         {flags.includes("POSSIBLE_FULL_BALANCE") && (
           <div className="banner warn">

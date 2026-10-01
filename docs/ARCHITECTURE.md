@@ -88,12 +88,14 @@ Cadastros que a carteira não assinou a tempo são descartados, junto com a chav
 2. **Preparar:** `POST /v1/intents/:id/prepare`. Sob o lock da conta, o backend:
    - concilia com a chain;
    - fixa o índice (`transaction_index + 1`) e, se ele mudou, sela a intenção de novo (mesmo id);
-   - roda política e simulação outra vez e **simula a transação atômica inteira** (pega saldo insuficiente na carteira);
-   - assina como serviço e proponente.
-   A transação preparada fica em `IntentRecord.prepared` (lista: pode haver mais de uma válida ao mesmo tempo).
-3. **Conferência no app** (`reviewPrepared`): o app lê a multisig **pela RPC dele** e confere o 2-de-2. Tira da chain o outro votante e o proponente (não do backend). Depois **remonta a transação sozinho** a partir da intenção que mostra na tela e compara os bytes. Também confere as assinaturas do serviço e do proponente. Se algo diverge, mostra "Transação bloqueada" com o que a transação recebida faria de verdade (`inspectPrepared` decodifica a mensagem embutida) e não abre a carteira.
-4. **Assinatura:** a carteira assina **uma vez**. Se a preparação tiver mais de 40 s, o app prepara e confere de novo antes.
-5. **Envio:** `POST /v1/intents/:id/submit`. O backend exige que a mensagem seja uma das preparadas e confere a assinatura da carteira. Então envia e marca EXECUTED.
+   - roda política e simulação outra vez e **simula a transação atômica inteira** (pega saldo insuficiente na carteira).
+   Devolve a transação **sem** as assinaturas do serviço. Ela fica em `IntentRecord.prepared` (lista: pode haver mais de uma válida ao mesmo tempo).
+3. **Conferência no app** (`reviewPrepared`): o app lê a multisig **pela RPC dele** e confere o 2-de-2. Tira da chain o outro votante e o proponente (não do backend). Depois **remonta a transação sozinho** a partir da intenção que mostra na tela e compara os bytes. Se algo diverge, mostra "Transação bloqueada" com o que a transação recebida faria de verdade (`inspectPrepared` decodifica a mensagem embutida) e não pede biometria nem abre a carteira.
+4. **Biometria:** o app pede a passkey do aparelho (digital, rosto) com desafio = `sha256(bytes da mensagem conferida)`, calculado por ele.
+5. **Serviço assina:** `POST /v1/intents/:id/authorize {message, assertion}`. O backend só assina uma mensagem que ele mesmo preparou, ainda dentro da janela, e só com uma confirmação válida de uma passkey **ativa** da conta, com user verification, de uma origem permitida, sobre exatamente esses bytes. Aí assina como serviço e proponente.
+6. **Conferência das assinaturas** (`verifyAuthorized`): mesmos bytes, assinaturas do serviço e do proponente válidas.
+7. **Carteira:** assina **uma vez** e paga. Se a preparação tiver mais de 40 s, o app prepara, confere e pede a biometria de novo.
+8. **Envio:** `POST /v1/intents/:id/submit`. O backend exige que a mensagem seja uma das preparadas e confere a assinatura da carteira. Então envia e marca EXECUTED.
 
 Em mudanças de segurança (troca de carteira ou da chave do serviço), é a mesma coisa com uma ConfigTransaction: `config_transaction_execute` com a carteira atual como membro executor e `config_transaction_accounts_close`. O backend confere o 2-de-2 com a chave nova na chain antes de atualizar o banco.
 
@@ -105,17 +107,27 @@ A chain manda. Uma transação preparada pode entrar sem passar pelo `submit`: o
 
 Uma intenção com transação preparada ainda válida não vence até a janela passar.
 
-## Fluxo pelo celular (Solana Pay)
+## Biometria (passkey)
 
-1. O app pede um QR (`POST /v1/pay/connect`, `/v1/intents/:id/pay` ou `/v1/rotations/:id/pay-proof`) e mostra `solana:<URL HTTPS>/pay/<token>`.
-2. A carteira do celular faz `GET` (rótulo e ícone) e depois `POST { account }`. O backend confere a carteira, monta a transação **paga por ela** (com as assinaturas do serviço e do proponente, quando é uma intenção) e devolve `{ transaction, message }`.
-3. A carteira assina, paga e envia ela mesma. O backend acha a transação na chain pela conta que ela toca e compara os bytes com a preparada:
-   - **intenção:** a transação da Squads no índice;
-   - **cadastro:** a multisig;
-   - **entrada / prova de posse:** a própria carteira.
-4. O computador acompanha por `GET /v1/pay/:token` e segue sozinho. Em cadastro ou entrada, ele recebe a sessão.
+Uma passkey WebAuthn por aparelho, ligada à conta, não à carteira (sobrevive à troca de carteira).
+- **Vincular:** `POST /v1/accounts/:id/passkeys/options` → o aparelho cria a passkey → a **carteira atual assina** um texto com o id da credencial, o aparelho e o desafio (`passkeyBindingMessage`) → `POST /v1/accounts/:id/passkeys`.
+- **A primeira** passkey da conta vale na hora. As seguintes valem na hora se uma passkey ativa aprovar (confirmação sobre `sha256(texto de vínculo)`). Sem aprovação, esperam `DK_PASSKEY_RESET_DELAY` (padrão 48 h) e geram alerta. Assim, quem só tem a carteira não troca a biometria de surpresa.
+- **Domínio:** a passkey fica presa ao domínio em que foi criada (RP ID). `DK_WEBAUTHN_ORIGINS` lista de onde o app pode ser aberto; o domínio público (`DK_PUBLIC_URL`) entra sozinho. Em localnet (127.0.0.1, onde o WebAuthn não funciona) há a "biometria de teste": ES256 do WebCrypto, chave não exportável, com janela de confirmação.
+- **Sem passkey ativa,** o serviço não assina nada (`PASSKEY_REQUIRED`).
 
-O Solana Pay não tem `signMessage`, então entrada e prova de posse viram transações com memo, pagas pela carteira (0,000005 SOL cada). A carteira nova, na troca, precisa desse pouquinho de SOL.
+## Fluxo pelo celular
+
+O QR do computador abre **o nosso app** no celular (`<URL do app>/#/m/<token>`), e não mais a carteira direto (Solana Pay):
+1. O computador pede o QR (`POST /v1/pay/connect`, `/v1/intents/:id/pay` ou `/v1/rotations/:id/pay-proof`).
+2. A câmera abre o link. O celular entra com a carteira: no Android, a Phantom é chamada pelo **Mobile Wallet Adapter**; o login é `signMessage`, sem custo.
+3. **Intenção:** o celular faz o mesmo fluxo do computador (conferência, biometria do celular, serviço assina, carteira assina).
+4. **Entrar:** o celular entra e entrega uma sessão ao computador (`/v1/handoff/:token/claim`).
+5. **Troca:** a carteira nova assina o texto de posse (`signMessage`, sem custo) e o celular envia a prova (`/v1/handoff/:token/proof`).
+6. O computador acompanha por `GET /v1/pay/:token`; numa intenção, o estado vem da própria intenção.
+
+Assim, a transação que a carteira do celular assina é a que o próprio celular conferiu e confirmou com a biometria. O token só diz o que abrir: assinar continua exigindo a carteira da conta e a biometria.
+
+iOS: o Mobile Wallet Adapter é só Android. No iPhone, a alternativa é o deeplink da Phantom (não feito).
 
 ## Decisões de segurança
 
@@ -181,6 +193,19 @@ Os eventos são encadeados por hash. A tabela tem trigger que recusa UPDATE/DELE
 - **Decisão (do produto):** (a), pela fluidez.
 - **Risco residual:** um frontend adulterado pode pedir a assinatura de uma operação que o cliente não quis. Mesmo assim, ela teria passado pela política do serviço (limites, lista de endereços, simulação). O endurecimento (b) é uma troca pequena: um texto com o resumo, verificado pelo backend antes de aceitar a transação. Ver THREAT_MODEL #24.
 
+### D14. Biometria antes da carteira
+
+- **Problema:** pelo celular (Solana Pay), a carteira recebia a transação direto do servidor: nenhuma conferência independente antes de assinar. E não havia segundo fator além da carteira: sessão + carteira roubadas bastavam.
+- **Alternativas:**
+  - (a) Biometria no app antes de o serviço assinar.
+  - (b) O QR abre o nosso app no celular, que confere e só então chama a carteira.
+  - (c) As duas.
+- **Decisão (do produto):** (c).
+- **Trade-offs:**
+  - mais um passo (a biometria) a cada transação;
+  - a passkey presa ao domínio — no `dev:devnet` o túnel muda a cada reinício, e cada domínio novo pede uma biometria nova, que espera o prazo (5 min no devnet);
+  - Mobile Wallet Adapter só no Android.
+
 ### D13. Quem paga (modelo atual)
 
 - **Problema:** o serviço pagava taxa e rent de tudo (cadastro, propostas, votos, execução). Isso custa dinheiro por cliente e cria um alvo: quem consegue sessões consegue gastar o SOL do serviço.
@@ -205,7 +230,9 @@ Os eventos são encadeados por hash. A tabela tem trigger que recusa UPDATE/DELE
 | `DATABASE_URL` | Postgres; sem ela, memória |
 | `DK_SESSION_SECRET`, `DK_ADMIN_TOKEN` | sessão e painel administrativo |
 | `DK_KEY_ENCRYPTION_KEY`, `DK_KEYS_DIR` | "KMS" de desenvolvimento |
-| `DK_PUBLIC_URL` | URL HTTPS que o celular alcança (QR do Solana Pay) |
+| `DK_PUBLIC_URL` | URL HTTPS do app que o celular alcança (QR "continuar no celular"); também vira origem da biometria |
+| `DK_WEBAUTHN_ORIGINS` | origens de onde o app pode ser aberto (biometria presa ao domínio) |
+| `DK_PASSKEY_RESET_DELAY` | segundos que uma biometria nova sem aprovação espera (padrão 172800) |
 | `SURFPOOL_FORK=1` | `pnpm dev` com o surfpool como fork da mainnet (padrão: offline) |
 
 ## Fora desta entrega
@@ -218,4 +245,6 @@ Fica para depois:
 - varredura de spending limits;
 - ancoragem externa da auditoria;
 - o endurecimento D12(b);
+- revogar uma biometria pelo app (hoje só há vincular);
+- deeplink da Phantom para o iPhone;
 - cadastros pendentes sobrevivendo a reinício da API (hoje ficam em memória por ~3 min).

@@ -1,11 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
-import { Keypair, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
+import { Keypair, PublicKey, SystemProgram, TransactionInstruction, VersionedMessage, VersionedTransaction } from "@solana/web3.js";
+import { generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } from "@simplewebauthn/server";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import bs58 from "bs58";
 import { type Cluster, deny, type IntentBody, intentBody, SecurityError, sealIntent, type TransactionIntent, type TransferSolIntent } from "@duplachave/shared";
 import {
+  type AuthenticationJSON,
+  b64url,
+  fromB64url,
   loginMessage,
   MEMO_PROGRAM_ID,
+  passkeyBindingMessage,
   possessionMessage,
   type PossessionOperation,
   randomHex,
@@ -13,6 +18,7 @@ import {
   verifyEd25519,
   verifyWalletMessage,
   verifyWalletProof,
+  type RegistrationJSON,
   type WalletProof,
 } from "@duplachave/crypto";
 import { ChainTxError, type Chain, parseInstruction, programErrorFromLogs, type RawInstruction, SYSTEM_PROGRAM } from "@duplachave/solana";
@@ -33,7 +39,7 @@ import { DEFAULT_POLICY, type PolicyEngine, type User } from "@duplachave/policy
 import { type ApprovalRequest, atomicInstructionsFor, compileAtomic } from "./client";
 import type { ServerKeyProvider, ServiceKeys } from "./keys";
 import type { NotificationService } from "./notifications";
-import type { AuditInput, ChallengeStore, IntentRecord, PreparedEntry, RotationRecord, RotationStatus, SmartAccountRecord, Store } from "./store";
+import type { AuditInput, ChallengeStore, IntentRecord, PasskeyRecord, PreparedEntry, RotationRecord, RotationStatus, SmartAccountRecord, Store } from "./store";
 import { renderIntent } from "./display";
 
 const utf8 = (s: string) => new TextEncoder().encode(s);
@@ -47,8 +53,8 @@ const sha256 = (u: Uint8Array) => createHash("sha256").update(u).digest("hex");
  */
 export const PREPARED_WINDOW = 180;
 
-/** Taxa de uma assinatura na Solana. */
-const SIGNATURE_FEE = 5000n;
+/** Primeiros 16 hex do sha256 do id da credencial: o que a carteira vê no texto de vínculo. */
+export const credentialTag = (credentialId: string) => createHash("sha256").update(credentialId).digest("hex").slice(0, 16);
 
 export type CustodyConfig = {
   cluster: Cluster;
@@ -64,6 +70,12 @@ export type CustodyConfig = {
   squadsTreasury: PublicKey;
   intentTtl?: number;
   rotationTtl?: number;
+  /**
+   * Biometria (passkey). `origins`: de onde o app pode ser aberto (o RP ID é o
+   * host). `resetDelay`: quanto espera uma biometria vinculada sem aprovação de
+   * outra já ativa (padrão 48 h).
+   */
+  passkeys: { origins: string[]; resetDelay?: number };
   log?: (msg: string) => void;
 };
 
@@ -268,10 +280,6 @@ export class CustodyService {
     return new TransactionInstruction({ programId: MEMO_PROGRAM_ID, keys: [{ pubkey: signer, isSigner: true, isWritable: false }], data: Buffer.from(text, "utf8") });
   }
 
-  private async requireFee(wallet: PublicKey, code: string, msg: string) {
-    if ((await this.chain.getBalance(wallet)) < SIGNATURE_FEE) deny(code, msg);
-  }
-
   // -------------------------------------------------------------------------
   // desafios, cadastro e sessão
   // -------------------------------------------------------------------------
@@ -354,18 +362,6 @@ export class CustodyService {
     const { tx } = this.parseSigned(transactionB64, [p.message], p.wallet);
     const sig = await this.sendSigned(tx);
     return this.finishEnrollment(p, sig);
-  }
-
-  /** Cadastro, passo 2 (celular): a carteira enviou sozinha; procura na chain. null = ainda não. */
-  async completeEnrollmentFromChain(enrollmentId: string) {
-    const p = this.enrollments.get(enrollmentId);
-    if (!p) {
-      deny("ENROLLMENT_NOT_FOUND", "cadastro não existe ou expirou");
-    }
-    const landed = await this.findLanded(new PublicKey(p.plan.multisig), [p.message]);
-    if (!landed) return null;
-    if (!landed.ok) deny("WALLET_TX_FAILED", landed.error ?? "a transação falhou");
-    return this.finishEnrollment(p, landed.signature);
   }
 
   private async finishEnrollment(p: PendingEnrollment, sig: string) {
@@ -559,22 +555,173 @@ export class CustodyService {
 
       const wallet = new PublicKey(acc.roles.client);
       const server = await this.serverSigner(acc);
-      const proposer = this.cfg.service.proposer;
-      const roles = { proposer: await proposer.publicKey(), server: await server.publicKey(), wallet };
+      const roles = { proposer: await this.cfg.service.proposer.publicKey(), server: await server.publicKey(), wallet };
       const instructions = atomicInstructionsFor(intent, roles, state);
       await this.simulateWalletPaid(wallet, instructions, "tenha ~0,007 SOL: o depósito das contas volta na mesma transação e o custo real é ~0,000015 SOL");
-      const built = await this.walletPaid(wallet, instructions, [proposer, server]);
+      // Ainda sem a assinatura do serviço: ela só sai depois da biometria (authorizeIntent).
+      const built = await this.walletPaid(wallet, instructions);
 
       const now = this.now();
       const live = (rec.prepared ?? []).filter((e) => e.preparedAt > now - PREPARED_WINDOW);
       rec = { ...rec, intent, riskFlags, transactionHash: sha256(Buffer.from(built.message, "base64")), prepared: [...live, { index: index.toString(), message: built.message, preparedAt: now }], updatedAt: now };
       await this.store.saveIntent(rec);
-      await this.audit({ type: "SERVER_APPROVED", accountId: acc.id, publicKey: acc.roles.server, multisig: acc.multisig, transactionIndex: index.toString(), intentId, intentHash: intent.intentHash, details: { stage: "prepared", riskFlags } });
 
       let possession: WalletProof | null = null;
       if (intent.type === "ROTATE_MEMBER") possession = ((await this.store.getRotation(intent.rotationId))?.possession as WalletProof | null) ?? null;
-      return { intent, riskFlags, transaction: built.transaction, possession };
+      const passkeys = await this.activePasskeys(acc.id);
+      return { intent, riskFlags, transaction: built.transaction, possession, passkeys: passkeys.map((p) => ({ id: p.id, rpId: p.rpId })) };
     });
+  }
+
+  /**
+   * A biometria confirmou exatamente esta transação (o desafio é o sha256 dos
+   * bytes da mensagem): o serviço assina a parte dele — o voto dele — e o
+   * proponente assina a criação. Só para mensagens que o próprio serviço preparou.
+   */
+  async authorizeIntent(intentId: string, args: { message: string; assertion: AuthenticationJSON }) {
+    const first = await this.intentRecord(intentId);
+    return this.withLock(first.accountId, async () => {
+      const rec = await this.intentRecord(intentId);
+      const acc = await this.account(rec.accountId);
+      if (rec.status !== "AWAITING_CLIENT") deny("INTENT_NOT_PENDING", `intenção em ${rec.status}`);
+      if (this.now() > rec.intent.expiresAt) deny("INTENT_EXPIRED", "intenção expirada");
+      const now = this.now();
+      const entries = rec.prepared ?? [];
+      const entry = entries.find((e) => e.message === args.message);
+      if (!entry) deny("TX_NOT_EXPECTED", "esta transação não foi preparada pelo serviço");
+      if (entry.preparedAt <= now - PREPARED_WINDOW) deny("PREPARED_EXPIRED", "a transação preparada venceu; prepare de novo");
+      const bytes = Buffer.from(args.message, "base64");
+      const passkey = await this.verifyAssertion(acc, args.assertion, createHash("sha256").update(bytes).digest());
+
+      const tx = new VersionedTransaction(VersionedMessage.deserialize(bytes));
+      const server = await this.serverSigner(acc);
+      for (const s of [this.cfg.service.proposer, server]) tx.addSignature(await s.publicKey(), await s.sign(tx.message.serialize()));
+      await this.store.saveIntent({ ...rec, prepared: entries.map((e) => (e === entry ? { ...e, authorizedAt: now } : e)), updatedAt: now });
+      await this.audit({
+        type: "SERVER_APPROVED",
+        accountId: acc.id,
+        publicKey: acc.roles.server,
+        multisig: acc.multisig,
+        transactionIndex: entry.index,
+        intentId,
+        intentHash: rec.intent.intentHash,
+        details: { passkey: credentialTag(passkey.id), device: passkey.deviceName, riskFlags: rec.riskFlags },
+      });
+      return { transaction: b64(tx.serialize()) };
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // biometria (passkey / WebAuthn)
+  // -------------------------------------------------------------------------
+
+  private rpIdFor(origin: string | undefined) {
+    if (!origin || !this.cfg.passkeys.origins.includes(origin)) deny("ORIGIN_NOT_ALLOWED", `o app foi aberto de uma origem não permitida (${origin ?? "?"})`);
+    return new URL(origin).hostname;
+  }
+
+  async activePasskeys(accountId: string): Promise<PasskeyRecord[]> {
+    const now = this.now();
+    return (await this.store.listPasskeys(accountId)).filter((p) => p.revokedAt === null && p.activeAt <= now);
+  }
+
+  async listPasskeys(accountId: string) {
+    return this.store.listPasskeys(accountId);
+  }
+
+  /** Confere uma confirmação biométrica de uma passkey ativa da conta sobre o desafio dado. */
+  private async verifyAssertion(acc: SmartAccountRecord, assertion: AuthenticationJSON, challenge: Uint8Array): Promise<PasskeyRecord> {
+    const active = await this.activePasskeys(acc.id);
+    if (!active.length) deny("PASSKEY_REQUIRED", "ative a confirmação por biometria antes de assinar");
+    const cred = active.find((p) => p.id === assertion?.id);
+    if (!cred) deny("PASSKEY_UNKNOWN", "esta biometria não está ativa nesta conta");
+    let verified = false;
+    let newCounter = cred.counter;
+    try {
+      const v = await verifyAuthenticationResponse({
+        response: assertion as never,
+        expectedChallenge: b64url(challenge),
+        expectedOrigin: this.cfg.passkeys.origins,
+        expectedRPID: cred.rpId,
+        credential: { id: cred.id, publicKey: fromB64url(cred.publicKey), counter: cred.counter },
+        requireUserVerification: true,
+      });
+      verified = v.verified;
+      newCounter = v.authenticationInfo.newCounter;
+    } catch (e) {
+      await this.audit({ type: "PASSKEY_REFUSED", accountId: acc.id, details: { passkey: credentialTag(cred.id), error: String(e) } });
+      deny("PASSKEY_INVALID", `confirmação biométrica inválida: ${(e as Error).message}`);
+    }
+    if (!verified) deny("PASSKEY_INVALID", "confirmação biométrica inválida");
+    const updated = { ...cred, counter: newCounter };
+    await this.store.savePasskey(updated);
+    return updated;
+  }
+
+  /** Opções para criar a passkey deste aparelho (navigator.credentials.create). */
+  async passkeyRegistrationOptions(accountId: string, origin: string | undefined, deviceName: string) {
+    const acc = await this.account(accountId);
+    const rpId = this.rpIdFor(origin);
+    const all = await this.store.listPasskeys(acc.id);
+    const options = await generateRegistrationOptions({
+      rpName: "Dupla Chave",
+      rpID: rpId,
+      userName: `${acc.roles.client.slice(0, 4)}…${acc.roles.client.slice(-4)}`,
+      userDisplayName: "Conta Dupla Chave",
+      userID: new TextEncoder().encode(acc.id),
+      attestationType: "none",
+      authenticatorSelection: { residentKey: "preferred", userVerification: "required" },
+      excludeCredentials: all.filter((p) => p.rpId === rpId && p.revokedAt === null).map((p) => ({ id: p.id })),
+      timeout: 120_000,
+    });
+    const id = randomUUID();
+    await this.store.putChallenge({ id, purpose: "PASSKEY_REG", subject: JSON.stringify({ accountId, origin, rpId, deviceName }), challenge: options.challenge, expiresAt: this.now() + 300 });
+    const active = (await this.activePasskeys(acc.id)).filter((p) => p.rpId === rpId);
+    return { challengeId: id, options, existing: active.map((p) => p.id), firstPasskey: all.length === 0 };
+  }
+
+  /**
+   * Vincula a passkey: a carteira atual assina o texto de vínculo. A primeira
+   * vale na hora. As seguintes valem na hora se uma biometria ativa aprovar;
+   * senão esperam `resetDelay` (quem só tem a carteira não troca a biometria de surpresa).
+   */
+  async registerPasskey(accountId: string, args: { challengeId: string; response: RegistrationJSON; walletSignature: string; approval?: AuthenticationJSON | null }) {
+    const ch = await this.store.takeChallenge(args.challengeId);
+    if (!ch || ch.purpose !== "PASSKEY_REG" || ch.expiresAt < this.now()) deny("CHALLENGE_INVALID", "desafio inexistente, usado ou vencido");
+    const ctx = JSON.parse(ch.subject) as { accountId: string; origin: string; rpId: string; deviceName: string };
+    if (ctx.accountId !== accountId) deny("CHALLENGE_INVALID", "desafio de outra conta");
+    const acc = await this.account(accountId);
+    let reg;
+    try {
+      reg = await verifyRegistrationResponse({ response: args.response as never, expectedChallenge: ch.challenge, expectedOrigin: ctx.origin, expectedRPID: ctx.rpId, requireUserVerification: true });
+    } catch (e) {
+      deny("PASSKEY_INVALID", `biometria inválida: ${(e as Error).message}`);
+    }
+    if (!reg.verified || !reg.registrationInfo) deny("PASSKEY_INVALID", "biometria inválida");
+    const cred = reg.registrationInfo.credential;
+    const text = passkeyBindingMessage({ publicKey: acc.roles.client, account: acc.multisig, cluster: this.cfg.cluster, credential: credentialTag(cred.id), device: ctx.deviceName, challenge: ch.challenge });
+    if (!verifyWalletMessage(text, args.walletSignature, acc.roles.client)) deny("BAD_SIGNATURE", "o vínculo não foi assinado pela carteira da conta");
+
+    const now = this.now();
+    const all = await this.store.listPasskeys(acc.id);
+    if (all.some((p) => p.id === cred.id)) deny("PASSKEY_EXISTS", "esta biometria já está vinculada");
+    let activeAt = now;
+    let how: "FIRST" | "APPROVED" | "DELAYED" = "FIRST";
+    if (all.length) {
+      if (args.approval) {
+        await this.verifyAssertion(acc, args.approval, createHash("sha256").update(text).digest());
+        how = "APPROVED";
+      } else {
+        activeAt = now + (this.cfg.passkeys.resetDelay ?? 48 * 3600);
+        how = "DELAYED";
+      }
+    }
+    const rec: PasskeyRecord = { id: cred.id, accountId, publicKey: b64url(cred.publicKey), counter: cred.counter, rpId: ctx.rpId, deviceName: ctx.deviceName, createdAt: now, activeAt, revokedAt: null };
+    await this.store.savePasskey(rec);
+    await this.audit({ type: how === "DELAYED" ? "PASSKEY_PENDING" : "PASSKEY_ADDED", accountId, publicKey: acc.roles.client, details: { passkey: credentialTag(cred.id), device: ctx.deviceName, rpId: ctx.rpId, how, activeAt } });
+    if (how === "DELAYED")
+      await this.cfg.notifications.securityAlert({ userId: acc.userId, accountId }, { code: "PASSKEY_PENDING", message: `Biometria nova (${ctx.deviceName}) vinculada sem aprovação de outra: vale a partir de ${new Date(activeAt * 1000).toISOString()}` });
+    return { passkey: rec, status: activeAt <= now ? ("ACTIVE" as const) : ("PENDING" as const), activeAt };
   }
 
   /** Extensão: recebe a transação assinada pela carteira, confere que é a preparada e envia. */
@@ -619,7 +766,8 @@ export class CustodyService {
 
   /** Alguma das transações preparadas desta intenção entrou na chain? */
   private async landedEntry(acc: SmartAccountRecord, rec: IntentRecord) {
-    const entries = rec.prepared ?? [];
+    // Só as que o serviço assinou podem ter entrado.
+    const entries = (rec.prepared ?? []).filter((e) => e.authorizedAt);
     for (const index of new Set(entries.map((e) => e.index))) {
       const messages = entries.filter((e) => e.index === index).map((e) => e.message);
       const landed = await this.findLanded(transactionPda(new PublicKey(acc.multisig), BigInt(index)), messages);
@@ -696,7 +844,7 @@ export class CustodyService {
 
   /** Ainda pode entrar na chain alguma transação preparada desta intenção? */
   private hasLivePrepared(rec: IntentRecord) {
-    return (rec.prepared ?? []).some((e) => e.preparedAt > this.now() - PREPARED_WINDOW);
+    return (rec.prepared ?? []).some((e) => e.authorizedAt && e.preparedAt > this.now() - PREPARED_WINDOW);
   }
 
   /** O cliente recusa no app. Nada a desfazer na chain: nada foi para lá. */
@@ -957,77 +1105,6 @@ export class CustodyService {
     await this.store.saveAccount({ ...acc, roles, frozenBy: null });
     await force("COMPLETED");
     await this.audit({ type: "ROTATION_COMPLETED", accountId: acc.id, multisig: acc.multisig, publicKey: intent.newKey, intentId: intent.id, txSignature: sig, details: { rotationId: intent.rotationId, role: intent.role } });
-  }
-
-  // -------------------------------------------------------------------------
-  // celular (Solana Pay "transaction request")
-  //
-  // O celular lê um QR, busca a transação aqui, assina e ENVIA ele mesmo,
-  // pagando a taxa. O backend acha a transação na chain pela conta que ela
-  // toca (multisig, transação da Squads ou a própria carteira) e compara os
-  // bytes da mensagem com a preparada. Não há signMessage no Solana Pay:
-  // entrada e prova da carteira nova são transações com um memo assinado.
-  // -------------------------------------------------------------------------
-
-  /**
-   * Entrar pelo celular: se a carteira já tem conta, memo de entrada (custa a
-   * taxa de uma assinatura); se não, o cadastro (memo + criação da multisig).
-   */
-  async phoneConnectTransaction(walletPublicKey: string, challenge: string) {
-    const wallet = new PublicKey(walletPublicKey);
-    const existing = await this.store.findAccountByClientKey(walletPublicKey);
-    if (existing) {
-      await this.requireFee(wallet, "WALLET_NO_SOL", "sua carteira precisa de 0,000005 SOL para a taxa de entrada");
-      const memo = `Dupla Chave\nEntrar na sua conta. Isto não aprova nenhuma transação.\nDesafio: ${challenge}`;
-      const built = await this.walletPaid(wallet, [this.memoIx(memo, wallet)]);
-      return { kind: "LOGIN" as const, transaction: built.transaction, wire: built.message, enrollmentId: null, message: "Entrar na sua conta Dupla Chave. Isto não aprova nenhuma transação." };
-    }
-    const p = await this.prepareEnrollment({ publicKey: walletPublicKey, walletName: "Carteira do celular" });
-    return { kind: "ENROLL" as const, transaction: p.transaction, wire: null, enrollmentId: p.enrollmentId, message: "Criar sua conta Dupla Chave: sua carteira + a chave do serviço (2 de 2). Custa ~0,003 SOL." };
-  }
-
-  /** Conclui a entrada/cadastro pelo celular depois que a transação confirmou. null = ainda não. */
-  async phoneConnectComplete(req: Awaited<ReturnType<CustodyService["phoneConnectTransaction"]>>, walletPublicKey: string) {
-    if (req.kind === "ENROLL") return this.completeEnrollmentFromChain(req.enrollmentId!);
-    const landed = await this.findLanded(new PublicKey(walletPublicKey), [req.wire!]);
-    if (!landed) return null;
-    if (!landed.ok) deny("WALLET_TX_FAILED", landed.error ?? "a transação falhou");
-    return { account: await this.accountOfWallet(walletPublicKey), created: false as const };
-  }
-
-  /** Transação atômica de uma intenção, para o celular assinar e enviar. */
-  async phoneSignTransaction(intentId: string, walletPublicKey: string) {
-    const req = await this.prepareIntent(intentId, walletPublicKey);
-    const summary = renderIntent(req.intent);
-    const what = req.intent.type === "ROTATE_MEMBER" ? summary.subtitle : summary.rows.slice(0, 2).map((r) => `${r.label} ${r.value}`).join(" · ");
-    return { transaction: req.transaction, message: `Aprovar e executar: ${what}` };
-  }
-
-  async phoneSignComplete(intentId: string) {
-    return this.completeIntentFromChain(intentId);
-  }
-
-  /** Prova de posse da carteira nova pelo celular: memo com o texto de posse, pago por ela. */
-  async phoneRotationProofTransaction(rotationId: string, newWallet: string) {
-    const rot = await this.store.getRotation(rotationId);
-    if (!rot) deny("ROTATION_NOT_FOUND", rotationId);
-    if (rot.role !== "CLIENT" || rot.status !== "REQUESTED") deny("ROTATION_BAD_STATE", rot.status);
-    const acc = await this.account(rot.accountId);
-    if (newWallet === acc.roles.client) deny("SAME_WALLET", "essa é a carteira atual; escolha outra conta na carteira");
-    const wallet = new PublicKey(newWallet);
-    await this.requireFee(wallet, "NEW_WALLET_NO_SOL", "a carteira nova precisa de 0,000005 SOL para a taxa da prova");
-    const fields = { ...this.possessionFieldsFor(rot, acc.multisig), publicKey: newWallet };
-    const built = await this.walletPaid(wallet, [this.memoIx(possessionMessage(fields), wallet)]);
-    return { transaction: built.transaction, wire: built.message, fields, message: "Provar que esta carteira é sua para trocar a carteira da conta Dupla Chave." };
-  }
-
-  async phoneRotationProofComplete(rotationId: string, req: Awaited<ReturnType<CustodyService["phoneRotationProofTransaction"]>>) {
-    const landed = await this.findLanded(new PublicKey(req.fields.publicKey), [req.wire]);
-    if (!landed) return null;
-    if (!landed.ok) deny("WALLET_TX_FAILED", landed.error ?? "a transação falhou");
-    const idx = landed.signers.findIndex((k) => k.toBase58() === req.fields.publicKey);
-    const proof: WalletProof = { ...req.fields, via: "transaction", transactionMessage: landed.message, signature: bs58.encode(landed.signatures[idx]!) };
-    return this.proveClientRotationKey(rotationId, proof);
   }
 
   // -------------------------------------------------------------------------

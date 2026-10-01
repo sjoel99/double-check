@@ -14,7 +14,8 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [react()],
     define: { global: "globalThis" },
-    server: { port: 5173, host: env.DK_WEB_HOST ?? "127.0.0.1", proxy },
+    // O túnel (pnpm dev:devnet) chega com o host *.trycloudflare.com.
+    server: { port: 5173, host: env.DK_WEB_HOST ?? "127.0.0.1", proxy, allowedHosts: [".trycloudflare.com", "localhost"] },
     preview: { port: 4173, proxy },
     build: { sourcemap: false, chunkSizeWarningLimit: 4000 },
   };

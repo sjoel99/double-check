@@ -3,7 +3,9 @@
 //   pnpm dev:devnet
 //
 // - Rede: devnet (a carteira do celular envia a transação para a rede dela; localnet não serve).
-// - Túnel HTTPS (cloudflared) para a API: o Solana Pay exige HTTPS que o celular alcance.
+// - Túnel HTTPS (cloudflared) para o APP (Vite, que repassa /api para a API): o QR abre o nosso app
+//   no celular, e a biometria (WebAuthn) exige HTTPS. A biometria fica presa ao domínio do túnel:
+//   túnel novo = biometria nova (vale depois de DK_PASSKEY_RESET_DELAY, 5 min aqui).
 // - Postgres em Docker (volume persistente) e chaves de serviço cifradas em .data/devnet-keys:
 //   contas sobrevivem a reinícios. O serviço não paga nada: a Phantom precisa de SOL de devnet.
 // - .env.devnet (criado na primeira vez, fora do git) guarda os segredos locais.
@@ -76,8 +78,8 @@ if (!databaseUrl) {
 
 // ---------------------------------------------------------------- túnel HTTPS
 const cloudflared = [`${homedir()}/.local/bin/cloudflared`, "/usr/local/bin/cloudflared", "/usr/bin/cloudflared"].find(existsSync) ?? "cloudflared";
-log("abrindo túnel HTTPS para a API (cloudflared)…");
-const tunnel = spawn(cloudflared, ["tunnel", "--url", "http://127.0.0.1:8787", "--no-autoupdate"], { stdio: ["ignore", "pipe", "pipe"] });
+log("abrindo túnel HTTPS para o app (cloudflared)…");
+const tunnel = spawn(cloudflared, ["tunnel", "--url", "http://127.0.0.1:5173", "--no-autoupdate"], { stdio: ["ignore", "pipe", "pipe"] });
 children.push(tunnel);
 const tunnelLog = openSync(".data/cloudflared.log", "a");
 const publicUrl = await new Promise<string>((resolve, reject) => {
@@ -108,6 +110,7 @@ const apiEnv = {
   DK_SESSION_SECRET: env.DK_SESSION_SECRET!,
   DK_ADMIN_TOKEN: env.DK_ADMIN_TOKEN!,
   DK_KEYS_DIR: env.DK_KEYS_DIR ?? ".data/devnet-keys",
+  DK_PASSKEY_RESET_DELAY: process.env.DK_PASSKEY_RESET_DELAY ?? "300",
   ...(databaseUrl ? { DATABASE_URL: databaseUrl } : {}),
 };
 log(`API (devnet, RPC ${masked})`);
@@ -125,4 +128,4 @@ children.push(web);
 // ---------------------------------------------------------------- quem paga
 log("taxas e depósitos saem da carteira do cliente: a Phantom precisa de SOL de devnet (https://faucet.solana.com).");
 log("custos: criar a conta ~0,003 SOL (uma vez); cada transação ~0,000015 SOL, mas a carteira precisa ter ~0,007 SOL na hora (o depósito volta na mesma transação).");
-log("abra http://127.0.0.1:5173 no computador; no celular, a Phantom em modo devnet (Configurações → Configurações de desenvolvedor → Modo testnet → Solana Devnet)");
+log(`abra ${publicUrl} (ou http://localhost:5173) no computador — 127.0.0.1 não serve para biometria. No celular, a Phantom em modo devnet (Configurações → Configurações de desenvolvedor → Modo testnet → Solana Devnet)`);

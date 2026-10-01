@@ -38,6 +38,11 @@ const airdrop = async (address: PublicKey, lamports: number) => {
 const programConfig = await multisig.accounts.ProgramConfig.fromAccountAddress(conn, multisig.getProgramConfigPda({})[0]);
 
 const notifications = new LogNotificationService(log);
+// De onde o app pode ser aberto (a biometria fica presa ao domínio). 127.0.0.1 só serve à biometria de teste.
+const webauthnOrigins = [
+  ...new Set([...(cfg.DK_WEBAUTHN_ORIGINS?.split(",").map((s) => s.trim()).filter(Boolean) ?? ["http://127.0.0.1:5173", "http://localhost:5173"]), ...(cfg.DK_PUBLIC_URL ? [cfg.DK_PUBLIC_URL.replace(/\/$/, "")] : [])]),
+];
+log(`biometria aceita nas origens: ${webauthnOrigins.join(", ")}`);
 const custody = new CustodyService({
   cluster: cfg.SOLANA_CLUSTER,
   chain,
@@ -47,6 +52,7 @@ const custody = new CustodyService({
   service,
   notifications,
   squadsTreasury: programConfig.treasury,
+  passkeys: { origins: webauthnOrigins, resetDelay: cfg.DK_PASSKEY_RESET_DELAY },
   log,
 });
 
@@ -62,7 +68,7 @@ const app = await buildServer({
   cluster: cfg.SOLANA_CLUSTER,
   sessionSecret,
   adminToken,
-  publicUrl: cfg.DK_PUBLIC_URL ?? `http://${cfg.HOST}:${cfg.PORT}`,
+  publicUrl: cfg.DK_PUBLIC_URL ?? "http://127.0.0.1:5173",
   airdrop: cfg.SOLANA_CLUSTER === "localnet" ? airdrop : undefined,
   log: true,
 });
@@ -79,6 +85,6 @@ setInterval(async () => {
 }, 30_000).unref();
 
 await app.listen({ port: cfg.PORT, host: cfg.HOST });
-if (cfg.DK_PUBLIC_URL) log(`QR do celular aponta para ${cfg.DK_PUBLIC_URL}/pay/…`);
+if (cfg.DK_PUBLIC_URL) log(`QR do celular abre o app em ${cfg.DK_PUBLIC_URL}/#/m/…`);
 else log("sem DK_PUBLIC_URL: o QR só funciona com o celular de teste (celular de verdade exige HTTPS — use pnpm dev:devnet)");
 log(`API em http://${cfg.HOST}:${cfg.PORT} · cluster ${cfg.SOLANA_CLUSTER} · RPC ${cfg.SOLANA_RPC_URL.replace(/api-key=[^&]+/, "api-key=***")} · taxas pagas pela carteira do cliente`);

@@ -76,11 +76,11 @@ describe("A3 — transação preparada que entra depois", () => {
     expect((await t.custody.securityOverview(t.account.id)).invariantOk).toBe(true);
   });
 
-  it("expireDue não vence intenção com transação preparada ainda válida; depois da janela, vence", async () => {
+  it("expireDue não vence intenção com transação autorizada ainda válida; depois da janela, vence", async () => {
     const t = await setupService();
     const r = await t.custody.createTransferSol(t.account.id, { destination: dest(), amountLamports: SOL.toString() });
     t.advance(r.intent.expiresAt - t.now() - 1);
-    await t.custody.prepareIntent(r.intent.id);
+    await t.walletTx(r.intent.id); // preparada, biometria ok, serviço assinou — falta só enviar
     t.advance(2);
     await t.custody.expireDue(t.account.id);
     expect((await t.store.getIntent(r.intent.id))?.status).toBe("AWAITING_CLIENT");

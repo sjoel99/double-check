@@ -136,6 +136,9 @@ export function Security() {
               );
             })}
         </div>
+        <button type="button" className="btn" style={{ height: 52 }} onClick={() => ctx.go("/passkey?then=/security")}>
+          <Icon name="finger" size={18} /> Biometria deste aparelho
+        </button>
         <button type="button" className="btn" style={{ height: 52 }} onClick={() => ctx.go("/rotate")} disabled={Boolean(acc?.account.frozenBy)}>
           <Icon name="key" size={18} /> Trocar a carteira da conta
         </button>
@@ -251,8 +254,8 @@ export function RotateWallet() {
             <div className="card">
               <PhoneQr
                 create={() => api("POST", `/v1/rotations/${step.rotationId}/pay-proof`, {})}
-                title="Escaneie com a carteira NOVA"
-                steps={["Na carteira do celular, abra a conta nova (ou outra carteira)", "Escaneie e confirme: ela só prova que é sua (taxa de 0,000005 SOL, paga por ela)"]}
+                title="Continue no celular com a carteira NOVA"
+                steps={["Na Phantom do celular, mude para a conta nova", "Aponte a câmera para o código e abra o link", "Conecte a Phantom e assine o texto: ela só prova que é sua (sem custo)"]}
                 onDone={(r: { intentId: string; newKey: string }) => setStep({ kind: "approve", intentId: r.intentId, newKey: r.newKey })}
               />
             </div>

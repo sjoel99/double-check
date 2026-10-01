@@ -19,7 +19,7 @@ export type ApiDeps = {
   adminToken: string | null;
   /** Só em localnet: airdrop para testar. */
   airdrop?: (address: PublicKey, lamports: number) => Promise<void>;
-  /** URL pública (HTTPS) que o celular alcança, para o QR do Solana Pay. */
+  /** URL pública do app (HTTPS) que o celular alcança, para o QR "continuar no celular". */
   publicUrl?: string;
   now?: () => number;
   log?: boolean;
@@ -167,6 +167,14 @@ export async function buildServer(d: ApiDeps) {
     return d.custody.prepareIntent(id, s.key);
   });
 
+  /** A biometria confirmou os bytes conferidos pelo app: o serviço assina a parte dele. */
+  app.post("/v1/intents/:id/authorize", async (req) => {
+    const { id } = req.params as { id: string };
+    await ownIntent(req, id);
+    const body = z.object({ message: txB64, assertion: z.object({ id: z.string() }).passthrough() }).parse(req.body);
+    return d.custody.authorizeIntent(id, body as never);
+  });
+
   /** A transação assinada pela carteira: o backend confere que é a preparada e envia. */
   app.post("/v1/intents/:id/submit", async (req) => {
     const { id } = req.params as { id: string };
@@ -179,6 +187,31 @@ export async function buildServer(d: ApiDeps) {
     const { id } = req.params as { id: string };
     await ownIntent(req, id);
     return view(await d.custody.rejectByClient(id));
+  });
+
+  // ---------------------------------------------------------------- biometria
+  app.post("/v1/accounts/:id/passkeys/options", async (req) => {
+    const { id } = req.params as { id: string };
+    await ownAccount(req, id);
+    const { deviceName } = z.object({ deviceName: z.string().min(1).max(40) }).parse(req.body);
+    return d.custody.passkeyRegistrationOptions(id, req.headers.origin, deviceName);
+  });
+
+  app.post("/v1/accounts/:id/passkeys", async (req) => {
+    const { id } = req.params as { id: string };
+    await ownAccount(req, id);
+    const body = z
+      .object({ challengeId: z.string().uuid(), response: z.object({ id: z.string() }).passthrough(), walletSignature: signature, approval: z.object({ id: z.string() }).passthrough().nullish() })
+      .parse(req.body);
+    const out = await d.custody.registerPasskey(id, body as never);
+    return { status: out.status, activeAt: out.activeAt, deviceName: out.passkey.deviceName };
+  });
+
+  app.get("/v1/accounts/:id/passkeys", async (req) => {
+    const { id } = req.params as { id: string };
+    await ownAccount(req, id);
+    const list = await d.custody.listPasskeys(id);
+    return { passkeys: list.map(({ publicKey: _k, counter: _c, ...p }) => p) };
   });
 
   // ---------------------------------------------------------------- troca de carteira
@@ -253,20 +286,8 @@ export async function buildServer(d: ApiDeps) {
     });
   }
 
-  // Celular (Solana Pay). O spec pede CORS aberto nas rotas que a carteira chama.
-  app.addHook("onSend", async (req, reply) => {
-    if (req.url.startsWith("/pay/")) reply.header("access-control-allow-origin", "*").header("access-control-allow-headers", "content-type").header("access-control-allow-methods", "GET, POST, OPTIONS");
-  });
-  app.options("/pay/:token", async (_req, reply) => reply.status(204).send());
-  const pay = registerPay(app, {
-    custody: d.custody,
-    store: d.store,
-    publicUrl: d.publicUrl ?? "http://127.0.0.1:8787",
-    issueToken: tokenFor,
-    now,
-    ownAccount,
-    log: (m) => app.log.warn(m),
-  });
+  // Continuar no celular: o QR abre o nosso app no celular.
+  const pay = registerPay(app, { custody: d.custody, store: d.store, appUrl: d.publicUrl ?? "http://127.0.0.1:5173", issueToken: tokenFor, now, ownAccount });
 
   return Object.assign(app, { pay });
 }

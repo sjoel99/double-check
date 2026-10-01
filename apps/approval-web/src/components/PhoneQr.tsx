@@ -5,11 +5,12 @@ import { api } from "../lib/api";
 import { Icon } from "../icons";
 
 type Created = { token: string; url: string; link: string; expiresAt: number; https: boolean };
-type Status = { status: "WAITING_SCAN" | "WAITING_SIGNATURE" | "DONE" | "FAILED" | "EXPIRED"; error: string | null; result: any; wallet: string | null };
+type Status = { status: "WAITING" | "DONE" | "FAILED" | "EXPIRED"; error: string | null; result: any };
 
 /**
- * QR do Solana Pay: a carteira do celular lê, busca a transação no servidor,
- * mostra a mensagem e assina. Este componente acompanha até confirmar.
+ * QR "continuar no celular": a câmera abre o NOSSO app no celular, que confere
+ * a transação, pede a biometria e só então chama a carteira. Este componente
+ * acompanha até o celular terminar.
  */
 export function PhoneQr({ create, title, steps, onDone }: { create: () => Promise<Created>; title: string; steps: string[]; onDone: (result: any) => void }) {
   const ctx = useApp();
@@ -54,18 +55,14 @@ export function PhoneQr({ create, title, steps, onDone }: { create: () => Promis
     return () => clearInterval(i);
   }, [req, onDone]);
 
-  const phase = st?.status ?? "WAITING_SCAN";
+  const phase = st?.status === "WAITING" || !st ? "WAITING_SCAN" : st.status;
   return (
     <div className="qr-box">
       <div style={{ fontSize: 17, fontWeight: 600, textAlign: "center" }}>{title}</div>
       {qr && phase === "WAITING_SCAN" && <img className="qr" src={qr} alt="QR code para a carteira do celular" />}
-      {phase === "WAITING_SIGNATURE" && (
-        <div className="center" style={{ padding: "24px 0", gap: 10 }}>
-          <span className="spinner" style={{ width: 28, height: 28 }} />
-          <div style={{ fontSize: 15, fontWeight: 600 }}>Confirme no celular</div>
-          <div className="muted" style={{ fontSize: 13 }}>
-            Esperando a transação chegar na Solana…
-          </div>
+      {phase === "WAITING_SCAN" && qr && (
+        <div className="status" style={{ justifyContent: "center", fontSize: 13 }}>
+          <span className="spinner" /> Esperando o celular terminar…
         </div>
       )}
       {phase === "DONE" && (
@@ -73,7 +70,7 @@ export function PhoneQr({ create, title, steps, onDone }: { create: () => Promis
           <div className="dot" style={{ background: "var(--accent)", width: 44, height: 44 }}>
             <Icon name="check" size={24} color="#0B0D10" sw={2.6} />
           </div>
-          <div style={{ fontWeight: 600 }}>Assinado no celular</div>
+          <div style={{ fontWeight: 600 }}>Feito no celular</div>
         </div>
       )}
       {phase === "WAITING_SCAN" && (
@@ -87,12 +84,12 @@ export function PhoneQr({ create, title, steps, onDone }: { create: () => Promis
         <div className="banner warn" style={{ fontSize: 12 }}>
           <Icon name="shieldalert" size={16} color="#F2B33D" />
           <div>
-            Este QR aponta para <span className="mono">{new URL(req.url).host}</span> (sem HTTPS): só o celular de teste abre. Para o celular de verdade, rode <span className="mono">pnpm dev:devnet</span>.
+            Este QR aponta para <span className="mono">{new URL(req.url).host}</span> (sem HTTPS): só funciona como "celular de teste" (outra aba). Para o celular de verdade, rode <span className="mono">pnpm dev:devnet</span>.
           </div>
         </div>
       )}
       {ctx.config.devTools && req && phase === "WAITING_SCAN" && (
-        <a className="btn small" href={`/#/phone?u=${encodeURIComponent(req.url)}`} target="_blank" rel="noreferrer">
+        <a className="btn small" href={req.url} target="_blank" rel="noreferrer">
           <Icon name="phone" size={16} /> Abrir no celular de teste
         </a>
       )}
@@ -123,4 +120,4 @@ export function PhoneQrSheet(props: Parameters<typeof PhoneQr>[0] & { onClose: (
   );
 }
 
-export const SCAN_STEPS = ["Abra a Phantom (ou Solflare) no celular", "Toque em escanear e aponte para o código", "Confira a mensagem e confirme"];
+export const SCAN_STEPS = ["Aponte a câmera do celular para o código e abra o link", "No celular: entre com a Phantom e confira o que vai ser assinado", "Confirme com a biometria e assine na Phantom"];
