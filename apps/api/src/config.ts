@@ -17,9 +17,9 @@ const Env = z.object({
   /** Token do painel administrativo (só pede rotação da chave do servidor; não aprova nada). */
   DK_ADMIN_TOKEN: z.string().min(16).optional(),
   /** Resend (alertas por e-mail). Sem a chave, os alertas só vão para o log. */
-  RESEND_API_KEY: z.string().min(10).optional(),
+  RESEND_API_KEY: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(10).optional()),
   /** Remetente, num domínio verificado na Resend. Ex.: "Dupla Chave <alertas@sjoel99.com>". */
-  DK_EMAIL_FROM: z.string().min(3).optional(),
+  DK_EMAIL_FROM: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(3).optional()),
   /** Pasta das chaves de serviço em dev (fora do repo, 0600). */
   DK_KEYS_DIR: z.string().default(".data/keys"),
   /** Chave (hex, 32 bytes) que cifra as seeds em DK_KEYS_DIR. Sem ela, chaves só em memória. */
