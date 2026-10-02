@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { readMultisig, type MultisigState } from "@duplachave/squads";
-import { reviewSecurityRequest, verifyAuthorized, vetoMessage, type SecurityChangeDesc } from "@duplachave/custody/src/client";
+import { emailBindingMessage, emailInput, reviewSecurityRequest, verifyAuthorized, vetoMessage, type SecurityChangeDesc } from "@duplachave/custody/src/client";
 import { accountKeyBlobs, errorText, unlockAccountKey, useApp } from "../app";
 import { api } from "../lib/api";
 import { now, short } from "../lib/chain";
@@ -206,6 +206,119 @@ export function PendingChange({ c, onDone }: { c: ChangeView; onDone: () => void
   );
 }
 
+/**
+ * E-mail de alerta. Cadastrar ou trocar exige a chave do webapp (biometria) e o
+ * código que chega no endereço novo: quem só tem a seed da Phantom não desvia os alertas.
+ */
+function AlertEmail() {
+  const ctx = useApp();
+  const [current, setCurrent] = useState<string | null | undefined>(undefined);
+  const [editing, setEditing] = useState(false);
+  const [email, setEmail] = useState("");
+  const [sent, setSent] = useState<{ challengeId: string; email: string } | null>(null);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const accountId = ctx.session?.accountId;
+  const load = useCallback(() => {
+    if (accountId) void api("GET", `/v1/accounts/${accountId}/security`).then((r) => setCurrent(r.alertEmail ?? null)).catch(() => {});
+  }, [accountId]);
+  useEffect(load, [load]);
+
+  const start = async () => {
+    setErr(null);
+    const e = emailInput(email);
+    if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(e)) return setErr("E-mail inválido.");
+    try {
+      setBusy("Confirme com a biometria…");
+      const sec = await api("GET", `/v1/accounts/${accountId}/security`);
+      const key = await unlockAccountKey(ctx, await accountKeyBlobs(`/v1/accounts/${accountId}/webapp-keys`), `Enviar os alertas da conta para ${e}`);
+      let signature: string;
+      try {
+        signature = signatureB58(key.sign(new TextEncoder().encode(emailBindingMessage(sec.account.multisig, e))));
+      } finally {
+        key.wipe();
+      }
+      setBusy("Enviando o código…");
+      const r = await api("POST", `/v1/accounts/${accountId}/email/start`, { email: e, signature });
+      setSent({ challengeId: r.challengeId, email: r.email });
+      setCode("");
+    } catch (x) {
+      setErr(errorText(x));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const confirm = async () => {
+    setErr(null);
+    try {
+      setBusy("Confirmando…");
+      const r = await api("POST", `/v1/accounts/${accountId}/email/confirm`, { challengeId: sent!.challengeId, code: code.trim() });
+      ctx.toast(`Alertas vão para ${r.email}.`);
+      setSent(null);
+      setEditing(false);
+      setEmail("");
+      load();
+    } catch (x) {
+      setErr(errorText(x));
+      // Uma tentativa por código: errou, pede outro.
+      setSent(null);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="card">
+      <div className="row-between">
+        <div className="muted" style={{ fontSize: 13 }}>
+          E-mail de alerta
+        </div>
+        {current === undefined ? <span className="spinner" /> : current ? <span className="pill">Confirmado</span> : <span className="pill danger">Sem alerta</span>}
+      </div>
+      {!editing && (
+        <>
+          <div className="mono" style={{ fontSize: 15 }}>
+            {current ?? "Nenhum"}
+          </div>
+          <div style={{ fontSize: 13, color: "#b4bac4", lineHeight: 1.45 }}>Avisa pedidos de troca de chave (a tempo do "Não fui eu"), trocas concluídas e envios.</div>
+          <button type="button" className="btn" style={{ height: 44 }} onClick={() => setEditing(true)}>
+            <Icon name="finger" size={16} /> {current ? "Trocar o e-mail" : "Cadastrar e-mail"}
+          </button>
+        </>
+      )}
+      {editing && !sent && (
+        <>
+          <div className="field">
+            <label htmlFor="alert-email">E-mail</label>
+            <input id="alert-email" className="input" type="email" inputMode="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="voce@exemplo.com" />
+          </div>
+          <button type="button" className="btn primary" style={{ height: 44 }} disabled={!!busy || !email} onClick={start}>
+            {busy ?? "Confirmar com a biometria e enviar código"}
+          </button>
+          <button type="button" className="linkbtn" onClick={() => (setEditing(false), setErr(null))}>
+            Cancelar
+          </button>
+        </>
+      )}
+      {sent && (
+        <>
+          <div style={{ fontSize: 13, color: "#b4bac4" }}>Enviamos um código de 6 dígitos para {sent.email}. Vale por 10 minutos.</div>
+          <div className="field">
+            <label htmlFor="alert-code">Código</label>
+            <input id="alert-code" className="input mono" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} placeholder="000000" />
+          </div>
+          <button type="button" className="btn primary" style={{ height: 44 }} disabled={!!busy || code.length !== 6} onClick={confirm}>
+            {busy ?? "Confirmar"}
+          </button>
+        </>
+      )}
+      {err && <div className="err">{err}</div>}
+    </div>
+  );
+}
+
 export function Security() {
   const ctx = useApp();
   const { acc } = useAccount(8000);
@@ -274,6 +387,7 @@ export function Security() {
               );
             })}
         </div>
+        <AlertEmail />
         {devices.length > 0 && (
           <div className="subtle" style={{ fontSize: 12 }}>
             Chave do webapp guardada para: {devices.map((d) => d.deviceName).join(", ")}

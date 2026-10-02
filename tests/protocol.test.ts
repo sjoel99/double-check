@@ -151,7 +151,7 @@ describe("trocas de chave com prazo de 72 h", () => {
     const { change } = await t.requestChange("CLIENT", next);
     expect(change.status).toBe("PENDING");
     expect(change.executeAfter! - t.now()).toBeGreaterThanOrEqual(H72 - 5);
-    expect(t.notifications.sent.some((n) => JSON.stringify(n).includes("SECURITY_CHANGE_REQUESTED"))).toBe(true);
+    expect(t.notifications.sent.some((n) => JSON.stringify(n).includes("CHANGE_REQUESTED"))).toBe(true);
     expect(await securityError(t.custody.prepareSecurityExecute(change.id))).toBe("CHANGE_NOT_DUE");
     // Enquanto isso, operações continuam com a Phantom atual + webapp.
     const mid = await t.custody.createTransferSol(t.account.id, { destination: dest(), amountLamports: SOL.toString() });

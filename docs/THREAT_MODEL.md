@@ -35,7 +35,7 @@
 | 14 | **Insider** | Alto | Igual a #6. Token de admin só pede a troca da chave do serviço, que exige a Phantom e as 72 h | — |
 | 15 | **Notificação falsa** | Médio | Notificação só avisa; o webapp busca e confere | Engenharia social |
 | 16 | **Spending limit / config authority** | Crítico | Multisig autônoma, conferida na chain e na criação; a política recusa qualquer ConfigTransaction que não seja a troca de um votante | — |
-| 17 | **Troca de chave indevida** | Alto | Dois votos + memo da chave nova + 72 h + veto pela chave que seria trocada; uma troca por vez | Sem alerta real, o usuário pode não ver o pedido a tempo (alertas reais pendentes) |
+| 17 | **Troca de chave indevida** | Alto | Dois votos + memo da chave nova + 72 h + veto pela chave que seria trocada; uma troca por vez | Alerta por e-mail no pedido; usuário sem e-mail cadastrado, ou que não lê a tempo, perde a janela |
 | 18 | **Aprovação antiga** (troca aprovada e vetada) | Médio | Só o operador executa e ele recusa as vetadas; a próxima troca executada a deixa stale (provado na chain) | Serviço comprometido (#6) poderia executar uma vetada antes de ela ficar stale, mas ainda é 1 voto do lado dele + o do pedido |
 | 19 | **Webapp + serviço aprovando sem a Phantom** | Alto | O programa aceita (2 de 3, provado), por isso o serviço **nunca vota em envios** e só vota trocas, com prazo | Serviço comprometido com a chave do webapp capturada (#31) |
 | 20 | **Assinatura cega na Phantom** | Médio | A Phantom mostra instruções da Squads; o webapp confere os bytes; a biometria confirma | Webapp adulterado mostra uma coisa e assina outra (#31) |
@@ -45,6 +45,7 @@
 | 24 | **Gerar chaves do serviço em massa** | Médio | Cadastro limitado por IP; cadastros não assinados são descartados | Abuso lento por muitos IPs |
 | 25 | **Aparelho sem PRF** | Médio | `/#/prf` testa; o cadastro recusa aparelho sem PRF | Usuário sem aparelho compatível não usa |
 | 26 | **Perder todos os aparelhos e a Phantom** | Alto | — | **Bloqueio**: dois votos do usuário perdidos. Recuperação além disso exigiria uma terceira chave do usuário |
+| 27 | **Desviar os alertas** (trocar o e-mail com a seed vazada) | Alto | Trocar o e-mail exige a chave do webapp (biometria) e o código do endereço novo; o endereço antigo é avisado | Serviço comprometido pode suprimir e-mails (#6) |
 | 31 | **Webapp adulterado servido pelo serviço comprometido** | Alto | A chave do webapp só fica aberta durante a assinatura; CSP estrita; o webapp é estático | Quem controla o código que o navegador roda vê a chave aberta. Endurecimento: hospedar o webapp separado do serviço, build reproduzível |
 
 ## Revisão de 2026-10-01

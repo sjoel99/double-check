@@ -85,15 +85,15 @@ export class PgStore implements Store, ChallengeStore {
   // users / devices -----------------------------------------------------------
   async saveUser(u: UserRecord) {
     await this.db.query(
-      `INSERT INTO users (id, name, policy, created_at) VALUES ($1,$2,$3,$4)
-       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, policy = EXCLUDED.policy`,
-      [u.id, u.name, JSON.stringify(u.policy, bigintReplacer), u.createdAt],
+      `INSERT INTO users (id, name, policy, created_at, email, email_verified_at) VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, policy = EXCLUDED.policy, email = EXCLUDED.email, email_verified_at = EXCLUDED.email_verified_at`,
+      [u.id, u.name, JSON.stringify(u.policy, bigintReplacer), u.createdAt, u.email ?? null, u.emailVerifiedAt ?? null],
     );
   }
   async getUser(id: string) {
-    const { rows } = await this.db.query<{ id: string; name: string; policy: unknown; created_at: string }>(`SELECT * FROM users WHERE id = $1`, [id]);
+    const { rows } = await this.db.query<{ id: string; name: string; policy: unknown; created_at: string; email: string | null; email_verified_at: string | null }>(`SELECT * FROM users WHERE id = $1`, [id]);
     const r = rows[0];
-    return r ? { id: r.id, name: r.name, policy: reviveBigints(r.policy) as UserRecord["policy"], createdAt: Number(r.created_at) } : null;
+    return r ? { id: r.id, name: r.name, policy: reviveBigints(r.policy) as UserRecord["policy"], createdAt: Number(r.created_at), email: r.email, emailVerifiedAt: n(r.email_verified_at) } : null;
   }
   async saveDevice(d: DeviceRecord) {
     await this.db.query(

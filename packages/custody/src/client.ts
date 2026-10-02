@@ -73,6 +73,14 @@ export function memoIx(text: string, signers: PublicKey[]) {
   return new TransactionInstruction({ programId: MEMO_PROGRAM_ID, keys: signers.map((pubkey) => ({ pubkey, isSigner: true, isWritable: false })), data: Buffer.from(text, "utf8") });
 }
 
+/** Forma canônica do e-mail (o webapp assina exatamente esta). */
+export const emailInput = (raw: string) => raw.trim().toLowerCase();
+
+/** Texto que a chave do webapp assina para cadastrar um e-mail de alerta. */
+export function emailBindingMessage(multisig: string, email: string) {
+  return `Dupla Chave: enviar os alertas da conta ${multisig} para ${email}`;
+}
+
 // ---------------------------------------------------------------------------
 // trocas de votante (pedido com prazo)
 // ---------------------------------------------------------------------------

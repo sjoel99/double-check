@@ -4,7 +4,7 @@ import * as multisig from "@sqds/multisig";
 import { DevMemorySigner } from "@duplachave/crypto";
 import { RpcChain } from "@duplachave/solana";
 import { DefaultPolicyEngine } from "@duplachave/policy-engine";
-import { CustodyService, LogNotificationService, MemoryStore } from "@duplachave/custody";
+import { CustodyService, EmailNotificationService, LogNotificationService, MemoryStore, ResendMailer } from "@duplachave/custody";
 import { migrate, openPostgres, PgStore } from "@duplachave/database";
 import { loadConfig } from "./config";
 import { DevFileKeyStore, FileServerKeyProvider } from "./keys";
@@ -38,7 +38,18 @@ const airdrop = async (address: PublicKey, lamports: number) => {
 };
 const programConfig = await multisig.accounts.ProgramConfig.fromAccountAddress(conn, multisig.getProgramConfigPda({})[0]);
 
-const notifications = new LogNotificationService(log);
+const publicUrl = cfg.DK_PUBLIC_URL ?? "http://127.0.0.1:5173";
+// O e-mail do usuário vem do banco a cada envio (só o confirmado).
+const notifications =
+  cfg.RESEND_API_KEY && cfg.DK_EMAIL_FROM
+    ? new EmailNotificationService({
+        mailer: new ResendMailer({ apiKey: cfg.RESEND_API_KEY, from: cfg.DK_EMAIL_FROM }),
+        appUrl: publicUrl,
+        emailOf: async (userId) => (await store.getUser(userId))?.email ?? null,
+        log,
+      })
+    : new LogNotificationService(log);
+log(cfg.RESEND_API_KEY ? `alertas por e-mail (Resend, de ${cfg.DK_EMAIL_FROM})` : "alertas só no log (defina RESEND_API_KEY e DK_EMAIL_FROM)");
 const custody = new CustodyService({
   cluster: cfg.SOLANA_CLUSTER,
   chain,
@@ -64,7 +75,7 @@ const app = await buildServer({
   cluster: cfg.SOLANA_CLUSTER,
   sessionSecret,
   adminToken,
-  publicUrl: cfg.DK_PUBLIC_URL ?? "http://127.0.0.1:5173",
+  publicUrl,
   airdrop: cfg.SOLANA_CLUSTER === "localnet" ? airdrop : undefined,
   log: true,
 });

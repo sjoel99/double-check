@@ -5,6 +5,8 @@ import { DefaultPolicyEngine } from "@duplachave/policy-engine";
 import {
   CustodyService,
   DevServerKeyProvider,
+  type Email,
+  EmailNotificationService,
   LogNotificationService,
   MemoryStore,
   reviewPrepared,
@@ -41,7 +43,7 @@ export const fakeBlob = (deviceName = "Celular de teste") => ({ credentialId: `c
  * Backend completo sobre LiteSVM, modelo 2 de 3: a Phantom (WALLET_A) e a
  * chave do webapp (WEBAPP_A) do usuário, mais o serviço. O serviço não tem SOL.
  */
-export async function setupService(opts: { depositSol?: number; walletSol?: number; store?: "memory" | "pglite" | "postgres"; securityDelay?: number } = {}) {
+export async function setupService(opts: { depositSol?: number; walletSol?: number; store?: "memory" | "pglite" | "postgres"; securityDelay?: number; mailer?: { send(m: Email, key?: string): Promise<unknown> } } = {}) {
   const chain = new LiteSvmChain();
   let offset = 0;
   const now = () => Math.floor(Date.now() / 1000) + offset;
@@ -50,7 +52,9 @@ export async function setupService(opts: { depositSol?: number; walletSol?: numb
 
   const kind = opts.store ?? process.env.DK_TEST_STORE ?? "memory";
   const store = kind === "pglite" ? await pgliteStore() : kind === "postgres" ? await postgresStore() : new MemoryStore();
-  const notifications = new LogNotificationService();
+  const notifications = opts.mailer
+    ? new EmailNotificationService({ mailer: opts.mailer, appUrl: "https://dupla.example", emailOf: async (id) => (await store.getUser(id))?.email ?? null })
+    : new LogNotificationService();
   const serverKeys = new DevServerKeyProvider("localnet");
   const custody = new CustodyService({ cluster: "localnet", chain, store, policy: new DefaultPolicyEngine(), serverKeys, service, notifications, now, squadsTreasury: chain.treasury, securityDelay: opts.securityDelay });
 

@@ -92,7 +92,19 @@ Dois passos:
 
 - **Veto:** é uma assinatura de texto (`vetoMessage`) pela chave que seria trocada. Quem ainda tem essa chave prova que ela não está perdida. Como só o operador executa, o veto vale na hora. A proposta aprovada fica stale na próxima troca executada, o que está provado na chain.
 - **Uma troca aberta por vez.** Operações normais continuam durante o prazo.
-- **Alertas:** o serviço envia alerta no pedido e no veto (hoje, `LogNotificationService`; falta o canal real).
+- **Alertas:** e-mail pela Resend no pedido (com o prazo e o caminho do "Não fui eu"), no veto e na execução. Ver D19.
+
+### D19. E-mail de alerta
+
+- **Problema:** o prazo de 72 h só protege se o usuário souber do pedido a tempo.
+- **Decisão:** alertas por e-mail pela API HTTP da Resend (sem SDK): pedido, veto e execução de troca, envio executado, modelo diferente do esperado e troca de e-mail.
+- **Cadastro do e-mail:** `POST /v1/accounts/:id/email/start {email, signature}`, depois `/confirm {challengeId, code}`.
+  - A `signature` é da **chave do webapp** sobre `emailBindingMessage(multisig, email)`. Quem só tem a seed da Phantom tem sessão, mas não desvia os alertas.
+  - O código tem 6 dígitos, vale 10 min e aceita uma tentativa; o serviço guarda só o hash.
+  - A troca avisa o endereço antigo e o novo.
+- **O que o e-mail não tem:** link que autorize algo ou dado secreto. Ele só aponta para `/#/security`, onde tudo é conferido.
+- **Falha de envio:** não derruba a operação; fica no log.
+- **Risco residual:** o serviço comprometido (#6) pode deixar de mandar alertas. O webapp continua mostrando a troca pendente na tela inicial.
 
 ## Celular
 
@@ -153,11 +165,11 @@ Quem perdeu a Phantom entra com a chave do webapp (`POST /v1/auth/webapp`, assin
 | `DK_SESSION_SECRET`, `DK_ADMIN_TOKEN` | sessão e admin |
 | `DK_KEY_ENCRYPTION_KEY`, `DK_KEYS_DIR` | "KMS" de desenvolvimento (chaves do serviço e do operador) |
 | `DK_PUBLIC_URL` | URL HTTPS do webapp (QR "continuar no celular") |
+| `RESEND_API_KEY`, `DK_EMAIL_FROM` | alertas por e-mail (remetente num domínio verificado na Resend); sem eles, só log |
 | `DK_SECURITY_DELAY` | prazo das trocas em segundos (padrão 259200 = 72 h; `pnpm dev` usa 120) |
 
 ## Fora desta entrega
 
-- alertas reais (Telegram/e-mail) para trocas pedidas e vetadas;
 - vincular um aparelho novo à mesma chave do webapp sem sincronizar a passkey (hoje: sincronização do gerenciador de senhas ou recuperação com prazo);
 - Mobile Wallet Adapter no iPhone (deeplink da Phantom);
 - swap e tokens SPL;

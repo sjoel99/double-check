@@ -2,7 +2,15 @@ import { hashCanonical, type Cluster, type MemberRole, type TransactionIntent } 
 import type { ExpectedRoles } from "@duplachave/squads";
 import type { UserPolicy } from "@duplachave/policy-engine";
 
-export type UserRecord = { id: string; name: string; policy: UserPolicy; createdAt: number };
+export type UserRecord = {
+  id: string;
+  name: string;
+  policy: UserPolicy;
+  createdAt: number;
+  /** E-mail de alerta, só depois de confirmado (código + chave do webapp). */
+  email?: string | null;
+  emailVerifiedAt?: number | null;
+};
 
 export type DeviceRecord = { id: string; userId: string; name: string; publicKey: string; createdAt: number; revokedAt: number | null };
 
@@ -108,6 +116,7 @@ export type AuditEventType =
   | "SERVER_REJECTED"
   | "TRANSACTION_APPROVED"
   | "TRANSACTION_EXECUTED"
+  | "ALERT_EMAIL_CHANGED"
   | "TRANSACTION_REJECTED"
   | "TRANSACTION_EXPIRED"
   | "TRANSACTION_CANCELLED"
@@ -422,7 +431,7 @@ export class MemoryStore implements Store, ChallengeStore {
 
 export type ChallengeRecord = {
   id: string;
-  purpose: "ENROLL_CLIENT_KEY" | "AUTH" | "PASSKEY_REG";
+  purpose: "ENROLL_CLIENT_KEY" | "AUTH" | "PASSKEY_REG" | "EMAIL_VERIFY";
   subject: string;
   challenge: string;
   expiresAt: number;

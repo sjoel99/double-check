@@ -161,7 +161,7 @@ DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
 - **Webapp adulterado:** a chave do webapp fica aberta no navegador durante a assinatura. Quem controla o código que o navegador roda (serviço comprometido servindo o webapp) pode capturá-la; com o voto do serviço, são 2 votos. Endurecimento: hospedar o webapp separado do serviço. Ver THREAT_MODEL #31.
 - **PRF obrigatória:** o aparelho precisa entregar a PRF da passkey (Chrome no Android com o gerenciador de senhas do Google). Teste em `/#/prf`.
 - **Perder a Phantom e todos os aparelhos** bloqueia a conta: são dois votos do usuário perdidos.
-- **Alertas simulados:** pedidos e vetos de troca só vão para o log; o webapp mostra o aviso na tela inicial. Falta o canal real (Telegram/e-mail).
+- **Alertas por e-mail (Resend):** pedido, veto e conclusão de troca de chave, envios executados e configuração fora do modelo. O e-mail é cadastrado em Segurança com a biometria (chave do webapp) e um código enviado ao endereço; a troca avisa também o endereço antigo. Sem `RESEND_API_KEY` e `DK_EMAIL_FROM`, os alertas só vão para o log.
 - **Mainnet bloqueada:** as chaves do serviço são de desenvolvimento; é preciso KMS/HSM antes.
 - **Só transferência de SOL.** Swap fica para depois.
 - **Mobile Wallet Adapter só no Android.**

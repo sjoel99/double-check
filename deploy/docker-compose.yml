@@ -43,6 +43,9 @@ services:
       DK_ADMIN_TOKEN: ${DK_ADMIN_TOKEN}
       DK_KEYS_DIR: /data/keys
       DK_SECURITY_DELAY: ${DK_SECURITY_DELAY:-259200}
+      # Alertas por e-mail (Resend). Vazios: alertas só no log.
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      DK_EMAIL_FROM: ${DK_EMAIL_FROM:-}
     volumes:
       - /root/duplachave/data/keys:/data/keys
     depends_on: [duplachave-db]

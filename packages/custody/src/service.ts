@@ -32,6 +32,8 @@ import {
   type SecurityChangeRole,
   securityRequestInstructionsFor,
   vetoMessage,
+  emailBindingMessage,
+  emailInput,
 } from "./client";
 import type { ServerKeyProvider, ServiceKeys } from "./keys";
 import type { NotificationService } from "./notifications";
@@ -167,7 +169,7 @@ export class CustodyService {
     } catch (e) {
       await this.audit({ type: "INVARIANT_VIOLATION", accountId: acc.id, multisig: acc.multisig, details: { error: String(e) } });
       await this.store.saveSecurityEvent({ id: randomUUID(), accountId: acc.id, code: "INVARIANT_VIOLATION", message: String(e), at: this.now() });
-      await this.cfg.notifications.securityAlert({ userId: acc.userId, accountId: acc.id }, { code: "INVARIANT_VIOLATION", message: String(e) });
+      await this.cfg.notifications.event({ userId: acc.userId, accountId: acc.id }, { kind: "INVARIANT_VIOLATION", message: String(e) });
       throw e;
     }
     return state;
@@ -651,6 +653,8 @@ export class CustodyService {
     const common = { accountId: acc.id, multisig: acc.multisig, transactionIndex: entry.index, intentId: intent.id, intentHash: intent.intentHash, txSignature: txid };
     await this.audit({ type: "CLIENT_APPROVED", publicKey: acc.roles.client, ...common });
     await this.audit({ type: "TRANSACTION_EXECUTED", ...common, details: { atomic: true, paidBy: "wallet", late } });
+    if (intent.type === "TRANSFER_SOL")
+      await this.cfg.notifications.event({ userId: acc.userId, accountId: acc.id }, { kind: "TRANSFER_EXECUTED", amountLamports: intent.amountLamports, destination: intent.destination, signature: txid });
     return (await this.store.getIntent(intent.id))!;
   }
 
@@ -862,10 +866,7 @@ export class CustodyService {
       const executeAfter = this.now() + this.securityDelay;
       const out = await this.setChange(c, "PENDING", undefined, { executeAfter, prepared: null, signatures: { ...c.signatures, request: sig } });
       await this.audit({ type: "SECURITY_CHANGE_REQUESTED", accountId: acc.id, multisig: acc.multisig, transactionIndex: c.index, txSignature: sig, publicKey: c.newKey, details: { changeId: c.id, role: c.role, oldKey: c.oldKey, executeAfter } });
-      await this.cfg.notifications.securityAlert(
-        { userId: acc.userId, accountId: acc.id },
-        { code: "SECURITY_CHANGE_REQUESTED", message: `Pedido de troca (${c.role}) para ${c.newKey}. Executa em ${new Date(executeAfter * 1000).toISOString()} se ninguém vetar. Não foi você? Abra o app e toque em "Não fui eu".` },
-      );
+      await this.cfg.notifications.event({ userId: acc.userId, accountId: acc.id }, { kind: "CHANGE_REQUESTED", changeId: c.id, role: c.role, newKey: c.newKey, executeAfter });
       return out;
     });
   }
@@ -889,7 +890,7 @@ export class CustodyService {
       const out = await this.setChange(c, "VETOED", `vetada por ${args.publicKey}`);
       if (c.role === "SERVER") await this.cfg.serverKeys.retire(c.newKey);
       await this.audit({ type: "SECURITY_CHANGE_VETOED", accountId: acc.id, multisig: acc.multisig, transactionIndex: c.index, publicKey: args.publicKey, details: { changeId: c.id, role: c.role, newKey: c.newKey } });
-      await this.cfg.notifications.securityAlert({ userId: acc.userId, accountId: acc.id }, { code: "SECURITY_CHANGE_VETOED", message: `Troca de chave (${c.role}) cancelada.` });
+      await this.cfg.notifications.event({ userId: acc.userId, accountId: acc.id }, { kind: "CHANGE_VETOED", changeId: c.id, role: c.role, newKey: c.newKey });
       return out;
     });
   }
@@ -969,6 +970,7 @@ export class CustodyService {
     await this.store.saveAccount({ ...acc, roles, frozenBy: null });
     const out = await this.setChange(c, "EXECUTED", undefined, { prepared: null, signatures: { ...c.signatures, execute: sig } });
     await this.audit({ type: "SECURITY_CHANGE_EXECUTED", accountId: acc.id, multisig: acc.multisig, transactionIndex: c.index, txSignature: sig, publicKey: c.newKey, details: { changeId: c.id, role: c.role, oldKey: c.oldKey } });
+    await this.cfg.notifications.event({ userId: acc.userId, accountId: acc.id }, { kind: "CHANGE_EXECUTED", changeId: c.id, role: c.role, newKey: c.newKey });
     return out;
   }
 
@@ -1007,6 +1009,50 @@ export class CustodyService {
   }
 
   // -------------------------------------------------------------------------
+  // e-mail de alerta
+  // -------------------------------------------------------------------------
+
+  /**
+   * Cadastrar/trocar o e-mail de alerta, passo 1. Exige a assinatura da chave
+   * do webapp (biometria): quem só tem a seed da Phantom — e por isso uma
+   * sessão — não consegue desviar os alertas. Manda um código ao endereço novo.
+   */
+  async startEmailChange(accountId: string, args: { email: string; signature: string }) {
+    const acc = await this.account(accountId);
+    const email = normalizeEmail(args.email);
+    const text = emailBindingMessage(acc.multisig, email);
+    if (!verifyEd25519(utf8(text), decodeSignature(args.signature), new PublicKey(acc.roles.webapp))) deny("WEBAPP_BAD_SIGNATURE", "o e-mail não foi confirmado pela chave do webapp");
+    const id = randomUUID();
+    const code = sixDigitCode();
+    const expiresAt = this.now() + EMAIL_CODE_TTL;
+    await this.store.putChallenge({ id, purpose: "EMAIL_VERIFY", subject: `${accountId}:${email}`, challenge: emailCodeHash(id, code), expiresAt });
+    await this.cfg.notifications.sendCode(email, code);
+    return { challengeId: id, email, expiresAt };
+  }
+
+  /** Passo 2: o código que chegou no endereço novo. Uma tentativa por código. */
+  async confirmEmailChange(accountId: string, args: { challengeId: string; code: string }) {
+    const acc = await this.account(accountId);
+    const ch = await this.store.takeChallenge(args.challengeId);
+    if (!ch || ch.purpose !== "EMAIL_VERIFY" || !ch.subject.startsWith(`${accountId}:`) || ch.expiresAt < this.now()) deny("CHALLENGE_INVALID", "código vencido ou já usado; peça outro");
+    if (ch.challenge !== emailCodeHash(ch.id, String(args.code).trim())) deny("EMAIL_CODE_WRONG", "código errado; peça outro");
+    const email = ch.subject.slice(accountId.length + 1);
+    const user = await this.store.getUser(acc.userId);
+    if (!user) deny("USER_NOT_FOUND", acc.userId);
+    const previous = user.email ?? null;
+    await this.store.saveUser({ ...user, email, emailVerifiedAt: this.now() });
+    await this.audit({ type: "ALERT_EMAIL_CHANGED", accountId, publicKey: acc.roles.webapp, details: { email: maskEmail(email), previous: previous && maskEmail(previous) } });
+    // O endereço antigo também fica sabendo.
+    await this.cfg.notifications.event({ userId: acc.userId, accountId }, { kind: "EMAIL_CHANGED", newEmail: maskEmail(email) }, { alsoTo: previous });
+    return { email: maskEmail(email) };
+  }
+
+  /** E-mail confirmado do usuário (para o envio dos alertas). */
+  async alertEmailOf(userId: string): Promise<string | null> {
+    return (await this.store.getUser(userId))?.email ?? null;
+  }
+
+  // -------------------------------------------------------------------------
   // leitura
   // -------------------------------------------------------------------------
 
@@ -1031,6 +1077,7 @@ export class CustodyService {
       walletLamports: (await this.chain.getBalance(new PublicKey(acc.roles.client)).catch(() => 0n)).toString(),
       members: await this.store.listMembers(accountId),
       securityChanges: (await this.store.listSecurityChanges(accountId)).slice(0, 10).map(({ prepared: _p, newKeyBlob: _b, ...c }) => c),
+      alertEmail: await this.store.getUser(acc.userId).then((u) => (u?.email ? maskEmail(u.email) : null)),
       webappDevices: (await this.store.listWebappKeys(accountId)).filter((k) => !k.revokedAt && k.publicKey === acc.roles.webapp).map((k) => ({ deviceName: k.deviceName, createdAt: k.createdAt })),
     };
   }
@@ -1040,6 +1087,33 @@ export class CustodyService {
 export function webappCopyMessage(multisig: string, credentialId: string) {
   return `Dupla Chave: guardar a chave do webapp cifrada para outra biometria. Conta ${multisig}. Credencial ${credentialId}`;
 }
+
+const EMAIL_CODE_TTL = 600;
+
+function normalizeEmail(raw: string) {
+  const e = emailInput(String(raw ?? ""));
+  if (e.length > 254 || !/^[^\s@<>"]+@[^\s@<>"]+\.[a-z]{2,}$/.test(e)) deny("EMAIL_INVALID", "e-mail inválido");
+  return e;
+}
+
+export function maskEmail(e: string) {
+  const [u, d] = e.split("@");
+  return `${u!.slice(0, 1)}${"*".repeat(Math.max(2, u!.length - 1))}@${d}`;
+}
+
+/**
+ * Código de 6 dígitos sem viés: 20 bits do CSPRNG, descarta >= 10^6 (~5%).
+ * Só inteiros de 32 bits: com o LiteSVM carregado (testes), o resto de double
+ * (`x % 1e6` com x > 2^31, e o randomInt do Node) volta NaN.
+ */
+function sixDigitCode(): string {
+  for (;;) {
+    const n = parseInt(randomHex(3), 16) >>> 4;
+    if (n < 1_000_000) return String(n).padStart(6, "0");
+  }
+}
+
+const emailCodeHash = (id: string, code: string) => createHash("sha256").update(`${id}:${code}`).digest("hex");
 
 /** Assinatura em base64 ou base58. */
 function decodeSignature(s: string): Uint8Array {

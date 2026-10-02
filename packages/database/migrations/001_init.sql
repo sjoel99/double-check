@@ -9,6 +9,9 @@ CREATE TABLE IF NOT EXISTS users (
   policy      jsonb NOT NULL,
   created_at  bigint NOT NULL
 );
+-- E-mail de alerta (confirmado por código e pela chave do webapp).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at bigint;
 
 CREATE TABLE IF NOT EXISTS devices (
   id          text PRIMARY KEY,

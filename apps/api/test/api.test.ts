@@ -3,7 +3,7 @@ import { Keypair, PublicKey } from "@solana/web3.js";
 import bs58 from "bs58";
 import { DevMemorySigner } from "@duplachave/crypto";
 import { loginMessage } from "@duplachave/crypto";
-import { signAsWallet, vetoMessage } from "@duplachave/custody";
+import { emailBindingMessage, signAsWallet, vetoMessage } from "@duplachave/custody";
 import { solToLamports } from "../src/server";
 import { blob, enroll, fromB64, setup, signIntent, signText, SOL } from "./helpers";
 
@@ -100,5 +100,22 @@ describe("API (modelo 2 de 3)", () => {
     expect(found.json).toMatchObject({ accountId: account.id, publicKey: account.roles.webapp });
     expect((await t.call("POST", "/v1/webapp-keys/lookup", { credentialId: "nao-existe-123" })).json.error).toBe("WEBAPP_KEY_NOT_FOUND");
     void loginMessage;
+  });
+
+  it("e-mail de alerta: exige sessão e a assinatura da chave do webapp", async () => {
+    const t = await setup();
+    const { wallet, webapp, token, account } = await enroll(t);
+    const email = "dono@exemplo.com";
+    const text = emailBindingMessage(account.multisig, email);
+    expect((await t.call("POST", `/v1/accounts/${account.id}/email/start`, { email, signature: await signText(webapp, text) })).status).toBe(401);
+    const byPhantom = await t.call("POST", `/v1/accounts/${account.id}/email/start`, { email, signature: await signText(wallet, text) }, token);
+    expect(byPhantom.json.error).toBe("WEBAPP_BAD_SIGNATURE");
+    const ok = await t.call("POST", `/v1/accounts/${account.id}/email/start`, { email: " Dono@Exemplo.com ", signature: await signText(webapp, text) }, token);
+    expect(ok.status).toBe(200);
+    expect(ok.json.email).toBe(email);
+    const bad = await t.call("POST", `/v1/accounts/${account.id}/email/confirm`, { challengeId: ok.json.challengeId, code: "abc" }, token);
+    expect(bad.status).toBe(400);
+    const sec = await t.call("GET", `/v1/accounts/${account.id}/security`, undefined, token);
+    expect(sec.json.alertEmail).toBeNull();
   });
 });

@@ -42,7 +42,7 @@ PREPARED ──(pedido entra na chain)──► PENDING ──(72 h + execução
 
 - **Seed vazada:** o atacante também veta a troca legítima da Phantom, um impasse. Ele não move fundos, porque falta a chave do webapp. O usuário, que tem as duas chaves, pode mover tudo para uma conta nova.
 - **Perder a Phantom e todos os aparelhos:** são dois votos do usuário perdidos, e a conta fica bloqueada.
-- **Alertas:** sem alerta real (pendente), o usuário só vê o pedido abrindo o webapp. A tela inicial mostra o aviso de troca pendente.
+- **Alertas:** o pedido gera e-mail na hora (se o usuário cadastrou um), com a data de execução e o caminho do "Não fui eu". Sem e-mail, só o aviso na tela inicial. O serviço comprometido pode suprimir o e-mail.
 
 ## Testes
 

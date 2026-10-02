@@ -232,6 +232,22 @@ export async function buildServer(d: ApiDeps) {
     return { ok: true };
   });
 
+  // ---------------------------------------------------------------- e-mail de alerta
+  // Cadastrar/trocar exige a chave do webapp (biometria) e o código enviado ao endereço novo.
+  app.post("/v1/accounts/:id/email/start", { config: { rateLimit: { max: 5, timeWindow: "10 minutes" } } }, async (req) => {
+    const { id } = req.params as { id: string };
+    await ownAccount(req, id);
+    const body = z.object({ email: z.string().min(3).max(254), signature }).parse(req.body);
+    return d.custody.startEmailChange(id, body);
+  });
+
+  app.post("/v1/accounts/:id/email/confirm", { config: { rateLimit: { max: 10, timeWindow: "10 minutes" } } }, async (req) => {
+    const { id } = req.params as { id: string };
+    await ownAccount(req, id);
+    const body = z.object({ challengeId: z.string().uuid(), code: z.string().regex(/^\s*\d{6}\s*$/) }).parse(req.body);
+    return d.custody.confirmEmailChange(id, body);
+  });
+
   // ---------------------------------------------------------------- trocas de chave (72 h)
   const changeView = (c: Awaited<ReturnType<CustodyService["listSecurityChanges"]>>[number]) => {
     const { prepared: _p, newKeyBlob: _b, ...rest } = c;

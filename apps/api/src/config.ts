@@ -16,6 +16,10 @@ const Env = z.object({
   DK_SESSION_SECRET: z.string().min(32).optional(),
   /** Token do painel administrativo (só pede rotação da chave do servidor; não aprova nada). */
   DK_ADMIN_TOKEN: z.string().min(16).optional(),
+  /** Resend (alertas por e-mail). Sem a chave, os alertas só vão para o log. */
+  RESEND_API_KEY: z.string().min(10).optional(),
+  /** Remetente, num domínio verificado na Resend. Ex.: "Dupla Chave <alertas@sjoel99.com>". */
+  DK_EMAIL_FROM: z.string().min(3).optional(),
   /** Pasta das chaves de serviço em dev (fora do repo, 0600). */
   DK_KEYS_DIR: z.string().default(".data/keys"),
   /** Chave (hex, 32 bytes) que cifra as seeds em DK_KEYS_DIR. Sem ela, chaves só em memória. */
@@ -32,5 +36,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (cfg.SQUADS_PROGRAM_ID !== multisig.PROGRAM_ID.toBase58()) {
     throw new Error(`SQUADS_PROGRAM_ID ${cfg.SQUADS_PROGRAM_ID} diferente do programa do SDK (${multisig.PROGRAM_ID.toBase58()})`);
   }
+  if (cfg.RESEND_API_KEY && !cfg.DK_EMAIL_FROM) throw new Error("RESEND_API_KEY sem DK_EMAIL_FROM (remetente num domínio verificado na Resend)");
   return cfg;
 }
