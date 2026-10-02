@@ -159,9 +159,32 @@ DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
 ## Limites desta versão
 
 - **Webapp adulterado:** a chave do webapp fica aberta no navegador durante a assinatura. Quem controla o código que o navegador roda (serviço comprometido servindo o webapp) pode capturá-la; com o voto do serviço, são 2 votos. Endurecimento: hospedar o webapp separado do serviço. Ver THREAT_MODEL #31.
-- **PRF obrigatória:** o aparelho precisa entregar a PRF da passkey (Chrome no Android com o gerenciador de senhas do Google). Teste em `/#/prf`.
+- **PRF obrigatória:** o aparelho precisa entregar a PRF da passkey. Testado: Chrome no Android (digital) e Chrome no computador (PIN do gerenciador de senhas do Google). Teste em `/#/prf`.
 - **Perder a Phantom e todos os aparelhos** bloqueia a conta: são dois votos do usuário perdidos.
 - **Alertas por e-mail (Resend):** pedido, veto e conclusão de troca de chave, envios executados e configuração fora do modelo. O e-mail é cadastrado em Segurança com a biometria (chave do webapp) e um código enviado ao endereço; a troca avisa também o endereço antigo. Sem `RESEND_API_KEY` e `DK_EMAIL_FROM`, os alertas só vão para o log.
 - **Mainnet bloqueada:** as chaves do serviço são de desenvolvimento; é preciso KMS/HSM antes.
 - **Só transferência de SOL.** Swap fica para depois.
 - **Mobile Wallet Adapter só no Android.**
+
+## Estado e retomada (2026-10-02)
+
+**No ar:** https://dupla.sjoel99.com (devnet, VPS `contabo`).
+- Modelo 2 de 3, prazo de 72 h nas trocas.
+- Alertas pela Resend, remetente `alertas@sjoel99.com`. O domínio tem DKIM, SPF e DMARC (`p=none`).
+- **Atualizar:** `scripts/deploy-vps.sh`, fora da rotina do solbalance (00h05 e 13h UTC). Não mexe em banco, chaves nem `.env`.
+- **Resend:** a cópia local fica em `deploy/.env.resend`, fora do git e do rsync. Para mudar, copie as duas linhas para `/root/duplachave/deploy/.env` e rode `docker compose up -d duplachave-api`; o `restart` não relê o env.
+- **Contas antigas (2 de 2):** ficaram arquivadas no banco (`roles.client = "legado:…"`, `frozen_by = "legado-2de2"`). Os 3,5 SOL de devnet ficaram no Vault antigo `3idz…`.
+
+**Já testado em produção:**
+- PRF no Chrome do computador e do Android;
+- cadastro do e-mail de alerta (o primeiro e-mail caiu no spam, antes do DMARC).
+
+**Próximos passos:**
+1. Cadastro da conta nova com a Phantom e envio pelo QR no Android (digital + Phantom numa abertura só); conferir se a passkey criada no computador sincroniza com o celular.
+2. Conferir no Gmail ("Mostrar original") SPF/DKIM/DMARC PASS e se os alertas saem do spam.
+3. Testar "Recuperar o webapp" + "Não fui eu" de ponta a ponta com e-mail.
+4. Textos do webapp: "biometria" → "biometria ou PIN" (pendente de decisão).
+5. Nome definitivo do produto/domínio (provisório: dupla.sjoel99.com).
+
+**Armadilha nos testes:** com o LiteSVM carregado, o resto de double (`x % 1e6` com x > 2^31) e o `randomInt` do Node dão NaN ou travam. Use só inteiros de 32 bits.
+
