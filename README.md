@@ -166,7 +166,7 @@ DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
 - **Só transferência de SOL.** Swap fica para depois.
 - **Mobile Wallet Adapter só no Android.**
 
-## Estado e retomada (2026-10-02)
+## Estado e retomada (2026-10-04)
 
 **No ar:** https://dupla.sjoel99.com (devnet, VPS `contabo`).
 - Modelo 2 de 3, prazo de 72 h nas trocas.
@@ -177,14 +177,32 @@ DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
 
 **Já testado em produção:**
 - PRF no Chrome do computador e do Android;
-- cadastro do e-mail de alerta (o primeiro e-mail caiu no spam, antes do DMARC).
+- cadastro do e-mail de alerta (o primeiro e-mail caiu no spam, antes do DMARC);
+- testadores externos (2026-10-03/04): Backpack no Windows criou conta e enviou;
+  iPhone abriu o QR, mas não tem como conectar carteira (ver limites abaixo).
+
+**Feito em 2026-10-04:**
+- Envio: a biometria vem antes de preparar a transação (o blockhash vale ~1 min;
+  um testador levou 79 s e deu `BlockhashNotFound`). Se vencer na carteira, o
+  erro é `TX_EXPIRED` com texto claro e dá para assinar de novo.
+- Textos dizem "carteira" (ou o nome da conectada), não "Phantom".
+- iPhone: aviso "No iPhone ainda não funciona" na entrada e na página do QR.
+- Revisão de UX: erros do serviço legíveis (política em português), formulário
+  de envio com saldo/limite/Máx/Colar, prazo vencido com "Criar de novo",
+  "Endereço novo" só no primeiro envio, resultado com os 4 passos reais, aviso
+  para cadastrar o e-mail de alerta, histórico em português, cabeçalho e
+  rodapés corrigidos no celular e no computador.
 
 **Próximos passos:**
 1. Cadastro da conta nova com a Phantom e envio pelo QR no Android (digital + Phantom numa abertura só); conferir se a passkey criada no computador sincroniza com o celular.
 2. Conferir no Gmail ("Mostrar original") SPF/DKIM/DMARC PASS e se os alertas saem do spam.
 3. Testar "Recuperar o webapp" + "Não fui eu" de ponta a ponta com e-mail.
-4. Textos do webapp: "biometria" → "biometria ou PIN" (pendente de decisão).
-5. Nome definitivo do produto/domínio (provisório: dupla.sjoel99.com).
+4. Deixar um envio passar dos 10 min em produção e conferir a tela "Criar de novo" (não deu para ver no local).
+5. iPhone (decisão em aberto): (b) links da própria carteira (Phantom/Solflare
+   abrem o app, assinam e voltam ao Safari) ou (c) navegador dentro da carteira
+   (a passkey provavelmente falha lá; precisa testar).
+6. Textos do webapp: "biometria" → "biometria ou PIN" (pendente de decisão).
+7. Nome definitivo do produto/domínio (provisório: dupla.sjoel99.com).
 
 **Armadilha nos testes:** com o LiteSVM carregado, o resto de double (`x % 1e6` com x > 2^31) e o `randomInt` do Node dão NaN ou travam. Use só inteiros de 32 bits.
 
