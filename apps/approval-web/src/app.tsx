@@ -214,7 +214,7 @@ function DevWalletSheet({ req, onDone }: { req: ConfirmReq; onDone: (ok: boolean
           </button>
         </div>
         <div className="subtle" style={{ fontSize: 11, textAlign: "center" }}>
-          {req.kind === "biometric" ? "Biometria de teste do ambiente local. No celular, é a digital ou o rosto do próprio aparelho." : "Carteira de teste do ambiente local. Com a Phantom, esta janela é a da própria Phantom."}
+          {req.kind === "biometric" ? "Biometria de teste do ambiente local. No celular, é a digital ou o rosto do próprio aparelho." : "Carteira de teste do ambiente local. Com uma carteira de verdade, esta janela é a da própria carteira."}
         </div>
       </div>
     </div>
@@ -275,7 +275,7 @@ export async function loginWithBiometrics(ctx: Ctx, onStep: (s: string) => void)
   const key = await unlockWebappKey(null, {
     devTools: ctx.config.devTools,
     confirm: ctx.biometric,
-    what: "Entrar com a biometria (sem a Phantom)",
+    what: "Entrar com a biometria (sem a carteira)",
     lookup: async (credentialId) => {
       const r = await api("POST", "/v1/webapp-keys/lookup", { credentialId }, { auth: false });
       found = r;
@@ -287,7 +287,7 @@ export async function loginWithBiometrics(ctx: Ctx, onStep: (s: string) => void)
     const ch = await api("POST", "/v1/auth/challenge", { publicKey: pub }, { auth: false });
     const signature = (await import("bs58")).default.encode(key.sign(new TextEncoder().encode(ch.message)));
     const r = await api("POST", "/v1/auth/webapp", { challengeId: ch.challengeId, publicKey: pub, signature }, { auth: false });
-    const s: Session = { token: r.token, accountId: r.account.id, walletName: "sem Phantom", publicKey: r.account.roles.client, myRotations: [], via: "webapp" };
+    const s: Session = { token: r.token, accountId: r.account.id, walletName: "sem carteira", publicKey: r.account.roles.client, myRotations: [], via: "webapp" };
     void found;
     await ctx.setSession(s);
     return s;

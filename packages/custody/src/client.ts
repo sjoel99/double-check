@@ -101,7 +101,7 @@ export function securityChangeParties(role: SecurityChangeRole, roles: AccountRo
 
 /** Texto que a chave nova assina (memo): prova de posse ligada a esta troca e a esta conta. */
 export function securityChangeMemo(c: SecurityChangeDesc) {
-  const what = c.role === "CLIENT" ? "nova Phantom" : c.role === "WEBAPP" ? "nova chave do webapp" : "nova chave do serviço";
+  const what = c.role === "CLIENT" ? "nova carteira" : c.role === "WEBAPP" ? "nova chave do webapp" : "nova chave do serviço";
   return `Dupla Chave: ${what} na conta ${c.multisig} (${c.cluster}). Pedido ${c.id}. Executa em ${Math.round(c.delaySeconds / 3600)} h, se ninguém vetar.`;
 }
 

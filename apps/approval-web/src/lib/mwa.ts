@@ -50,7 +50,7 @@ export function makeMwaWallet(opts: { chain: string; identity: { name: string; u
         trace(`mwa:${what}:autorizado`, `${auth.accounts.length} conta(s)`);
         const acc = toAccount(auth.accounts[0]!.address as string);
         const want = expected ?? account?.publicKey;
-        if (want && b64(want) !== b64(acc.publicKey)) throw new Error("A Phantom está em outra conta. Troque para a conta desta carteira e tente de novo.");
+        if (want && b64(want) !== b64(acc.publicKey)) throw new Error("A carteira está em outra conta. Troque para a conta certa e tente de novo.");
         account = acc;
         return fn(wallet, acc);
       });

@@ -228,9 +228,16 @@ export class CustodyService {
     try {
       return await this.chain.sendTransaction(tx);
     } catch (e) {
+      // O blockhash vale ~1 minuto: a pessoa demorou na carteira. Nada entrou na chain.
+      if (/BlockhashNotFound|block height exceeded/i.test(String((e as Error)?.message ?? e)))
+        deny("TX_EXPIRED", "a transação venceu enquanto esperava a assinatura na carteira (ela vale cerca de 1 minuto). Nada saiu da sua conta; assine de novo.");
       if (e instanceof ChainTxError) deny("WALLET_TX_FAILED", e.programError ?? e.message);
       throw e;
     }
+  }
+
+  private intentExpiredText() {
+    return `o prazo de ${Math.round(this.intentTtl / 60)} minutos para assinar este envio acabou. Nada saiu da sua conta; crie o envio de novo.`;
   }
 
   /**
@@ -282,7 +289,7 @@ export class CustodyService {
   async prepareEnrollment(args: { publicKey: string; walletName: string; webappPublicKey: string }): Promise<PreparedEnrollment> {
     const wallet = new PublicKey(args.publicKey);
     const webapp = new PublicKey(args.webappPublicKey);
-    if (wallet.equals(webapp)) deny("WEBAPP_IS_WALLET", "a chave do webapp não pode ser a Phantom");
+    if (wallet.equals(webapp)) deny("WEBAPP_IS_WALLET", "a chave do webapp não pode ser a carteira");
     for (const k of [args.publicKey, args.webappPublicKey]) {
       if (await this.store.isRevokedKey(k)) deny("KEY_REVOKED", "chave substituída não volta a valer");
       if (await this.cfg.serverKeys.get(k)) deny("CLIENT_KEY_IS_SERVER_KEY", "chave do servidor não pode ser do usuário");
@@ -303,7 +310,7 @@ export class CustodyService {
       rentCollector: wallet,
     });
     const id = randomUUID();
-    const memo = `Dupla Chave: criar sua conta 2 de 3 (sua Phantom + a chave do webapp + o serviço). Ref ${id.slice(0, 8)}`;
+    const memo = `Dupla Chave: criar sua conta 2 de 3 (sua carteira + a chave do webapp + o serviço). Ref ${id.slice(0, 8)}`;
     const instructions = [memoIx(memo, [wallet, webapp]), created.instruction];
     await this.simulateWalletPaid(wallet, instructions, "~0,003 SOL para criar a conta");
     const built = await this.walletPaid(wallet, instructions, [createKey]);
@@ -513,7 +520,7 @@ export class CustodyService {
       if (rec.status !== "AWAITING_CLIENT") deny("INTENT_NOT_PENDING", `intenção em ${rec.status}`);
       if (this.now() > rec.intent.expiresAt) {
         await this.expireIntent(rec);
-        deny("INTENT_EXPIRED", "intenção expirada");
+        deny("INTENT_EXPIRED", this.intentExpiredText());
       }
       const state = await this.verifiedState(acc);
       const index = state.transactionIndex + 1n;
@@ -550,7 +557,7 @@ export class CustodyService {
       const rec = await this.intentRecord(intentId);
       const acc = await this.account(rec.accountId);
       if (rec.status !== "AWAITING_CLIENT") deny("INTENT_NOT_PENDING", `intenção em ${rec.status}`);
-      if (this.now() > rec.intent.expiresAt) deny("INTENT_EXPIRED", "intenção expirada");
+      if (this.now() > rec.intent.expiresAt) deny("INTENT_EXPIRED", this.intentExpiredText());
       const now = this.now();
       const entries = rec.prepared ?? [];
       const entry = entries.find((e) => e.message === args.message);
@@ -834,7 +841,7 @@ export class CustodyService {
       if (entry.preparedAt <= this.now() - PREPARED_WINDOW) deny("PREPARED_EXPIRED", "o pedido venceu; peça de novo");
       const tx = new VersionedTransaction(VersionedMessage.deserialize(Buffer.from(args.message, "base64")));
       if (c.role === "CLIENT") {
-        if (!args.webappSignature) deny("WEBAPP_SIGNATURE_MISSING", "trocar a Phantom exige a chave do webapp (biometria)");
+        if (!args.webappSignature) deny("WEBAPP_SIGNATURE_MISSING", "trocar a carteira exige a chave do webapp (biometria)");
         const sig = decodeSignature(args.webappSignature);
         if (!verifyEd25519(tx.message.serialize(), sig, new PublicKey(acc.roles.webapp))) deny("WEBAPP_BAD_SIGNATURE", "a assinatura não é da chave do webapp desta conta");
         tx.addSignature(new PublicKey(acc.roles.webapp), sig);
@@ -884,7 +891,7 @@ export class CustodyService {
       const acc = await this.account(c.accountId);
       if (c.status !== "PENDING" && c.status !== "PREPARED") deny("CHANGE_NOT_OPEN", `troca em ${c.status}`);
       const allowed = c.role === "SERVER" ? [acc.roles.client, acc.roles.webapp] : [c.oldKey];
-      if (!allowed.includes(args.publicKey)) deny("VETO_NOT_ALLOWED", c.role === "CLIENT" ? "só a Phantom atual veta a troca dela" : c.role === "WEBAPP" ? "só a chave atual do webapp veta a troca dela" : "só uma chave do usuário veta");
+      if (!allowed.includes(args.publicKey)) deny("VETO_NOT_ALLOWED", c.role === "CLIENT" ? "só a carteira atual veta a troca dela" : c.role === "WEBAPP" ? "só a chave atual do webapp veta a troca dela" : "só uma chave do usuário veta");
       const text = vetoMessage({ id: c.id, multisig: acc.multisig, role: c.role, newKey: c.newKey });
       if (!verifyEd25519(utf8(text), decodeSignature(args.signature), new PublicKey(args.publicKey))) deny("BAD_SIGNATURE", "veto não assinado por essa chave");
       const out = await this.setChange(c, "VETOED", `vetada por ${args.publicKey}`);
@@ -952,7 +959,7 @@ export class CustodyService {
     let deviceId: string | null = null;
     if (c.role === "CLIENT") {
       deviceId = randomUUID();
-      await this.store.saveDevice({ id: deviceId, userId: acc.userId, name: "Phantom nova", publicKey: c.newKey, createdAt: now, revokedAt: null });
+      await this.store.saveDevice({ id: deviceId, userId: acc.userId, name: "Carteira nova", publicKey: c.newKey, createdAt: now, revokedAt: null });
       if (old?.deviceId) {
         const dev = await this.store.getDevice(old.deviceId);
         if (dev) await this.store.saveDevice({ ...dev, revokedAt: now });

@@ -41,7 +41,7 @@ export class LogNotificationService implements NotificationService {
 export type Email = { to: string; subject: string; text: string; html: string };
 
 const short = (k: string) => `${k.slice(0, 4)}…${k.slice(-4)}`;
-const ROLE: Record<"CLIENT" | "WEBAPP" | "SERVER", string> = { CLIENT: "Phantom", WEBAPP: "chave do webapp (biometria)", SERVER: "chave do serviço" };
+const ROLE: Record<"CLIENT" | "WEBAPP" | "SERVER", string> = { CLIENT: "carteira", WEBAPP: "chave do webapp (biometria)", SERVER: "chave do serviço" };
 const sol = (lamports: string) => (Number(BigInt(lamports)) / 1e9).toLocaleString("pt-BR", { maximumFractionDigits: 9 });
 const when = (t: number) => new Date(t * 1000).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "short", timeStyle: "short" }) + " (Brasília)";
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);

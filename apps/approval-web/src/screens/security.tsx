@@ -34,7 +34,7 @@ export type ChangeView = {
   executeAfter: number | null;
 };
 
-const ROLE_NAME: Record<ChangeView["role"], string> = { CLIENT: "Phantom", WEBAPP: "chave do webapp", SERVER: "chave do serviço" };
+const ROLE_NAME: Record<ChangeView["role"], string> = { CLIENT: "carteira", WEBAPP: "chave do webapp", SERVER: "chave do serviço" };
 const when = (t: number) => new Date(t * 1000).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
 const fromB64 = (b: string) => VersionedTransaction.deserialize(Uint8Array.from(atob(b), (c) => c.charCodeAt(0)));
 
@@ -107,7 +107,7 @@ export function PendingChange({ c, onDone }: { c: ChangeView; onDone: () => void
       let publicKey: string;
       let signature: string;
       if (c.role === "CLIENT") {
-        setBusy("Assine o veto na Phantom atual…");
+        setBusy("Assine o veto na carteira atual…");
         const w = await ctx.accountWallet();
         publicKey = w.publicKey;
         signature = await w.signMessage(text);
@@ -331,7 +331,7 @@ export function Security() {
   const roles = acc?.account.roles as unknown as { client: string; webapp: string; server: string; operator: string } | undefined;
   const label = (k: string) =>
     k === roles?.client
-      ? { icon: "key", title: "Sua Phantom", sub: "vota e paga", role: "Vota", accent: true }
+      ? { icon: "key", title: "Sua carteira", sub: "vota e paga", role: "Vota", accent: true }
       : k === roles?.webapp
         ? { icon: "finger", title: "Chave do webapp", sub: "aberta pela biometria", role: "Vota", accent: true }
         : k === roles?.server
@@ -360,7 +360,7 @@ export function Security() {
             2 de 3
           </div>
           <div style={{ fontSize: 13, color: "#b4bac4", lineHeight: 1.45 }}>
-            Envios: sua Phantom + a chave do webapp (biometria), e só o operador do serviço executa, depois de conferir a política. Trocar qualquer chave leva 72 h e pode ser vetado.
+            Envios: sua carteira + a chave do webapp (biometria), e só o operador do serviço executa, depois de conferir a política. Trocar qualquer chave leva 72 h e pode ser vetado.
           </div>
         </div>
         <div>
@@ -394,7 +394,7 @@ export function Security() {
           </div>
         )}
         <button type="button" className="btn" style={{ height: 52 }} disabled={open} onClick={() => ctx.go("/change/client")}>
-          <Icon name="key" size={18} /> Trocar a Phantom
+          <Icon name="key" size={18} /> Trocar a carteira
         </button>
         <button type="button" className="btn" style={{ height: 52 }} disabled={open || ctx.session?.via === "webapp"} onClick={() => ctx.go("/change/webapp")}>
           <Icon name="finger" size={18} /> Recuperar o webapp neste aparelho
@@ -439,13 +439,13 @@ export function ChangeClient() {
     try {
       setBusy(`Conectando à ${w.name}…`);
       const next = await ctx.connect(w);
-      if (next.publicKey === s.publicKey) throw new Error("Essa é a Phantom atual. Na Phantom, mude para a conta nova (ou use outra carteira).");
+      if (next.publicKey === s.publicKey) throw new Error("Essa é a carteira atual da conta. Na carteira, mude para a conta nova (ou use outra carteira).");
       const info = await accountInfo(s.accountId);
       setBusy("Preparando o pedido…");
       const r = await api<{ change: ChangeView; desc: SecurityChangeDesc; transaction: string }>("POST", `/v1/accounts/${s.accountId}/security-changes`, { role: "CLIENT", newKey: next.publicKey });
       const review = await reviewSecurityRequest(ctx.chain, r.desc, r.transaction, { client: new PublicKey(info.client), webapp: new PublicKey(info.webapp) });
       setBusy("Confirme com a biometria (a chave do webapp vota o pedido)…");
-      const key = await unlockAccountKey(ctx, await accountKeyBlobs(`/v1/accounts/${s.accountId}/webapp-keys`), `Trocar a Phantom por ${short(next.publicKey)} (executa em 72 h)`);
+      const key = await unlockAccountKey(ctx, await accountKeyBlobs(`/v1/accounts/${s.accountId}/webapp-keys`), `Trocar a carteira por ${short(next.publicKey)} (executa em 72 h)`);
       let webappSignature: string;
       try {
         webappSignature = signatureB58(key.sign(review.message));
@@ -454,7 +454,7 @@ export function ChangeClient() {
       }
       const auth = await api<{ transaction: string }>("POST", `/v1/security-changes/${r.change.id}/authorize`, { message: Buffer.from(review.message).toString("base64"), webappSignature });
       const tx = verifyAuthorized(review, auth.transaction, [review.roles.operator, review.roles.webapp, review.roles.server]);
-      setBusy(`Confirme na ${next.name} (a Phantom nova paga ~0,006 SOL, que voltam na conclusão)…`);
+      setBusy(`Confirme na ${next.name} (a carteira nova paga ~0,006 SOL, que voltam na conclusão)…`);
       const signed = await next.signTransaction(tx);
       setDone(await api<ChangeView>("POST", `/v1/security-changes/${r.change.id}/submit`, { transaction: signed }));
     } catch (e) {
@@ -466,21 +466,21 @@ export function ChangeClient() {
 
   return (
     <>
-      <TopBar title="Trocar a Phantom" back="/security" />
+      <TopBar title="Trocar a carteira" back="/security" />
       <div className="page">
         {done ? (
           <div className="banner ok">
             <Icon name="check" size={18} color="var(--accent)" />
             <div>
-              Pedido feito. A Phantom nova passa a valer em <b>{when(done.executeAfter!)}</b>, se a atual não vetar. Depois disso, toque em "Concluir troca" em Segurança.
+              Pedido feito. A carteira nova passa a valer em <b>{when(done.executeAfter!)}</b>, se a atual não vetar. Depois disso, toque em "Concluir troca" em Segurança.
             </div>
           </div>
         ) : (
           <>
             <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
-              A chave do webapp (com a sua biometria) e o serviço aprovam o pedido. A Phantom nova paga a taxa e o depósito das contas (~0,006 SOL, que voltam). A troca só executa em <b>72 h</b>: se alguém pedir no seu lugar, a Phantom atual veta.
+              A chave do webapp (com a sua biometria) e o serviço aprovam o pedido. A carteira nova paga a taxa e o depósito das contas (~0,006 SOL, que voltam). A troca só executa em <b>72 h</b>: se alguém pedir no seu lugar, a carteira atual veta.
             </div>
-            <div className="section-title">Conecte a Phantom NOVA</div>
+            <div className="section-title">Conecte a carteira NOVA</div>
             <WalletList onPick={pick} busy={Boolean(busy)} exclude={s.walletName} />
           </>
         )}
@@ -552,7 +552,7 @@ export function ChangeWebapp() {
         ) : (
           <>
             <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
-              Use quando perder o aparelho com a chave do webapp. Uma chave nova nasce aqui, protegida pela sua biometria. A sua Phantom e o serviço aprovam; a troca só executa em <b>72 h</b>. Se alguém com a sua Phantom tentar isso, a chave atual do webapp veta.
+              Use quando perder o aparelho com a chave do webapp. Uma chave nova nasce aqui, protegida pela sua biometria. A sua carteira e o serviço aprovam; a troca só executa em <b>72 h</b>. Se alguém com a sua carteira tentar isso, a chave atual do webapp veta.
             </div>
             <button type="button" className="btn primary" disabled={Boolean(busy)} onClick={run}>
               <Icon name="finger" color="#0B0D10" sw={2} /> Criar a chave nova aqui e pedir a troca

@@ -75,7 +75,7 @@ export function Welcome() {
       const c = await ctx.connect(w);
       const s = await loginOrEnroll(ctx, c, setStep);
       ctx.go("/");
-      ctx.toast(s.created ? "Conta 2 de 3 criada: sua Phantom + a chave do webapp (biometria) + o serviço." : "Você entrou.");
+      ctx.toast(s.created ? `Conta 2 de 3 criada: sua ${c.name} + a chave do webapp (biometria) + o serviço.` : "Você entrou.");
     } catch (e) {
       setErr(errorText(e));
     } finally {
@@ -88,12 +88,12 @@ export function Welcome() {
       <Logo size={52} />
       <div style={{ fontSize: 30, fontWeight: 600, letterSpacing: "-0.03em", lineHeight: 1.1 }}>Seus fundos só saem com duas assinaturas.</div>
       <div className="muted" style={{ fontSize: 15, lineHeight: 1.55 }}>
-        Três chaves: a sua Phantom, a chave do webapp (protegida pela biometria do seu aparelho) e a do serviço. Um envio precisa da Phantom e da biometria, e só o serviço executa, depois de conferir a sua política. Quem garante é o programa da Squads na Solana.
+        Três chaves: a sua carteira (Phantom, Backpack, Solflare…), a chave do webapp (protegida pela biometria do seu aparelho) e a do serviço. Um envio precisa da carteira e da biometria, e só o serviço executa, depois de conferir a sua política. Quem garante é o programa da Squads na Solana.
       </div>
       <div className="steps">
         {[
           ["1", "Conecte sua carteira", "Phantom, Backpack, Solflare…"],
-          ["2", "Biometria + Phantom", "a biometria protege a chave do webapp; a Phantom paga ~0,003 SOL, uma vez só"],
+          ["2", "Biometria + carteira", "a biometria protege a chave do webapp; a carteira paga ~0,003 SOL, uma vez só"],
           ["3", "Pronto", "sua conta 2 de 3 existe na Solana; cada envio custa ~0,000015 SOL"],
         ].map(([n, t, s]) => (
           <div key={n} className="step">
@@ -112,7 +112,7 @@ export function Welcome() {
           <PhoneQr
             create={() => api("POST", "/v1/pay/connect", {}, { auth: false })}
             title="Continue no celular"
-            steps={["Aponte a câmera do celular para o código e abra o link", "No celular, entre com a Phantom (carteira nova cria a conta: ~0,003 SOL)", "Este computador entra na mesma conta"]}
+            steps={["Aponte a câmera do celular para o código e abra o link", "No celular, entre com a sua carteira (se for nova, cria a conta: ~0,003 SOL)", "Este computador entra na mesma conta"]}
             onDone={fromPhone}
           />
           <button type="button" className="linkbtn" onClick={() => setPhone(false)}>
@@ -126,7 +126,7 @@ export function Welcome() {
           </div>
           <div className="grow">
             <div className="t">Usar a carteira do celular</div>
-            <div className="s">Escaneie com a câmera; a Phantom abre pelo app</div>
+            <div className="s">Escaneie com a câmera; a carteira abre pelo app</div>
           </div>
           <Icon name="chev" size={18} color="var(--muted)" />
         </button>
@@ -148,7 +148,7 @@ export function Welcome() {
           try {
             await loginWithBiometrics(ctx, setStep);
             ctx.go("/security");
-            ctx.toast("Você entrou com a biometria. Para trocar a Phantom, use 'Trocar a Phantom'.");
+            ctx.toast("Você entrou com a biometria. Para trocar a carteira, use 'Trocar a carteira'.");
           } catch (e) {
             setErr(errorText(e));
           } finally {
@@ -156,7 +156,7 @@ export function Welcome() {
           }
         }}
       >
-        Perdeu a Phantom? Entrar com a biometria
+        Perdeu a carteira? Entrar com a biometria
       </button>
       <div className="subtle" style={{ fontSize: 12, lineHeight: 1.5 }}>
         Já tem conta? Escolha a mesma carteira: o app reconhece e só pede para confirmar a entrada. Todas as taxas saem da sua carteira; o serviço não paga nada.

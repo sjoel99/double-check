@@ -110,8 +110,11 @@ function summaryOf(r: ApprovalRequest): string {
   return "Confirmar transação";
 }
 
-/** Uma transação preparada vale ~60–90 s (blockhash). Passou disso, o app prepara de novo antes de assinar. */
-const PREPARED_FRESH_MS = 40_000;
+/**
+ * Uma transação preparada vale ~60–90 s (blockhash). O app prepara de novo
+ * depois da biometria, se passou disso, para o tempo que resta ficar para a carteira.
+ */
+const PREPARED_FRESH_MS = 10_000;
 
 type Loaded = { record: IntentView; request: ApprovalRequest | null; preparedAt: number; prepareErr: string | null };
 
@@ -129,7 +132,7 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
   const signer = async () => {
     if (!handoff) return ctx.accountWallet();
     const w = ctx.wallets.find((x) => x.name === "Mobile Wallet Adapter");
-    if (!w) throw new Error("Abra este link no Android com a Phantom instalada.");
+    if (!w) throw new Error("Abra este link no Android, com o app de uma carteira Solana instalado (Phantom, Solflare…).");
     return ConnectedWallet.forAddress(w, handoff.wallet, ctx.config.cluster);
   };
   const [data, setData] = useState<Loaded | null>(null);
@@ -178,8 +181,9 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
   }, [load]);
 
   /**
-   * 1. (de novo, se passou do prazo) prepara e confere os bytes;
-   * 2. biometria sobre esses bytes — o desafio é calculado aqui;
+   * 1. biometria: abre a chave do webapp (antes de preparar de novo: a pessoa
+   *    pode demorar aqui, e o blockhash não pode envelhecer nesse tempo);
+   * 2. prepara de novo e confere os bytes; a chave assina na hora e é apagada;
    * 3. o serviço assina; o app confere que é a mesma transação e a assinatura;
    * 4. a carteira assina por último e paga.
    */
@@ -191,20 +195,20 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
       const c = await signer();
       let review = check.review;
       let request = data.request;
-      if (Date.now() - data.preparedAt > PREPARED_FRESH_MS) {
-        setStepText("Conferindo de novo…");
-        const again = await prepare();
-        setCheck(again.inspection);
-        setData({ ...data, request: again.request, preparedAt: Date.now() });
-        if (!again.inspection.ok) return;
-        review = again.inspection.review;
-        request = again.request;
-      }
-      // A biometria abre a chave do webapp só para assinar estes bytes conferidos.
       setStepText("Confirme com a biometria…");
       const key = await unlockAccountKey(ctx, await keys(), summaryOf(request));
       let webappSignature: string;
       try {
+        if (Date.now() - data.preparedAt > PREPARED_FRESH_MS) {
+          setStepText("Conferindo de novo…");
+          const again = await prepare();
+          setCheck(again.inspection);
+          setData({ ...data, request: again.request, preparedAt: Date.now() });
+          if (!again.inspection.ok) return;
+          review = again.inspection.review;
+          request = again.request;
+        }
+        // A chave do webapp assina só estes bytes conferidos.
         webappSignature = signatureB58(key.sign(review.message));
       } finally {
         key.wipe();

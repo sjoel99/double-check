@@ -10,7 +10,7 @@ import { DevMemorySigner } from "@duplachave/crypto";
 import { SecurityError, sealIntent, intentBody } from "@duplachave/shared";
 import { inspectPrepared, reviewPrepared, signAsWallet, verifyAuditChain, verifyEnrollmentTransaction } from "@duplachave/custody";
 import { approveIx, createVaultProposalIxs, executeVaultIx, readMultisig, vaultPda } from "@duplachave/squads";
-import { sendInstructions } from "@duplachave/solana";
+import { ChainTxError, sendInstructions } from "@duplachave/solana";
 import * as multisig from "@sqds/multisig";
 import { enrollWallet, fakeBlob, setupService } from "./support/service";
 import { chainError } from "./support/setup";
@@ -140,6 +140,20 @@ describe("operações (Phantom + webapp votam, o operador executa)", () => {
     const late = await t.custody.createTransferSol(t.account.id, { destination: dest(), amountLamports: SOL.toString() });
     t.advance(11 * 60);
     expect(await securityError(t.custody.prepareIntent(late.intent.id))).toBe("INTENT_EXPIRED");
+  });
+
+  it("blockhash vencido enquanto a carteira assinava: TX_EXPIRED, a intenção continua aberta e assinar de novo funciona", async () => {
+    const t = await setupService();
+    const r = await t.custody.createTransferSol(t.account.id, { destination: dest(), amountLamports: SOL.toString() });
+    const signed = await t.walletTx(r.intent.id);
+    const send = t.chain.sendTransaction.bind(t.chain);
+    t.chain.sendTransaction = async () => {
+      throw new ChainTxError('simulação falhou: "BlockhashNotFound"', [], null);
+    };
+    expect(await securityError(t.custody.submitIntent(r.intent.id, signed))).toBe("TX_EXPIRED");
+    t.chain.sendTransaction = send;
+    expect((await t.store.getIntent(r.intent.id))!.status).toBe("AWAITING_CLIENT");
+    expect((await t.sign(r.intent.id)).status).toBe("EXECUTED");
   });
 });
 
