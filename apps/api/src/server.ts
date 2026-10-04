@@ -50,7 +50,8 @@ export async function buildServer(d: ApiDeps) {
   await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
 
   app.setErrorHandler((err, _req, reply) => {
-    if (err instanceof SecurityError) return reply.status(err.code.endsWith("NOT_FOUND") ? 404 : 422).send({ error: err.code, message: err.message });
+    // O código vai em `error`; a mensagem é para a tela (sem o "[CÓDIGO]" do começo).
+    if (err instanceof SecurityError) return reply.status(err.code.endsWith("NOT_FOUND") ? 404 : 422).send({ error: err.code, message: err.message.replace(/^\[[A-Z0-9_]+\]\s*/, "") });
     if (err instanceof z.ZodError) return reply.status(400).send({ error: "BAD_REQUEST", message: err.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") });
     const status = (err as { statusCode?: number }).statusCode ?? 500;
     if (status >= 500) app.log.error(err);

@@ -112,7 +112,7 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
       let c = wallet;
       if (!c || c.name !== session.walletName) {
         const w = wallets.find((x) => walletLabel(x.name) === session.walletName);
-        if (!w) throw new Error(`Abra ou instale a carteira ${session.walletName} para assinar.`);
+        if (!w) throw new Error(session.via === "webapp" ? `Conecte a carteira da conta (${short(session.publicKey)}) para assinar: entre de novo com ela.` : `Abra ou instale a carteira ${session.walletName} para assinar.`);
         c = await connect(w);
       }
       if (c.refresh() !== session.publicKey)

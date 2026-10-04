@@ -254,6 +254,11 @@ describe("invariantes", () => {
     const t = await setupService({ depositSol: 100 });
     expect(await securityError(t.custody.createTransferSol(t.account.id, { destination: dest(), amountLamports: (60n * SOL).toString() }))).toBe("POLICY_DENIED");
     expect(await securityError(t.custody.createTransferSol(t.account.id, { destination: multisig.PROGRAM_ID.toBase58(), amountLamports: "1000" }))).toBe("POLICY_DENIED");
+    // A tela recebe o motivo em português; os códigos ficam na auditoria.
+    const msg = await t.custody.createTransferSol(t.account.id, { destination: dest(), amountLamports: (60n * SOL).toString() }).catch((e: Error) => e.message);
+    expect(msg).toBe("[POLICY_DENIED] acima do limite de 50 SOL por envio.");
+    const denied = (await t.store.listAudit()).filter((e) => e.type === "TRANSACTION_POLICY_DENIED").at(-1)!;
+    expect(JSON.stringify(denied.details)).toContain("LIMIT_EXCEEDED");
   });
 
   it("auditoria encadeada: editar um evento quebra a cadeia", async () => {

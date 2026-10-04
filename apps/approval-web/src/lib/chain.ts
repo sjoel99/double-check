@@ -50,6 +50,20 @@ export function sol(lamports: string | bigint | number, max = 4): string {
   return v.toLocaleString("pt-BR", { maximumFractionDigits: max });
 }
 
+/** "1,5" ou "1.5" → lamports; null se não for um valor com até 9 casas. */
+export function parseSol(input: string): bigint | null {
+  const s = input.trim().replace(",", ".");
+  if (!/^\d+(\.\d{1,9})?$/.test(s)) return null;
+  const [i, f = ""] = s.split(".");
+  return BigInt(i!) * 1_000_000_000n + BigInt(f.padEnd(9, "0"));
+}
+
+/** lamports → texto para o campo ("1,5"), sem perder casas. */
+export function solInput(lamports: bigint): string {
+  const f = (lamports % 1_000_000_000n).toString().padStart(9, "0").replace(/0+$/, "");
+  return f ? `${lamports / 1_000_000_000n},${f}` : `${lamports / 1_000_000_000n}`;
+}
+
 /**
  * Envia uma transação já assinada pela carteira (paga por ela) pela RPC fixada
  * e espera confirmar consultando o status (o proxy local não repassa websocket).

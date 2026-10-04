@@ -4,11 +4,11 @@ import { inspectPrepared, verifyAuthorized, type ApprovalRequest, type Inspectio
 import { signatureB58, type WebappKeyBlob } from "../lib/webappKey";
 import { KNOWN_PROGRAM_NAMES } from "@duplachave/solana";
 import { accountKeyBlobs, errorText, unlockAccountKey, useApp } from "../app";
-import { api } from "../lib/api";
-import { ConnectedWallet } from "../lib/wallets";
-import { now, short, sol } from "../lib/chain";
+import { api, ApiError } from "../lib/api";
+import { ConnectedWallet, walletWord } from "../lib/wallets";
+import { now, parseSol, short, sol, solInput } from "../lib/chain";
 import { Icon } from "../icons";
-import type { IntentView } from "./home";
+import { type IntentView, useAccount } from "./home";
 import { PhoneQrSheet, SCAN_STEPS } from "../components/PhoneQr";
 
 function TopBar({ title, right }: { title: string; right?: React.ReactNode }) {
@@ -50,18 +50,46 @@ const Detail = ({ label, value, mono }: { label: string; value: React.ReactNode;
 
 export function Send() {
   const ctx = useApp();
-  const [dest, setDest] = useState("");
-  const [amount, setAmount] = useState("");
+  // "Criar de novo" (envio que expirou) chega com destino e valor na rota.
+  const q = new URLSearchParams(ctx.route.split("?")[1] ?? "");
+  const [dest, setDest] = useState(q.get("to") ?? "");
+  const [amount, setAmount] = useState(q.get("amount") ?? "");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const valid = (() => {
+  const { acc, balance } = useAccount(15000);
+  const limit = acc?.limits ? BigInt(acc.limits.maxLamportsPerTx) : null;
+  const max = balance === null ? null : limit !== null && limit < balance ? limit : balance;
+
+  const destErr = (() => {
+    if (!dest.trim()) return null;
     try {
       new PublicKey(dest.trim());
-      return /^\d+([.,]\d{1,9})?$/.test(amount.trim());
     } catch {
-      return false;
+      return "Endereço Solana inválido. Confira se copiou inteiro.";
     }
+    if (acc && dest.trim() === acc.account.vault) return "Esse é o próprio Vault da conta.";
+    return null;
   })();
+  const lamports = parseSol(amount);
+  const amountErr = (() => {
+    if (!amount.trim()) return null;
+    if (lamports === null) return "Use um número com até 9 casas decimais, por exemplo 0,5.";
+    if (lamports === 0n) return "O valor precisa ser maior que zero.";
+    if (limit !== null && lamports > limit) return `Acima do limite de ${sol(limit, 9)} SOL por envio.`;
+    if (balance !== null && lamports > balance) return `Maior que o saldo do Vault (${sol(balance, 9)} SOL).`;
+    return null;
+  })();
+  const valid = Boolean(dest.trim() && lamports && !destErr && !amountErr);
+
+  const paste = async () => {
+    try {
+      const t = (await navigator.clipboard.readText()).trim();
+      if (t) setDest(t);
+    } catch {
+      ctx.toast("O navegador não deixou ler a área de transferência. Cole no campo.");
+    }
+  };
+
   const submit = async () => {
     setBusy(true);
     setErr(null);
@@ -79,15 +107,34 @@ export function Send() {
       <TopBar title="Enviar SOL" />
       <div className="page">
         <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
-          O serviço confere a sua política. Depois você revisa, confirma com a biometria e assina uma vez na {ctx.session!.walletName}, que paga a taxa da rede (~0,000015 SOL).
+          O serviço confere a sua política. Depois você revisa, confirma com a biometria e assina uma vez na {walletWord(ctx.session!.walletName)}, que paga a taxa da rede (~0,000015 SOL).
         </div>
         <div className="field">
-          <label htmlFor="dest">Endereço de destino</label>
-          <input id="dest" className="input mono" value={dest} onChange={(e) => setDest(e.target.value)} placeholder="Endereço Solana" spellCheck={false} autoComplete="off" />
+          <div className="row-between">
+            <label htmlFor="dest">Endereço de destino</label>
+            <button type="button" className="linkbtn small" onClick={paste}>
+              Colar
+            </button>
+          </div>
+          <input id="dest" className="input mono" value={dest} onChange={(e) => setDest(e.target.value)} placeholder="Endereço Solana" spellCheck={false} autoComplete="off" aria-invalid={Boolean(destErr)} />
+          {destErr && <div className="err">{destErr}</div>}
         </div>
         <div className="field">
-          <label htmlFor="amt">Quantidade (SOL)</label>
-          <input id="amt" className="input mono" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0,5" />
+          <div className="row-between">
+            <label htmlFor="amt">Quantidade (SOL)</label>
+            <button type="button" className="linkbtn small" disabled={!max} onClick={() => max && setAmount(solInput(max))}>
+              Máx
+            </button>
+          </div>
+          <input id="amt" className="input mono" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0,5" aria-invalid={Boolean(amountErr)} />
+          {amountErr ? (
+            <div className="err">{amountErr}</div>
+          ) : (
+            <div className="subtle" style={{ fontSize: 12 }}>
+              Saldo do Vault: {balance === null ? "…" : `${sol(balance, 9)} SOL`}
+              {limit !== null && ` · limite por envio: ${sol(limit, 9)} SOL`}
+            </div>
+          )}
         </div>
         {err && <div className="banner danger">{err}</div>}
       </div>
@@ -116,7 +163,7 @@ function summaryOf(r: ApprovalRequest): string {
  */
 const PREPARED_FRESH_MS = 10_000;
 
-type Loaded = { record: IntentView; request: ApprovalRequest | null; preparedAt: number; prepareErr: string | null };
+type Loaded = { record: IntentView; request: ApprovalRequest | null; preparedAt: number; prepareErr: string | null; prepareCode?: string };
 
 /**
  * `handoff`: aberta pelo QR no celular, sem entrar na conta. O token do QR dá
@@ -169,7 +216,7 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
         setData({ record: r.record, request, preparedAt: Date.now(), prepareErr: null });
         setCheck(inspection);
       } catch (e) {
-        setData({ record: r.record, request: null, preparedAt: 0, prepareErr: errorText(e) });
+        setData({ record: r.record, request: null, preparedAt: 0, prepareErr: errorText(e), prepareCode: e instanceof ApiError ? e.code : undefined });
       }
     } catch (e) {
       setErr(errorText(e));
@@ -179,6 +226,32 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Passou do prazo da intenção: não adianta assinar; a tela oferece criar de novo.
+  const expiresAt: number | undefined = data?.record.intent.expiresAt;
+  const [expired, setExpired] = useState(false);
+  useEffect(() => {
+    if (!expiresAt) return;
+    const left = expiresAt - now();
+    if (left <= 0) return setExpired(true);
+    const t = setTimeout(() => setExpired(true), left * 1000);
+    return () => clearTimeout(t);
+  }, [expiresAt]);
+  /** O mesmo envio, para criar de novo depois que expirou. */
+  const again = () => {
+    const i = data!.record.intent;
+    ctx.go(`/send?${new URLSearchParams({ to: i.destination, amount: solInput(BigInt(i.amountLamports)) })}`);
+  };
+
+  // Primeiro envio para este endereço? (Endereço já usado não precisa de alerta.)
+  const [firstTime, setFirstTime] = useState<boolean | null>(null);
+  useEffect(() => {
+    const destination = data?.record.intent.destination;
+    if (handoff || !destination) return;
+    void api<{ intents: IntentView[] }>("GET", `/v1/accounts/${ctx.session!.accountId}/intents`)
+      .then((r) => setFirstTime(!r.intents.some((x) => x.intent.id !== id && x.status === "EXECUTED" && x.intent.destination === destination)))
+      .catch(() => {});
+  }, [data?.record.intent.destination]);
 
   /**
    * 1. biometria: abre a chave do webapp (antes de preparar de novo: a pessoa
@@ -236,7 +309,7 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
     setBusy("reject");
     try {
       await api("POST", `${base}/reject`, undefined, opt);
-      ctx.toast("Recusada. Nada foi para a Solana.");
+      ctx.toast(data?.record.intent.type === "TRANSFER_SOL" ? "Envio cancelado. Nada foi para a Solana." : "Recusada. Nada foi para a Solana.");
       await load();
     } catch (e) {
       setErr(errorText(e));
@@ -264,21 +337,29 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
   if (handedOver) return <HandedOver />;
   if (!data) return <Loading err={err} />;
   const { record, request } = data;
-  if (data.prepareErr) return <PrepareFailed message={data.prepareErr} busy={busy} onRetry={load} onReject={reject} />;
-  if (!request) return <Outcome record={record} />;
+  if (data.prepareErr) {
+    const late = data.prepareCode === "INTENT_EXPIRED" || expired;
+    return <PrepareFailed message={data.prepareErr} busy={busy} onRetry={late ? again : load} retryLabel={late ? "Criar de novo" : "Tentar de novo"} onReject={late ? undefined : reject} />;
+  }
+  if (!request) return <Outcome record={record} onAgain={again} />;
   if (!check) return <Loading err={err} label="Conferindo…" />;
   if (!check.ok) return <Blocked check={check} request={request} />;
 
   const intent = request.intent;
-  const walletName = handoff ? "Carteira do celular" : ctx.session!.walletName;
+  const walletName = walletWord(handoff ? "Carteira do celular" : ctx.session!.walletName);
   const primaryClass = `btn ${intent.type === "ROTATE_MEMBER" ? "amber" : "primary"}`;
   const actions = (
     <>
       <div className="actions" style={{ flexWrap: "wrap" }}>
         <button type="button" className="btn" disabled={Boolean(busy)} onClick={reject}>
-          {busy === "reject" ? <span className="spinner" /> : null}Recusar
+          {busy === "reject" ? <span className="spinner" /> : null}
+          {intent.type === "TRANSFER_SOL" ? "Cancelar" : "Recusar"}
         </button>
-        {viaPhone ? (
+        {expired ? (
+          <button type="button" className={primaryClass} onClick={again}>
+            Criar de novo
+          </button>
+        ) : viaPhone ? (
           <button type="button" className={primaryClass} disabled={Boolean(busy)} onClick={() => setQrOpen(true)}>
             <Icon name="phone" color="#0B0D10" sw={2} /> Continuar no celular
           </button>
@@ -293,7 +374,7 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
             <span className="spinner" /> {stepText}
           </div>
         )}
-        {!viaPhone && !busy && !handoff && (
+        {!viaPhone && !busy && !handoff && !expired && (
           <button type="button" className="linkbtn" style={{ flexBasis: "100%", padding: "2px 0 0" }} onClick={() => setQrOpen(true)}>
             Ou continuar no celular (QR)
           </button>
@@ -340,7 +421,7 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
               <div className="mono" style={{ fontSize: 18, fontWeight: 600 }}>
                 {external ? short(intent.destination) : "Seu próprio Vault"}
               </div>
-              {flags.includes("EXTERNAL_DESTINATION") && <span className="pill warn">Endereço externo</span>}
+              {firstTime ? <span className="pill warn">Endereço novo</span> : handoff && flags.includes("EXTERNAL_DESTINATION") ? <span className="pill warn">Endereço externo</span> : null}
             </div>
             <div className="mono subtle" style={{ fontSize: 12, lineHeight: 1.5, wordBreak: "break-all" }}>
               {intent.destination}
@@ -357,6 +438,18 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
           <Icon name="key" size={18} />
           <div>Primeiro a sua biometria confirma exatamente esta transação; só então o serviço assina e {viaPhone ? "a carteira do celular" : `a ${walletName}`} abre para assinar uma vez. Se algo falhar, nada acontece na Solana.</div>
         </div>
+        {expired && (
+          <div className="banner warn">
+            <Icon name="clock" size={18} color="#F2B33D" />
+            <div>O prazo de 10 minutos para assinar acabou. Nada foi assinado nem saiu do Vault. Toque em "Criar de novo" para refazer o mesmo envio.</div>
+          </div>
+        )}
+        {firstTime && (
+          <div className="banner warn">
+            <Icon name="shieldalert" size={18} color="#F2B33D" />
+            <div>Você nunca enviou para este endereço. Confira os primeiros e os últimos caracteres com quem vai receber.</div>
+          </div>
+        )}
         {flags.includes("POSSIBLE_FULL_BALANCE") && (
           <div className="banner warn">
             <Icon name="shieldalert" size={18} color="#F2B33D" />
@@ -448,25 +541,29 @@ function RotationApproval({ request, header, actions, err }: { request: Approval
   );
 }
 
-function PrepareFailed({ message, busy, onRetry, onReject }: { message: string; busy: null | string; onRetry: () => void; onReject: () => void }) {
+function PrepareFailed({ message, busy, onRetry, retryLabel, onReject }: { message: string; busy: null | string; onRetry: () => void; retryLabel: string; onReject?: () => void }) {
   return (
     <>
       <TopBar title="Confirmar transação" />
       <div className="page" style={{ gap: 18 }}>
         <div className="banner warn">
           <Icon name="shieldalert" size={18} color="#F2B33D" />
-          <div>Não deu para preparar a transação: {message}</div>
+          <div>
+            <b>Não deu para preparar a transação.</b> {message}
+          </div>
         </div>
         <div className="muted" style={{ fontSize: 13, lineHeight: 1.5 }}>
           Nada foi assinado nem enviado. Taxa e depósito saem da sua carteira: o depósito das contas volta na mesma transação.
         </div>
       </div>
       <div className="actions">
-        <button type="button" className="btn" disabled={Boolean(busy)} onClick={onReject}>
-          {busy === "reject" ? <span className="spinner" /> : null}Recusar
-        </button>
+        {onReject && (
+          <button type="button" className="btn" disabled={Boolean(busy)} onClick={onReject}>
+            {busy === "reject" ? <span className="spinner" /> : null}Cancelar
+          </button>
+        )}
         <button type="button" className="btn primary" disabled={Boolean(busy)} onClick={onRetry}>
-          Tentar de novo
+          {retryLabel}
         </button>
       </div>
     </>
@@ -538,19 +635,25 @@ function Blocked({ check, request }: { check: Extract<Inspection, { ok: false }>
   );
 }
 
-function Outcome({ record }: { record: IntentView }) {
+function Outcome({ record, onAgain }: { record: IntentView; onAgain: () => void }) {
   const { go, config, session } = useApp();
   const ok = record.status === "EXECUTED";
   const intent = record.intent;
   const rot = intent.type === "ROTATE_MEMBER";
   const explorer = (sig: string) => `https://explorer.solana.com/tx/${sig}?cluster=${config.cluster === "devnet" ? "devnet" : `custom&customUrl=${encodeURIComponent("http://127.0.0.1:8899")}`}`;
-  // Uma transação só: criar, aprovar (serviço + você), executar e fechar.
-  const steps: [string, string | undefined][] = [
-    ["Serviço conferiu a política e assinou", record.signatures.serverApprove],
-    [`Você assinou e pagou na ${session?.walletName ?? "carteira"}`, record.signatures.clientApprove],
-    [rot ? "Chaves trocadas na Solana" : "Executada na Solana", record.signatures.execute],
-  ];
-  const label: Record<string, string> = { REJECTED: "Transação recusada", EXPIRED: "Prazo expirado", FAILED: "Falhou", CANCELLED: "Cancelada" };
+  // Uma transação só (criar, aprovar, executar, fechar): os passos não têm assinaturas separadas.
+  const steps = rot
+    ? ["O serviço conferiu e assinou", `Você assinou e pagou na ${walletWord(session?.walletName)}`, "Chaves trocadas na Solana"]
+    : ["Sua biometria confirmou (chave do webapp)", "O serviço conferiu a política e assinou", `Você assinou e pagou na ${walletWord(session?.walletName)}`, "Executada na Solana"];
+  const sig = record.signatures.execute;
+  const title: Record<string, string> = { REJECTED: rot ? "Recusada" : "Envio cancelado", EXPIRED: "Prazo expirado", FAILED: "Falhou", CANCELLED: "Cancelada" };
+  const why: Record<string, string> = {
+    REJECTED: "Você cancelou antes de assinar.",
+    EXPIRED: "O prazo de 10 minutos acabou antes da assinatura.",
+    FAILED: "A transação não foi aceita pela Solana.",
+    CANCELLED: "O pedido foi cancelado.",
+  };
+  const canRedo = !ok && !rot && (record.status === "EXPIRED" || record.status === "FAILED" || record.status === "REJECTED");
   return (
     <>
       <div className="page" style={{ paddingTop: 56, gap: 26 }}>
@@ -558,7 +661,7 @@ function Outcome({ record }: { record: IntentView }) {
           <div className="hero-ico" style={{ background: ok ? "var(--accent)" : "var(--surface-2)", border: ok ? 0 : "1px solid var(--line)" }}>
             <Icon name={ok ? "check" : "x"} size={44} color={ok ? "#0B0D10" : "var(--muted)"} sw={2.4} />
           </div>
-          <div style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em" }}>{ok ? (rot ? "Chave trocada" : "Transação executada") : label[record.status] ?? record.status}</div>
+          <div style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em" }}>{ok ? (rot ? "Chave trocada" : "Envio executado") : title[record.status] ?? record.status}</div>
           <div className="muted" style={{ fontSize: 15 }}>
             {rot ? (
               <>
@@ -570,30 +673,42 @@ function Outcome({ record }: { record: IntentView }) {
               </>
             )}
           </div>
-          {record.reasons.length > 0 && <div className="banner warn" style={{ textAlign: "left" }}>{record.reasons.join(" · ")}</div>}
-        </div>
-        <div className="card" style={{ padding: "8px 16px", gap: 0 }}>
-          {steps.map(([t, sig]) => (
-            <div key={t} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0" }}>
-              <div className="dot" style={{ background: sig ? "var(--accent)" : "#343a44" }}>
-                <Icon name={sig ? "check" : "x"} size={14} color="#0B0D10" sw={2.4} />
-              </div>
-              <div className="grow" style={{ fontSize: 14 }}>
-                {t}
-              </div>
-              {sig && (
-                <a href={explorer(sig)} target="_blank" rel="noreferrer" className="mono" style={{ fontSize: 12, textDecoration: "none", display: "flex", gap: 4, alignItems: "center" }}>
-                  {short(sig)} <Icon name="ext" size={12} />
-                </a>
-              )}
+          {!ok && (
+            <div className="muted" style={{ fontSize: 14, lineHeight: 1.5, textAlign: "center" }}>
+              {why[record.status] ?? ""} {rot ? "Nada mudou na conta." : "Nada saiu do Vault."}
             </div>
-          ))}
+          )}
+          {record.status === "FAILED" && record.reasons.length > 0 && <div className="banner warn" style={{ textAlign: "left" }}>{record.reasons.join(" · ")}</div>}
         </div>
+        {ok && (
+          <div className="card" style={{ padding: "8px 16px", gap: 0 }}>
+            {steps.map((t) => (
+              <div key={t} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0" }}>
+                <div className="dot" style={{ background: "var(--accent)" }}>
+                  <Icon name="check" size={14} color="#0B0D10" sw={2.4} />
+                </div>
+                <div className="grow" style={{ fontSize: 14 }}>
+                  {t}
+                </div>
+              </div>
+            ))}
+            {sig && (
+              <a href={explorer(sig)} target="_blank" rel="noreferrer" style={{ fontSize: 13, textDecoration: "none", display: "flex", gap: 6, alignItems: "center", justifyContent: "center", padding: "12px 0 8px", borderTop: "1px solid var(--line-soft)" }}>
+                Ver na Solana <span className="mono">{short(sig)}</span> <Icon name="ext" size={12} />
+              </a>
+            )}
+          </div>
+        )}
       </div>
       <div className="actions">
         <button type="button" className="btn" onClick={() => go("/")}>
           Voltar ao início
         </button>
+        {canRedo && (
+          <button type="button" className="btn primary" onClick={onAgain}>
+            Criar de novo
+          </button>
+        )}
       </div>
     </>
   );

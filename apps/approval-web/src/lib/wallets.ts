@@ -7,6 +7,12 @@ import { trace } from "./trace";
 export const walletLabel = (name: string) => (name === "Mobile Wallet Adapter" ? "Carteira do celular" : name);
 
 /**
+ * A carteira da sessão no meio de uma frase ("na Backpack", "Sua carteira").
+ * Quem entrou pela biometria não tem carteira conectada: vira "carteira".
+ */
+export const walletWord = (name: string | null | undefined) => (!name || name === "sem carteira" ? "carteira" : name === "Carteira do celular" ? "carteira do celular" : name);
+
+/**
  * Carteiras pelo Wallet Standard (Phantom, Backpack, Solflare e outras se
  * anunciam assim). Sem pacote de adapter: cada dependência a menos é uma a
  * menos na cadeia de suprimentos de um app que move fundos.

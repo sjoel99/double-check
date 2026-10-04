@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { LAMPORTS_PER_SOL, PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
+import { PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { errorText, useApp } from "../app";
 import { api, ApiError } from "../lib/api";
-import { now, sendSigned, short, sol } from "../lib/chain";
+import { now, parseSol, sendSigned, short, sol } from "../lib/chain";
 import { verifyAccountOnChain } from "@duplachave/custody/src/client";
 import { Icon, Logo } from "../icons";
+import { walletWord } from "../lib/wallets";
 import QRCode from "qrcode";
 import type { VersionedTransaction as VTx } from "@solana/web3.js";
 import { reviewSecurityRequest, verifyAuthorized } from "@duplachave/custody/src/client";
@@ -15,6 +16,9 @@ export type AccountView = {
   invariantOk: boolean;
   vaultLamports: string;
   walletLamports: string;
+  /** E-mail de alerta (mascarado), ou null se não há. */
+  alertEmail: string | null;
+  limits?: { maxLamportsPerTx: string };
 };
 
 /** Saldo que a carteira precisa ter na hora de assinar: o depósito das contas volta na mesma transação. */
@@ -87,7 +91,7 @@ const STATUS: Record<string, string> = {
   APPROVED_PENDING_EXECUTION: "Aguardando execução",
   CANCELLED: "Cancelada",
   EXECUTED: "Executada",
-  REJECTED: "Recusada",
+  REJECTED: "Cancelada",
   EXPIRED: "Expirada",
   FAILED: "Falhou",
 };
@@ -137,7 +141,7 @@ export function Home() {
         </div>
         <button type="button" className="wallet-chip" onClick={() => ctx.go("/security")} aria-label="Carteira e segurança">
           <Icon name="key" size={14} />
-          {s.walletName} · <span className="mono">{short(s.publicKey)}</span>
+          {walletWord(s.walletName)} · <span className="mono">{short(s.publicKey)}</span>
         </button>
       </div>
       <div className="page">
@@ -166,6 +170,9 @@ export function Home() {
               <div className="dot" style={{ background: "var(--accent)" }}>
                 <Icon name="key" size={13} color="#0B0D10" sw={2} />
               </div>
+              <div className="dot" style={{ background: "var(--accent)" }}>
+                <Icon name="finger" size={13} color="#0B0D10" sw={2} />
+              </div>
               <div className="dot" style={{ background: "var(--text)" }}>
                 <Icon name="server" size={13} color="#0B0D10" sw={2} />
               </div>
@@ -179,7 +186,7 @@ export function Home() {
                 <span style={{ color: "var(--danger)" }}>Configuração on-chain diferente do esperado. Não assine nada.</span>
               ) : (
                 <>
-                  <b>Proteção 2 de 3.</b> <span className="muted">Sua {s.walletName} + a biometria; o serviço confere e executa.</span>
+                  <b>Proteção 2 de 3.</b> <span className="muted">Sua {walletWord(s.walletName)} + a biometria; o serviço confere e executa.</span>
                 </>
               )}
             </div>
@@ -204,11 +211,20 @@ export function Home() {
           </button>
         )}
 
+        {acc && acc.alertEmail === null && (
+          <button type="button" className="banner warn" style={{ textAlign: "left", cursor: "pointer", border: 0 }} onClick={() => ctx.go("/security")}>
+            <Icon name="shieldalert" size={18} color="#F2B33D" />
+            <div>
+              <b>Cadastre um e-mail de alerta.</b> Se alguém pedir para trocar uma chave da sua conta, é ele que avisa a tempo de você tocar em "Não fui eu". <u>Cadastrar</u>
+            </div>
+          </button>
+        )}
+
         {acc && BigInt(acc.walletLamports) < WALLET_NEEDS && (
           <div className="banner warn">
             <Icon name="shieldalert" size={18} color="#F2B33D" />
             <div>
-              Sua {s.walletName} tem {sol(acc.walletLamports, 6)} SOL. Ela paga as taxas: para assinar, precisa ter ~0,007 SOL (quase tudo volta na mesma transação; o custo real é ~0,000015 SOL).
+              Sua {walletWord(s.walletName)} tem {sol(acc.walletLamports, 6)} SOL. Ela paga as taxas: para assinar, precisa ter ~0,007 SOL (quase tudo volta na mesma transação; o custo real é ~0,000015 SOL).
             </div>
           </div>
         )}
@@ -342,10 +358,8 @@ export function Deposit() {
     setBusy(true);
     setErr(null);
     try {
-      const s = amount.trim().replace(",", ".");
-      if (!/^\d+(\.\d{1,9})?$/.test(s)) throw new Error("valor inválido");
-      const [i, f = ""] = s.split(".");
-      const lamports = BigInt(i!) * BigInt(LAMPORTS_PER_SOL) + BigInt(f.padEnd(9, "0"));
+      const lamports = parseSol(amount);
+      if (!lamports) throw new Error("Use um número maior que zero, com até 9 casas decimais (por exemplo 0,5).");
       const c = await ctx.accountWallet();
       // O Vault de destino é conferido na chain: 2-de-2 com esta carteira, não um endereço que o servidor disse.
       const vault = await verifyAccountOnChain(ctx.chain, acc.account.multisig, new PublicKey(c.publicKey));
@@ -376,7 +390,7 @@ export function Deposit() {
       </div>
       <div className="page">
         <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
-          Sai da sua {ctx.session!.walletName} para o Vault da conta, com a taxa (~0,000005 SOL) paga por ela. Depositar não precisa da aprovação do serviço; sacar, sim.
+          Sai da sua {walletWord(ctx.session!.walletName)} para o Vault da conta, com a taxa (~0,000005 SOL) paga por ela. Depositar não precisa da aprovação do serviço; sacar, sim.
         </div>
         <div className="card" style={{ gap: 6 }}>
           <div className="muted" style={{ fontSize: 12 }}>
@@ -407,7 +421,7 @@ export function Deposit() {
       </div>
       <div className="actions" style={viaPhone ? { display: "none" } : undefined}>
         <button type="button" className="btn primary" disabled={busy || !amount} onClick={submit}>
-          {busy ? <span className="spinner" /> : <Icon name="key" color="#0B0D10" sw={2} />} {ctx.session!.walletName.length <= 12 ? `Assinar na ${ctx.session!.walletName}` : "Assinar na carteira"}
+          {busy ? <span className="spinner" /> : <Icon name="key" color="#0B0D10" sw={2} />} {walletWord(ctx.session!.walletName).length <= 12 ? `Assinar na ${walletWord(ctx.session!.walletName)}` : "Assinar na carteira"}
         </button>
       </div>
     </>

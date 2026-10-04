@@ -458,7 +458,7 @@ export class CustodyService {
     }
     if (!pre.allowed) {
       await this.audit({ type: "TRANSACTION_POLICY_DENIED", accountId: acc.id, multisig: acc.multisig, intentId: intent.id, intentHash: intent.intentHash, details: { reasons: pre.reasons } });
-      throw new SecurityError("POLICY_DENIED", pre.reasons.join("; "));
+      throw new SecurityError("POLICY_DENIED", policyText(pre.reasons, user.policy.maxLamportsPerTx));
     }
     return pre.riskFlags;
   }
@@ -517,7 +517,7 @@ export class CustodyService {
       acc = await this.account(first.accountId);
       let rec = await this.intentRecord(intentId);
       if (walletPublicKey && walletPublicKey !== acc.roles.client) deny("WRONG_WALLET", "esta não é a carteira da conta");
-      if (rec.status !== "AWAITING_CLIENT") deny("INTENT_NOT_PENDING", `intenção em ${rec.status}`);
+      if (rec.status !== "AWAITING_CLIENT") deny("INTENT_NOT_PENDING", notPendingText(rec.status));
       if (this.now() > rec.intent.expiresAt) {
         await this.expireIntent(rec);
         deny("INTENT_EXPIRED", this.intentExpiredText());
@@ -556,7 +556,7 @@ export class CustodyService {
     return this.withLock(first.accountId, async () => {
       const rec = await this.intentRecord(intentId);
       const acc = await this.account(rec.accountId);
-      if (rec.status !== "AWAITING_CLIENT") deny("INTENT_NOT_PENDING", `intenção em ${rec.status}`);
+      if (rec.status !== "AWAITING_CLIENT") deny("INTENT_NOT_PENDING", notPendingText(rec.status));
       if (this.now() > rec.intent.expiresAt) deny("INTENT_EXPIRED", this.intentExpiredText());
       const now = this.now();
       const entries = rec.prepared ?? [];
@@ -584,7 +584,7 @@ export class CustodyService {
         await this.audit({ type: "APPROVAL_REFUSED", accountId: acc.id, multisig: acc.multisig, transactionIndex: rec.intent.transactionIndex, intentId, intentHash: rec.intent.intentHash, details: { code, msg } });
         throw new SecurityError(code, msg);
       };
-      if (rec.status !== "AWAITING_CLIENT") return refuse("INTENT_NOT_PENDING", `intenção em ${rec.status}`);
+      if (rec.status !== "AWAITING_CLIENT") return refuse("INTENT_NOT_PENDING", notPendingText(rec.status));
       const entries = rec.prepared ?? [];
       let parsed: { tx: VersionedTransaction; message: string };
       let sig: string;
@@ -1085,9 +1085,34 @@ export class CustodyService {
       members: await this.store.listMembers(accountId),
       securityChanges: (await this.store.listSecurityChanges(accountId)).slice(0, 10).map(({ prepared: _p, newKeyBlob: _b, ...c }) => c),
       alertEmail: await this.store.getUser(acc.userId).then((u) => (u?.email ? maskEmail(u.email) : null)),
+      limits: { maxLamportsPerTx: (await this.user(acc.userId)).policy.maxLamportsPerTx.toString() },
       webappDevices: (await this.store.listWebappKeys(accountId)).filter((k) => !k.revokedAt && k.publicKey === acc.roles.webapp).map((k) => ({ deviceName: k.deviceName, createdAt: k.createdAt })),
     };
   }
+}
+
+/** Por que não dá mais para assinar: o envio já saiu do estado de espera. */
+function notPendingText(status: string): string {
+  const what: Record<string, string> = { EXECUTED: "já foi executado", REJECTED: "foi cancelado", CANCELLED: "foi cancelado", EXPIRED: "expirou", FAILED: "falhou" };
+  return `este envio ${what[status] ?? `está em ${status}`}; não dá mais para assinar.`;
+}
+
+/**
+ * A recusa da política em português, para a tela. Os códigos (LIMIT_EXCEEDED…)
+ * continuam na auditoria; aqui vai só o primeiro motivo que a pessoa entende.
+ */
+export function policyText(reasons: string[], maxLamportsPerTx: bigint): string {
+  const has = (code: string) => reasons.find((r) => r.startsWith(code));
+  const sol = (l: bigint) => (Number(l) / 1e9).toLocaleString("pt-BR", { maximumFractionDigits: 9 });
+  if (has("ZERO_AMOUNT")) return "o valor não pode ser zero.";
+  if (has("LIMIT_EXCEEDED")) return `acima do limite de ${sol(maxLamportsPerTx)} SOL por envio.`;
+  if (has("DESTINATION_IS_PROGRAM")) return "o destino é um programa, não uma carteira. Confira o endereço.";
+  if (has("DESTINATION_NOT_IN_ADDRESS_BOOK")) return "o destino não está na sua lista de endereços.";
+  const sim = has("SIMULATION_FAILED");
+  if (sim && /InsufficientFundsForRent/i.test(sim)) return "o Vault ficaria com menos que o mínimo da Solana (~0,00089 SOL). Envie tudo ou deixe um pouco mais.";
+  if (sim && /insufficient|"Custom":1\b/i.test(sim)) return "o Vault não tem saldo para este envio.";
+  if (sim) return "a Solana recusaria esta transação na simulação. Nada foi enviado.";
+  return "a política da conta não permite esta transação.";
 }
 
 /** Texto que a chave do webapp assina para guardar mais uma cópia cifrada. */

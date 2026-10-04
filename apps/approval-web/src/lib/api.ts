@@ -6,6 +6,12 @@ export class ApiError extends Error {
   }
 }
 
+/** Mensagem do serviço pronta para a tela: sem "[CÓDIGO]" e com maiúscula no começo. */
+const sentence = (m: string) => {
+  const t = String(m).replace(/^\[[A-Z0-9_]+\]\s*/, "");
+  return t.charAt(0).toUpperCase() + t.slice(1);
+};
+
 export async function api<T = any>(method: "GET" | "POST", path: string, body?: unknown, opts: { auth?: boolean } = { auth: true }): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["content-type"] = "application/json";
@@ -15,6 +21,6 @@ export async function api<T = any>(method: "GET" | "POST", path: string, body?: 
   }
   const r = await fetch(`/api${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   const json = await r.json().catch(() => ({}));
-  if (!r.ok) throw new ApiError(json.error ?? "HTTP", json.message ?? r.statusText, r.status);
+  if (!r.ok) throw new ApiError(json.error ?? "HTTP", sentence(json.message ?? r.statusText), r.status);
   return json as T;
 }
