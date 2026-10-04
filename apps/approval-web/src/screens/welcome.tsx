@@ -148,7 +148,7 @@ export function Welcome() {
       {!isIOS() && <div className="or">ou a extensão deste navegador</div>}
       <WalletList onPick={pick} busy={Boolean(step)} />
       {step && (
-        <div className="status">
+        <div className="status sticky" role="status">
           <span className="spinner" /> {step}
         </div>
       )}

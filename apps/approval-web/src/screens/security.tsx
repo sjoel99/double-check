@@ -11,13 +11,16 @@ import { Icon } from "../icons";
 import { IntentRow, Tabs, useAccount } from "./home";
 import { WalletList } from "./welcome";
 
-function TopBar({ title, back = "/" }: { title: string; back?: string }) {
+/** `back={null}`: tela de aba (a barra de abas já navega). */
+function TopBar({ title, back = "/" }: { title: string; back?: string | null }) {
   const { go } = useApp();
   return (
     <div className="topbar">
-      <button type="button" className="iconbtn" aria-label="Voltar" onClick={() => go(back)}>
-        <Icon name="back" />
-      </button>
+      {back !== null && (
+        <button type="button" className="iconbtn" aria-label="Voltar" onClick={() => go(back)}>
+          <Icon name="back" />
+        </button>
+      )}
       <h1>{title}</h1>
     </div>
   );
@@ -344,7 +347,7 @@ export function Security() {
 
   return (
     <>
-      <TopBar title="Segurança" />
+      <TopBar title="Segurança" back={null} />
       <div className="page">
         {pending.map((c) => (
           <PendingChange key={c.id} c={c} onDone={reload} />
@@ -572,6 +575,39 @@ export function ChangeWebapp() {
 
 // ---------------------------------------------------------------- atividade
 
+/** Eventos da auditoria em português (o código fica no registro, para quem conferir a cadeia). */
+const AUDIT_LABEL: Record<string, string> = {
+  SMART_ACCOUNT_CREATED: "Conta 2 de 3 criada na Solana",
+  TRANSACTION_PROPOSED: "Envio criado",
+  TRANSACTION_POLICY_DENIED: "Envio recusado pela política",
+  CLIENT_APPROVED: "Você assinou na carteira",
+  CLIENT_REJECTED: "Você cancelou um envio",
+  SERVER_APPROVED: "Biometria conferida; o serviço assinou",
+  SERVER_REJECTED: "O serviço recusou",
+  TRANSACTION_APPROVED: "Envio aprovado",
+  TRANSACTION_EXECUTED: "Envio executado na Solana",
+  TRANSACTION_REJECTED: "Envio cancelado",
+  TRANSACTION_EXPIRED: "Envio expirou (prazo de 10 min)",
+  TRANSACTION_CANCELLED: "Envio cancelado",
+  EXECUTION_FAILED: "Execução falhou",
+  APPROVAL_REFUSED: "Tentativa de envio não aceita",
+  ALERT_EMAIL_CHANGED: "E-mail de alerta alterado",
+  SECURITY_CHANGE_REQUESTED: "Pedido de troca de chave (72 h)",
+  SECURITY_CHANGE_VETOED: "Troca de chave vetada (\"Não fui eu\")",
+  SECURITY_CHANGE_EXECUTED: "Troca de chave concluída",
+  PASSKEY_ADDED: "Biometria de outro aparelho adicionada",
+  INVARIANT_VIOLATION: "Conta diferente do esperado na Solana",
+  CLIENT_KEY_ROTATION_REQUESTED: "Pedido de troca da carteira",
+  SERVER_KEY_ROTATION_REQUESTED: "Pedido de troca da chave do serviço",
+  ROTATION_COMPLETED: "Troca de chave concluída",
+  ROTATION_REJECTED: "Troca de chave recusada",
+  ROTATION_EXPIRED: "Troca de chave expirou",
+  ROTATION_FAILED: "Troca de chave falhou",
+  OPERATIONS_FROZEN: "Envios pausados",
+  OPERATIONS_UNFROZEN: "Envios liberados",
+};
+const AUDIT_ALERT = new Set(["INVARIANT_VIOLATION", "SECURITY_CHANGE_REQUESTED", "ALERT_EMAIL_CHANGED", "TRANSACTION_POLICY_DENIED", "APPROVAL_REFUSED", "EXECUTION_FAILED"]);
+
 export function Activity() {
   const ctx = useApp();
   const { intents } = useAccount(6000);
@@ -594,16 +630,16 @@ export function Activity() {
         </div>
         <div>
           <div className="section-title" style={{ paddingBottom: 6 }}>
-            Registro de auditoria
+            Histórico da conta
           </div>
           <div className="subtle" style={{ fontSize: 12, paddingBottom: 6 }}>
-            Só inserção, encadeado por hash. Editar um evento quebra a cadeia.
+            Tudo o que aconteceu na conta, na ordem. O registro só aceita inclusões e é encadeado: apagar ou editar um evento quebra a cadeia.
           </div>
           {audit.slice(0, 30).map((e) => (
             <div className="list-row" key={e.seq} style={{ padding: "9px 0" }}>
               <div className="grow">
-                <div className="t mono" style={{ fontSize: 12 }}>
-                  {e.type}
+                <div className="t" style={{ fontSize: 14, color: AUDIT_ALERT.has(e.type) ? "var(--warn)" : undefined }} title={e.type}>
+                  {AUDIT_LABEL[e.type] ?? e.type}
                 </div>
                 <div className="s">{new Date(e.at * 1000).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "medium" })}</div>
               </div>

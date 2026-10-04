@@ -137,11 +137,11 @@ export function Home() {
       <div className="row-between" style={{ padding: "20px 20px 8px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <Logo />
-          <div style={{ fontSize: 16, fontWeight: 600 }}>Dupla Chave</div>
+          <div style={{ fontSize: 16, fontWeight: 600, whiteSpace: "nowrap" }}>Dupla Chave</div>
         </div>
         <button type="button" className="wallet-chip" onClick={() => ctx.go("/security")} aria-label="Carteira e segurança">
           <Icon name="key" size={14} />
-          {walletWord(s.walletName)} · <span className="mono">{short(s.publicKey)}</span>
+          <span className="chip-name">{walletWord(s.walletName)}</span> · <span className="mono">{short(s.publicKey)}</span>
         </button>
       </div>
       <div className="page">
@@ -405,8 +405,29 @@ export function Deposit() {
           <input id="amt" className="input mono" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="1,5" />
         </div>
         {acc && (
-          <div className="subtle" style={{ fontSize: 12 }}>
-            Ou envie de qualquer lugar para o endereço do Vault: <span className="mono">{acc.account.vault}</span>
+          <div className="card" style={{ gap: 8 }}>
+            <div className="row-between">
+              <div className="muted" style={{ fontSize: 12 }}>
+                Ou envie de qualquer carteira para o endereço do Vault
+              </div>
+              <button
+                type="button"
+                className="linkbtn small"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(acc.account.vault);
+                    ctx.toast("Endereço do Vault copiado");
+                  } catch {
+                    ctx.toast("Não deu para copiar; selecione o endereço.");
+                  }
+                }}
+              >
+                Copiar
+              </button>
+            </div>
+            <div className="mono" style={{ fontSize: 13, wordBreak: "break-all", lineHeight: 1.5 }}>
+              {acc.account.vault}
+            </div>
           </div>
         )}
         {viaPhone && qr && (

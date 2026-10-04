@@ -35,7 +35,7 @@ a { color: var(--accent); }
 .app { max-width: 430px; margin: 0 auto; min-height: 100dvh; display: flex; flex-direction: column; position: relative; }
 @media (min-width: 640px) {
   body { background: radial-gradient(1200px 600px at 50% -10%, #151a22 0%, var(--bg) 60%); }
-  .app { margin: 24px auto; min-height: calc(100dvh - 48px); border: 1px solid var(--line); border-radius: 36px; overflow: hidden; background: var(--bg); }
+  .app { margin: 24px auto; min-height: calc(100dvh - 48px); border: 1px solid var(--line); border-radius: 36px; overflow: clip; background: var(--bg); }
 }
 .page { flex: 1; display: flex; flex-direction: column; gap: 18px; padding: 6px 20px 20px; }
 .topbar { display: flex; align-items: center; gap: 12px; padding: 18px 20px 10px; }
@@ -53,6 +53,8 @@ a { color: var(--accent); }
 .pill.danger { background: #2a1413; color: var(--danger); }
 
 .status { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 16px; background: var(--inset); border: 1px solid var(--line-soft); font-size: 13px; line-height: 1.35; }
+/* Progresso de um fluxo longo: fica à vista no pé da tela mesmo com a página rolada. */
+.status.sticky { position: sticky; bottom: 16px; z-index: 5; background: var(--surface-2); border-color: var(--line); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
 .dots { display: flex; }
 .dot { width: 26px; height: 26px; border-radius: 999px; display: flex; align-items: center; justify-content: center; }
 .dot + .dot { margin-left: -6px; border: 2px solid var(--inset); }
@@ -133,7 +135,9 @@ nav.tabs button.on { color: var(--accent); }
 .steps { display: flex; flex-direction: column; gap: 12px; padding: 4px 0; }
 .step { display: flex; align-items: center; gap: 12px; }
 .step-n { width: 28px; height: 28px; border-radius: 999px; background: var(--surface-2); color: var(--muted); display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 12px; flex-shrink: 0; }
-.wallet-chip { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); color: var(--text); font-size: 12px; cursor: pointer; }
+.wallet-chip { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 12px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); color: var(--text); font-size: 12px; cursor: pointer; white-space: nowrap; min-width: 0; max-width: 62%; }
+.wallet-chip svg { flex-shrink: 0; }
+.wallet-chip .chip-name { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .wallet-chip:hover { border-color: #343a44; }
 .wallet-badge { width: 40px; height: 40px; border-radius: 12px; background: var(--surface-2); display: flex; align-items: center; justify-content: center; color: var(--muted); }
 .wallet-text { margin: 0; padding: 14px; border-radius: 14px; background: var(--inset); border: 1px solid var(--line-soft); font-family: var(--mono); font-size: 12px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow: auto; color: #cfd3da; }

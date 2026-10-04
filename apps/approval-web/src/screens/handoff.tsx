@@ -100,7 +100,7 @@ export function MobileHandoff({ token }: { token: string }) {
         )
       )}
       {step && (
-        <div className="status">
+        <div className="status sticky" role="status">
           <span className="spinner" /> {step}
         </div>
       )}

@@ -366,7 +366,7 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
         ) : (
           <button type="button" className={primaryClass} disabled={Boolean(busy)} onClick={sign}>
             {busy === "sign" ? <span className="spinner" /> : <Icon name="finger" color="#0B0D10" sw={2} />}
-            Confirmar e assinar
+            Assinar
           </button>
         )}
         {stepText && (
