@@ -3,7 +3,8 @@ import { errorText, loginOrEnroll, useApp } from "../app";
 import { api } from "../lib/api";
 import type { StandardWallet } from "../lib/wallets";
 import { Icon, Logo } from "../icons";
-import { WalletList } from "./welcome";
+import { IosNotice, WalletList } from "./welcome";
+import { isIOS } from "../lib/activation";
 import { IntentScreen } from "./intent";
 
 type Info = { kind: "CONNECT" | "SIGN_INTENT"; label: string; intentId: string | null; accountId: string | null; wallet: string | null };
@@ -85,6 +86,8 @@ export function MobileHandoff({ token }: { token: string }) {
           </div>
           <div style={{ fontSize: 16, lineHeight: 1.5, textAlign: "center" }}>{done}</div>
         </div>
+      ) : info && isIOS() ? (
+        <IosNotice />
       ) : (
         info && (
           <>

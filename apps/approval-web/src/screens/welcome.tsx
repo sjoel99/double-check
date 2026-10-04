@@ -4,12 +4,25 @@ import { Icon, Logo } from "../icons";
 import { type StandardWallet, walletLabel } from "../lib/wallets";
 import { api } from "../lib/api";
 import { PhoneQr } from "../components/PhoneQr";
+import { isIOS } from "../lib/activation";
 
 const INSTALL = [
   { name: "Phantom", url: "https://phantom.com/download" },
   { name: "Backpack", url: "https://backpack.app/downloads" },
   { name: "Solflare", url: "https://solflare.com/download" },
 ];
+
+/** No iPhone, nenhuma carteira fala com o navegador: em vez de sugerir instalar uma, diz onde funciona. */
+export function IosNotice() {
+  return (
+    <div className="card" style={{ gap: 8 }}>
+      <div style={{ fontSize: 15, fontWeight: 600 }}>No iPhone ainda não funciona</div>
+      <div className="muted" style={{ fontSize: 13, lineHeight: 1.5 }}>
+        O Safari do iPhone não conversa com as carteiras Solana (Phantom, Backpack, Solflare…), nem pelo app. Por enquanto, use um computador com a extensão da carteira ou um celular Android.
+      </div>
+    </div>
+  );
+}
 
 export function WalletList({ onPick, busy, exclude }: { onPick: (w: StandardWallet) => void; busy: boolean; exclude?: string }) {
   const { wallets } = useApp();
@@ -29,7 +42,8 @@ export function WalletList({ onPick, busy, exclude }: { onPick: (w: StandardWall
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       {real.map(row)}
-      {real.length === 0 && (
+      {real.length === 0 && isIOS() && <IosNotice />}
+      {real.length === 0 && !isIOS() && (
         <div className="card" style={{ gap: 10 }}>
           <div style={{ fontSize: 14 }}>Nenhuma carteira encontrada neste navegador.</div>
           <div className="muted" style={{ fontSize: 13 }}>
@@ -107,12 +121,12 @@ export function Welcome() {
           </div>
         ))}
       </div>
-      {phone ? (
+      {isIOS() ? null : phone ? (
         <div className="card">
           <PhoneQr
             create={() => api("POST", "/v1/pay/connect", {}, { auth: false })}
             title="Continue no celular"
-            steps={["Aponte a câmera do celular para o código e abra o link", "No celular, entre com a sua carteira (se for nova, cria a conta: ~0,003 SOL)", "Este computador entra na mesma conta"]}
+            steps={["Aponte a câmera de um celular Android para o código e abra o link", "No celular, entre com a sua carteira (se for nova, cria a conta: ~0,003 SOL)", "Este computador entra na mesma conta"]}
             onDone={fromPhone}
           />
           <button type="button" className="linkbtn" onClick={() => setPhone(false)}>
@@ -126,12 +140,12 @@ export function Welcome() {
           </div>
           <div className="grow">
             <div className="t">Usar a carteira do celular</div>
-            <div className="s">Escaneie com a câmera; a carteira abre pelo app</div>
+            <div className="s">Escaneie com a câmera de um Android; a carteira abre pelo app</div>
           </div>
           <Icon name="chev" size={18} color="var(--muted)" />
         </button>
       )}
-      <div className="or">ou a extensão deste navegador</div>
+      {!isIOS() && <div className="or">ou a extensão deste navegador</div>}
       <WalletList onPick={pick} busy={Boolean(step)} />
       {step && (
         <div className="status">
@@ -139,28 +153,38 @@ export function Welcome() {
         </div>
       )}
       {err && <div className="banner danger">{err}</div>}
-      <button
-        type="button"
-        className="linkbtn"
-        disabled={Boolean(step)}
-        onClick={async () => {
-          setErr(null);
-          try {
-            await loginWithBiometrics(ctx, setStep);
-            ctx.go("/security");
-            ctx.toast("Você entrou com a biometria. Para trocar a carteira, use 'Trocar a carteira'.");
-          } catch (e) {
-            setErr(errorText(e));
-          } finally {
-            setStep(null);
-          }
-        }}
-      >
-        Perdeu a carteira? Entrar com a biometria
-      </button>
-      <div className="subtle" style={{ fontSize: 12, lineHeight: 1.5 }}>
-        Já tem conta? Escolha a mesma carteira: o app reconhece e só pede para confirmar a entrada. Todas as taxas saem da sua carteira; o serviço não paga nada.
-      </div>
+      {!isIOS() && <BiometricLogin busy={Boolean(step)} setStep={setStep} setErr={setErr} />}
+      {!isIOS() && (
+        <div className="subtle" style={{ fontSize: 12, lineHeight: 1.5 }}>
+          Já tem conta? Escolha a mesma carteira: o app reconhece e só pede para confirmar a entrada. Todas as taxas saem da sua carteira; o serviço não paga nada.
+        </div>
+      )}
     </div>
+  );
+}
+
+/** Entrar sem a carteira (perdeu): a passkey abre a chave do webapp. */
+function BiometricLogin({ busy, setStep, setErr }: { busy: boolean; setStep: (s: string | null) => void; setErr: (s: string | null) => void }) {
+  const ctx = useApp();
+  return (
+    <button
+      type="button"
+      className="linkbtn"
+      disabled={busy}
+      onClick={async () => {
+        setErr(null);
+        try {
+          await loginWithBiometrics(ctx, setStep);
+          ctx.go("/security");
+          ctx.toast("Você entrou com a biometria. Para trocar a carteira, use 'Trocar a carteira'.");
+        } catch (e) {
+          setErr(errorText(e));
+        } finally {
+          setStep(null);
+        }
+      }}
+    >
+      Perdeu a carteira? Entrar com a biometria
+    </button>
   );
 }

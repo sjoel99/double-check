@@ -120,4 +120,4 @@ export function PhoneQrSheet(props: Parameters<typeof PhoneQr>[0] & { onClose: (
   );
 }
 
-export const SCAN_STEPS = ["Aponte a câmera do celular para o código e abra o link", "No celular: entre com a sua carteira e confira o que vai ser assinado", "Confirme com a biometria e assine na carteira"];
+export const SCAN_STEPS = ["Aponte a câmera de um celular Android para o código e abra o link", "No celular: entre com a sua carteira e confira o que vai ser assinado", "Confirme com a biometria e assine na carteira"];
