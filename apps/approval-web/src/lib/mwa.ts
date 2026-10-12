@@ -7,12 +7,14 @@ import { ensureActivation } from "./activation";
 /**
  * Carteira do celular (Android) pelo Mobile Wallet Adapter, falando direto com
  * o protocolo. Cada operação é UMA sessão: autoriza e assina na mesma abertura
- * da carteira, sem token de reautorização.
+ * da carteira.
  *
- * Por quê: com a biblioteca de Wallet Standard (@solana-mobile/wallet-standard-mobile),
- * a segunda abertura reautorizava com o token da conexão; quando a Phantom
- * recusava, a biblioteca engolia o erro e ficava esperando para sempre (a Phantom
- * abria "sem nada"). Aqui um erro vira erro.
+ * Reautorização: o token da última autorização fica guardado neste navegador e a
+ * próxima sessão tenta com ele, para a carteira ir direto ao pedido de assinatura
+ * sem pedir "conectar" de novo. Se a carteira recusar o token, o token é apagado e a
+ * mesma sessão pede a autorização normal. (Com a biblioteca de Wallet Standard,
+ * @solana-mobile/wallet-standard-mobile, a recusa era engolida e a carteira ficava
+ * aberta "sem nada"; aqui a recusa é tratada.)
  */
 type MwaAccount = { address: string; publicKey: Uint8Array; chains: string[]; features: string[] };
 
@@ -22,6 +24,26 @@ const b64 = (u: Uint8Array) => {
   return btoa(s);
 };
 const fromB64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+/** Token de reautorização da carteira do celular, por rede. Só poupa o "conectar": cada assinatura continua pedindo confirmação na carteira. */
+type SavedAuth = { token: string; address: string; chain: string };
+const AUTH_KEY = "dk-mwa-auth";
+const loadAuth = (chain: string): SavedAuth | null => {
+  try {
+    const a = JSON.parse(localStorage.getItem(AUTH_KEY) ?? "null") as SavedAuth | null;
+    return a?.chain === chain && a.token && a.address ? a : null;
+  } catch {
+    return null;
+  }
+};
+const saveAuth = (a: SavedAuth | null) => {
+  try {
+    if (a) localStorage.setItem(AUTH_KEY, JSON.stringify(a));
+    else localStorage.removeItem(AUTH_KEY);
+  } catch {
+    /* sem localStorage: cada sessão pede "conectar" */
+  }
+};
 
 /**
  * Acesso do Chrome ao próprio aparelho: o app conversa com a carteira por ws://localhost.
@@ -67,10 +89,23 @@ export function makeMwaWallet(opts: { chain: string; identity: { name: string; u
     try {
       const out = await transact(async (wallet) => {
         trace(`mwa:${what}:sessao`);
-        const auth = await wallet.authorize({ identity: opts.identity, chain: opts.chain as `${string}:${string}` });
+        const want = expected ?? account?.publicKey;
+        const chain = opts.chain as `${string}:${string}`;
+        const saved = loadAuth(opts.chain);
+        let auth: { accounts: { address: string }[]; auth_token: string } | null = null;
+        if (saved && (!want || saved.address === b64(want))) {
+          try {
+            auth = await wallet.authorize({ identity: opts.identity, chain, auth_token: saved.token });
+            trace(`mwa:${what}:reautorizado`);
+          } catch (e) {
+            trace(`mwa:${what}:reautorizacao-recusada`, e);
+            saveAuth(null);
+          }
+        }
+        if (!auth) auth = await wallet.authorize({ identity: opts.identity, chain });
         trace(`mwa:${what}:autorizado`, `${auth.accounts.length} conta(s)`);
         const acc = toAccount(auth.accounts[0]!.address as string);
-        const want = expected ?? account?.publicKey;
+        saveAuth({ token: auth.auth_token, address: acc.address, chain: opts.chain });
         if (want && b64(want) !== b64(acc.publicKey)) throw new Error(tr("A carteira está em outra conta. Troque para a conta certa e tente de novo.", "The wallet is on a different account. Switch to the right account and try again."));
         account = acc;
         return fn(wallet, acc);
@@ -101,7 +136,13 @@ export function makeMwaWallet(opts: { chain: string; identity: { name: string; u
           return { accounts: [account!] };
         },
       },
-      "standard:disconnect": { version: "1.0.0", disconnect: async () => void (account = null) },
+      "standard:disconnect": {
+        version: "1.0.0",
+        disconnect: async () => {
+          account = null;
+          saveAuth(null);
+        },
+      },
       "standard:events": { version: "1.0.0", on: () => () => {} },
       "solana:signMessage": {
         version: "1.0.0",
