@@ -4,8 +4,10 @@ import { Icon, Logo } from "../icons";
 import { type StandardWallet, walletDisplay, walletLabel } from "../lib/wallets";
 import { api } from "../lib/api";
 import { PhoneQr } from "../components/PhoneQr";
-import { isIOS } from "../lib/activation";
+import { isAndroid, isIOS, isMobile } from "../lib/activation";
 import { tr } from "../lib/i18n";
+
+const MWA = "Mobile Wallet Adapter";
 
 const INSTALL = [
   { name: "Phantom", url: "https://phantom.com/download" },
@@ -27,14 +29,16 @@ export function IosNotice() {
 
 export function WalletList({ onPick, busy, exclude }: { onPick: (w: StandardWallet) => void; busy: boolean; exclude?: string }) {
   const { wallets } = useApp();
-  const real = wallets.filter((w) => !w.name.startsWith("Carteira de teste"));
+  const injected = wallets.filter((w) => !w.name.startsWith("Carteira de teste") && w.name !== MWA);
+  // No navegador da própria carteira (Phantom, Solflare…) ela já aparece pelo nome: o MWA seria um segundo caminho para o mesmo lugar.
+  const real = injected.length > 0 ? injected : wallets.filter((w) => w.name === MWA);
   const test = wallets.filter((w) => w.name.startsWith("Carteira de teste"));
   const row = (w: StandardWallet) => (
     <button key={w.name} type="button" className="item" disabled={busy} onClick={() => onPick(w)} style={{ padding: 14 }}>
       <img src={w.icon} alt="" width={36} height={36} style={{ borderRadius: 10 }} />
       <div className="grow">
         <div className="t">{walletDisplay(w.name)}</div>
-        {w.name === "Mobile Wallet Adapter" && <div className="s">{tr("Phantom, Solflare… (abre o app da carteira)", "Phantom, Solflare… (opens the wallet app)")}</div>}
+        {w.name === MWA && <div className="s">{tr("Abre o app da sua carteira (Phantom, Solflare…)", "Opens your wallet app (Phantom, Solflare…)")}</div>}
         {walletLabel(w.name) === exclude && <div className="s">{tr("carteira atual da conta", "account's current wallet")}</div>}
       </div>
       <Icon name="chev" size={18} color="var(--muted)" />
@@ -48,7 +52,7 @@ export function WalletList({ onPick, busy, exclude }: { onPick: (w: StandardWall
         <div className="card" style={{ gap: 10 }}>
           <div style={{ fontSize: 14 }}>{tr("Nenhuma carteira encontrada neste navegador.", "No wallet found in this browser.")}</div>
           <div className="muted" style={{ fontSize: 13 }}>
-            {tr("Instale uma e recarregue a página:", "Install one and reload the page:")}
+            {isAndroid() ? tr("Instale o app de uma carteira e recarregue a página:", "Install a wallet app and reload the page:") : tr("Instale a extensão de uma carteira e recarregue a página:", "Install a wallet extension and reload the page:")}
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {INSTALL.map((i) => (
@@ -126,7 +130,8 @@ export function Welcome() {
           </div>
         ))}
       </div>
-      {isIOS() ? null : phone ? (
+      {/* No celular não há extensão nem faz sentido escanear a própria tela: a carteira abre pelo app (MWA). */}
+      {isMobile() ? null : phone ? (
         <div className="card">
           <PhoneQr
             create={() => api("POST", "/v1/pay/connect", {}, { auth: false })}
@@ -154,7 +159,7 @@ export function Welcome() {
           <Icon name="chev" size={18} color="var(--muted)" />
         </button>
       )}
-      {!isIOS() && <div className="or">{tr("ou a extensão deste navegador", "or this browser's extension")}</div>}
+      {!isMobile() && <div className="or">{tr("ou a extensão deste navegador", "or this browser's extension")}</div>}
       <WalletList onPick={pick} busy={Boolean(step)} />
       {step && (
         <div className="status sticky" role="status">

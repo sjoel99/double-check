@@ -59,6 +59,8 @@ export function makeMwaWallet(opts: { chain: string; identity: { name: string; u
       return out;
     } catch (e) {
       trace(`mwa:${what}:erro`, e);
+      if ((e as { code?: string })?.code === "ERROR_WALLET_NOT_FOUND")
+        throw new Error(tr("Nenhum app de carteira Solana neste celular. Instale a Phantom ou a Solflare pela Play Store e tente de novo.", "No Solana wallet app on this phone. Install Phantom or Solflare from the Play Store and try again."));
       throw e;
     }
   };

@@ -13,6 +13,7 @@ export function setActivationGate(g: typeof gate) {
 }
 
 export const isMobile = () => /Android|iPhone|iPad/i.test(navigator.userAgent);
+export const isAndroid = () => /Android/i.test(navigator.userAgent);
 
 /** iPhone/iPad (o iPadOS se anuncia como Mac com toque): sem carteira no navegador e sem Mobile Wallet Adapter. */
 export const isIOS = () => /iPhone|iPad|iPod/i.test(navigator.userAgent) || (/Macintosh/i.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
