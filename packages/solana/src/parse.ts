@@ -85,8 +85,3 @@ export function parseInstruction(ix: RawInstruction): ParsedInstruction {
   }
   return { kind: "UNKNOWN", programId: p.toBase58() };
 }
-
-/** JSON-friendly (bigint → string), para API e auditoria. */
-export function parsedToJson(ix: ParsedInstruction): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(ix).map(([k, v]) => [k, typeof v === "bigint" ? v.toString() : v]));
-}

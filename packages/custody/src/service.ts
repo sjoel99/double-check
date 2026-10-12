@@ -4,7 +4,7 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import bs58 from "bs58";
 import { type Cluster, deny, type IntentBody, intentBody, SecurityError, sealIntent, type TransferSolIntent } from "@duplachave/shared";
 import { loginMessage, randomHex, type Signer, verifyEd25519, verifyWalletMessage } from "@duplachave/crypto";
-import { ChainTxError, type Chain, parseInstruction, programErrorFromLogs, type RawInstruction, SYSTEM_PROGRAM } from "@duplachave/solana";
+import { ChainTxError, type Chain, parseInstruction, programErrorFromLogs, SYSTEM_PROGRAM } from "@duplachave/solana";
 import {
   assertAccountModel,
   configExecuteInstructions,
@@ -52,7 +52,7 @@ const sha256 = (u: Uint8Array) => createHash("sha256").update(u).digest("hex");
 export const PREPARED_WINDOW = 180;
 
 /** Prazo padrão das trocas de chave: 72 h. */
-export const SECURITY_DELAY = 72 * 3600;
+const SECURITY_DELAY = 72 * 3600;
 
 export type CustodyConfig = {
   cluster: Cluster;
@@ -161,7 +161,7 @@ export class CustodyService {
     return rec;
   }
 
-  /** Lê a multisig na chain e confere o modelo STRICT_2_OF_2 contra os papéis esperados. */
+  /** Lê a multisig na chain e confere o modelo 2 de 3 contra os papéis esperados. */
   async verifiedState(acc: SmartAccountRecord): Promise<MultisigState> {
     const state = await readMultisig(this.chain, new PublicKey(acc.multisig));
     try {
@@ -182,9 +182,9 @@ export class CustodyService {
   }
 
   /**
-   * Transação paga pela carteira: compila com ela como pagadora e as outras
-   * chaves (servidor, proponente, createKey) assinam antes. A carteira assina
-   * por último, na janela dela.
+   * Transação paga pela carteira: compila com ela como pagadora e as chaves de
+   * `preSigners` (a createKey no cadastro, o operador na execução de uma troca)
+   * assinam antes. A carteira assina por último, na janela dela.
    */
   private async walletPaid(wallet: PublicKey, instructions: TransactionInstruction[], preSigners: Signer[] = []) {
     const message = compileAtomic(instructions, wallet, await this.chain.getLatestBlockhash());
@@ -385,10 +385,7 @@ export class CustodyService {
 
   /** Entrada pela extensão: a carteira assina o texto de entrada (signMessage, sem custo). */
   async login(args: { challengeId: string; publicKey: string; signature: string }) {
-    const ch = await this.store.takeChallenge(args.challengeId);
-    if (!ch || ch.purpose !== "AUTH" || ch.subject !== args.publicKey || ch.expiresAt < this.now()) deny("CHALLENGE_INVALID", "desafio inválido");
-    const text = loginMessage({ publicKey: args.publicKey, cluster: this.cfg.cluster, challenge: ch.challenge, expiresAt: ch.expiresAt });
-    if (!verifyWalletMessage(text, args.signature, args.publicKey)) deny("BAD_SIGNATURE", "assinatura inválida");
+    await this.verifyLoginSignature(args);
     return this.accountOfWallet(args.publicKey);
   }
 
@@ -397,13 +394,18 @@ export class CustodyService {
    * a Phantom e precisa pedir a troca dela. Também só identifica.
    */
   async loginWithWebapp(args: { challengeId: string; publicKey: string; signature: string }) {
+    await this.verifyLoginSignature(args);
+    const acc = await this.store.findAccountByWebappKey(args.publicKey);
+    if (!acc) deny("NOT_A_WEBAPP_KEY", "esta chave não é a chave do webapp de nenhuma conta");
+    return acc;
+  }
+
+  /** Consome o desafio de entrada e confere a assinatura do texto de entrada por esta chave. */
+  private async verifyLoginSignature(args: { challengeId: string; publicKey: string; signature: string }) {
     const ch = await this.store.takeChallenge(args.challengeId);
     if (!ch || ch.purpose !== "AUTH" || ch.subject !== args.publicKey || ch.expiresAt < this.now()) deny("CHALLENGE_INVALID", "desafio inválido");
     const text = loginMessage({ publicKey: args.publicKey, cluster: this.cfg.cluster, challenge: ch.challenge, expiresAt: ch.expiresAt });
     if (!verifyWalletMessage(text, args.signature, args.publicKey)) deny("BAD_SIGNATURE", "assinatura inválida");
-    const acc = await this.store.findAccountByWebappKey(args.publicKey);
-    if (!acc) deny("NOT_A_WEBAPP_KEY", "esta chave não é a chave do webapp de nenhuma conta");
-    return acc;
   }
 
   /** Cópia cifrada da chave do webapp pela passkey (só texto cifrado; a passkey é quem abre). */
@@ -429,9 +431,10 @@ export class CustodyService {
   // operações
   //
   // Nada vai para a chain até a carteira assinar. A intenção é um rascunho
-  // (política + simulação); ao preparar, o servidor monta a transação atômica
-  // [criar, proposta, voto do servidor, voto da carteira, executar, fechar],
-  // assina como servidor e proponente, e a carteira assina por último e paga.
+  // (política + simulação); ao preparar, o serviço monta a transação atômica
+  // [criar, proposta, voto da Phantom, voto do webapp, executar, fechar] sem
+  // assinatura nenhuma. A chave do webapp assina, depois o operador
+  // (authorizeIntent), e a carteira assina por último e paga.
   // -------------------------------------------------------------------------
 
   /** Política + destino + simulação da transferência. Devolve os alertas ou recusa. */
@@ -506,8 +509,9 @@ export class CustodyService {
 
   /**
    * Prepara a transação atômica que a carteira vai assinar: índice de agora,
-   * política e simulação de novo, assinatura do servidor (o voto dele) e do
-   * proponente. A carteira paga taxa e rent; o rent volta na mesma transação.
+   * política e simulação de novo. Sai sem assinatura: a chave do webapp e o
+   * operador assinam em authorizeIntent. A carteira paga taxa e rent; o rent
+   * volta na mesma transação.
    */
   async prepareIntent(intentId: string, walletPublicKey?: string): Promise<ApprovalRequest> {
     const first = await this.intentRecord(intentId);
@@ -597,20 +601,6 @@ export class CustodyService {
       }
       const entry = entries.find((e) => e.message === parsed.message)!;
       return this.finalizeIntent(acc, rec, entry, sig);
-    });
-  }
-
-  /** Celular: a carteira enviou sozinha. Procura na chain e conclui. null = ainda não confirmou. */
-  async completeIntentFromChain(intentId: string) {
-    const first = await this.intentRecord(intentId);
-    return this.withLock(first.accountId, async () => {
-      const rec = await this.intentRecord(intentId);
-      if (rec.status === "EXECUTED") return rec;
-      const acc = await this.account(rec.accountId);
-      const found = await this.landedEntry(acc, rec);
-      if (!found) return null;
-      if (!found.landed.ok) deny("WALLET_TX_FAILED", found.landed.error ?? "a transação falhou");
-      return this.finalizeIntent(acc, rec, found.entry, found.landed.signature);
     });
   }
 
@@ -913,6 +903,13 @@ export class CustodyService {
       const ms = new PublicKey(acc.multisig);
       const p = await readProposal(this.chain, ms, BigInt(c.index!));
       if (p?.status !== "Approved") {
+        // A execução pode ter entrado sem ser registrada aqui (o envio falhou depois de
+        // a transação chegar à chain): a proposta já foi executada e fechada. Se a chain
+        // já tem a chave nova no modelo 2 de 3, conclui a troca em vez de marcá-la como falha.
+        if (modelMatches(await readMultisig(this.chain, ms), rolesAfter(acc, c))) {
+          const done = await this.finalizeSecurityChange(acc, c, await this.landedExecute(ms, c));
+          deny("CHANGE_NOT_PENDING", `troca em ${done.status}`);
+        }
         await this.setChange(c, "FAILED", `pedido na chain em ${p?.status ?? "inexistente"}`);
         deny("CHANGE_NOT_APPROVED", "o pedido não está mais aprovado na chain");
       }
@@ -940,10 +937,18 @@ export class CustodyService {
     });
   }
 
+  /** Assinatura da execução já confirmada na chain, se der para achar (só para o registro). */
+  private async landedExecute(ms: PublicKey, c: SecurityChangeRecord): Promise<string | null> {
+    try {
+      return (await this.findLanded(transactionPda(ms, BigInt(c.index!)), (c.prepared ?? []).map((e) => e.message)))?.signature ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   /** A troca executou: confere o 2 de 3 com a chave nova na chain e atualiza os registros. */
-  private async finalizeSecurityChange(acc: SmartAccountRecord, c: SecurityChangeRecord, sig: string) {
-    const key = c.role === "CLIENT" ? "client" : c.role === "WEBAPP" ? "webapp" : "server";
-    const roles: ExpectedRoles = { ...acc.roles, [key]: c.newKey };
+  private async finalizeSecurityChange(acc: SmartAccountRecord, c: SecurityChangeRecord, sig: string | null) {
+    const roles = rolesAfter(acc, c);
     const state = await readMultisig(this.chain, new PublicKey(acc.multisig));
     try {
       assertAccountModel(state, roles);
@@ -975,7 +980,7 @@ export class CustodyService {
     }
     await this.store.saveMember({ accountId: acc.id, publicKey: c.newKey, role: c.role, permissions: VOTER_MASK, status: "ACTIVE", deviceId, createdAt: now, revokedAt: null });
     await this.store.saveAccount({ ...acc, roles, frozenBy: null });
-    const out = await this.setChange(c, "EXECUTED", undefined, { prepared: null, signatures: { ...c.signatures, execute: sig } });
+    const out = await this.setChange(c, "EXECUTED", undefined, { prepared: null, signatures: sig ? { ...c.signatures, execute: sig } : c.signatures });
     await this.audit({ type: "SECURITY_CHANGE_EXECUTED", accountId: acc.id, multisig: acc.multisig, transactionIndex: c.index, txSignature: sig, publicKey: c.newKey, details: { changeId: c.id, role: c.role, oldKey: c.oldKey } });
     await this.cfg.notifications.event({ userId: acc.userId, accountId: acc.id }, { kind: "CHANGE_EXECUTED", changeId: c.id, role: c.role, newKey: c.newKey });
     return out;
@@ -1054,11 +1059,6 @@ export class CustodyService {
     return { email: maskEmail(email) };
   }
 
-  /** E-mail confirmado do usuário (para o envio dos alertas). */
-  async alertEmailOf(userId: string): Promise<string | null> {
-    return (await this.store.getUser(userId))?.email ?? null;
-  }
-
   // -------------------------------------------------------------------------
   // leitura
   // -------------------------------------------------------------------------
@@ -1091,6 +1091,22 @@ export class CustodyService {
   }
 }
 
+/** Os papéis da conta depois que a troca executar. */
+function rolesAfter(acc: SmartAccountRecord, c: SecurityChangeRecord): ExpectedRoles {
+  const key = c.role === "CLIENT" ? "client" : c.role === "WEBAPP" ? "webapp" : "server";
+  return { ...acc.roles, [key]: c.newKey };
+}
+
+/** A multisig na chain está no modelo 2 de 3 com estes papéis? (sem efeitos colaterais) */
+function modelMatches(state: MultisigState, roles: ExpectedRoles): boolean {
+  try {
+    assertAccountModel(state, roles);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Por que não dá mais para assinar: o envio já saiu do estado de espera. */
 function notPendingText(status: string): string {
   const what: Record<string, string> = { EXECUTED: "já foi executado", REJECTED: "foi cancelado", CANCELLED: "foi cancelado", EXPIRED: "expirou", FAILED: "falhou" };
@@ -1101,7 +1117,7 @@ function notPendingText(status: string): string {
  * A recusa da política em português, para a tela. Os códigos (LIMIT_EXCEEDED…)
  * continuam na auditoria; aqui vai só o primeiro motivo que a pessoa entende.
  */
-export function policyText(reasons: string[], maxLamportsPerTx: bigint): string {
+function policyText(reasons: string[], maxLamportsPerTx: bigint): string {
   const has = (code: string) => reasons.find((r) => r.startsWith(code));
   const sol = (l: bigint) => (Number(l) / 1e9).toLocaleString("pt-BR", { maximumFractionDigits: 9 });
   if (has("ZERO_AMOUNT")) return "o valor não pode ser zero.";
@@ -1128,7 +1144,7 @@ function normalizeEmail(raw: string) {
   return e;
 }
 
-export function maskEmail(e: string) {
+function maskEmail(e: string) {
   const [u, d] = e.split("@");
   return `${u!.slice(0, 1)}${"*".repeat(Math.max(2, u!.length - 1))}@${d}`;
 }
@@ -1171,7 +1187,7 @@ function randomCreateKey(): Signer {
   };
 }
 
-/** Visão da mensagem antes de ela existir na chain (mesma leitura usada depois). */
+/** O que a política confere numa transferência, lido das instruções antes de elas irem para a chain. */
 function previewVaultView(vault: PublicKey, instructions: TransactionInstruction[]) {
   const parsed = instructions.map((ix) => parseInstruction({ programId: ix.programId, keys: ix.keys, data: new Uint8Array(ix.data) }));
   const programs = [...new Set(instructions.map((i) => i.programId.toBase58()))].sort();
@@ -1187,8 +1203,4 @@ function previewVaultView(vault: PublicKey, instructions: TransactionInstruction
         ? { type: "TRANSFER_SOL" as const, amountLamports: t.lamports.toString(), destination: t.to }
         : null,
   };
-}
-
-export function toInstruction(r: RawInstruction): TransactionInstruction {
-  return new TransactionInstruction({ programId: r.programId, keys: r.keys, data: Buffer.from(r.data) });
 }

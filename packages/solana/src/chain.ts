@@ -9,8 +9,6 @@ import {
 } from "@solana/web3.js";
 import type { Cluster } from "@duplachave/shared";
 import bs58 from "bs58";
-
-const bs58decode = (s: string) => bs58.decode(s);
 import { type Signer, signTransaction } from "@duplachave/crypto";
 
 export class ChainTxError extends Error {
@@ -56,8 +54,8 @@ export interface Chain {
    */
   simulate?(payer: PublicKey, instructions: TransactionInstruction[]): Promise<SimulationResult>;
   /**
-   * Transação já enviada por outra pessoa (a carteira do celular envia ela mesma,
-   * no Solana Pay). null enquanto não confirmar.
+   * Transação confirmada, lida da chain (conciliação: uma transação preparada
+   * pode ter entrado sem o serviço ter registrado). null enquanto não confirmar.
    */
   getLandedTransaction?(signature: string): Promise<LandedTransaction | null>;
   /** Assinaturas recentes de transações que tocaram este endereço (mais nova primeiro). */
@@ -174,7 +172,7 @@ export class RpcChain implements Chain {
       ok: !tx.meta?.err,
       error: tx.meta?.err ? JSON.stringify(tx.meta.err) : null,
       message: msg.serialize(),
-      signatures: tx.transaction.signatures.map((s) => bs58decode(s)),
+      signatures: tx.transaction.signatures.map((s) => bs58.decode(s)),
       signers,
     };
   }

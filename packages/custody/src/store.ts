@@ -22,7 +22,7 @@ export type SmartAccountRecord = {
   vault: string;
   /** Papéis esperados. Cache: toda decisão confere com a chain antes. */
   roles: ExpectedRoles;
-  /** Rotação em andamento que congelou as operações, se houver. */
+  /** Do modelo 2 de 2 (rotação que congelava as operações). Contas novas: sempre null. */
   frozenBy: string | null;
   createdAt: number;
 };
@@ -39,8 +39,8 @@ export type MemberRecord = {
 };
 
 /**
- * APPROVED_PENDING_EXECUTION: os dois votaram, mas a execução falhou. A proposta
- * continua executável on-chain; sai daqui executando ou cancelando (CLIENT + SERVER).
+ * O fluxo atômico só usa AWAITING_CLIENT → EXECUTED | REJECTED | EXPIRED. Os
+ * outros estados vêm do modelo 2 de 2 e só aparecem em linhas antigas do banco.
  */
 export type IntentStatus =
   | "AWAITING_CLIENT"
@@ -63,9 +63,9 @@ export type IntentRecord = {
   signatures: Partial<Record<"create" | "clientApprove" | "serverApprove" | "execute" | "reject", string>>;
   updatedAt: number;
   /**
-   * Transações atômicas preparadas (assinadas pelo servidor e pelo proponente,
-   * falta a carteira) que ainda podem entrar na chain: valem até o blockhash
-   * expirar. A conciliação com a chain decide cada uma (entrou ou morreu).
+   * Transações atômicas preparadas que ainda podem entrar na chain: valem até
+   * o blockhash expirar. `authorizedAt` marca as que o operador assinou. A
+   * conciliação com a chain decide cada uma (entrou ou morreu).
    */
   prepared?: PreparedEntry[] | null;
 };
@@ -73,39 +73,7 @@ export type IntentRecord = {
 /** Uma transação preparada: mensagem (base64) e o índice da multisig que ela usa. */
 export type PreparedEntry = { index: string; message: string; preparedAt: number; authorizedAt?: number | null };
 
-export const ROTATION_STATUSES = [
-  "REQUESTED",
-  "NEW_KEY_VERIFIED",
-  "OPERATIONS_FROZEN",
-  "AWAITING_CLIENT_APPROVAL",
-  "AWAITING_SERVER_APPROVAL",
-  "EXECUTING",
-  "VERIFIED",
-  "COMPLETED",
-  "REJECTED",
-  "EXPIRED",
-  "FAILED",
-  "ROLLBACK_REQUIRED",
-] as const;
-export type RotationStatus = (typeof ROTATION_STATUSES)[number];
-
-export type RotationRecord = {
-  id: string;
-  accountId: string;
-  role: "CLIENT" | "SERVER";
-  oldKey: string;
-  newKey: string | null;
-  newDeviceName: string | null;
-  status: RotationStatus;
-  challenge: string;
-  createdAt: number;
-  expiresAt: number;
-  intentId: string | null;
-  /** Prova de posse da chave nova (declaração assinada por ela). O app confere de novo. */
-  possession: unknown | null;
-  history: { status: RotationStatus; at: number; note?: string }[];
-};
-
+/** Inclui tipos do modelo 2 de 2, que só aparecem em eventos antigos da auditoria (encadeada: não se reescreve). */
 export type AuditEventType =
   | "SMART_ACCOUNT_CREATED"
   | "TRANSACTION_PROPOSED"
@@ -172,7 +140,7 @@ export type ApprovalRecord = {
   publicKey: string;
   role: "CLIENT" | "WEBAPP" | "SERVER";
   decision: "APPROVE" | "REJECT" | "CANCEL";
-  /** Declaração assinada (só material público: dados + assinatura). */
+  /** Evidência, só material público. No fluxo atômico: `{ atomic: true }` (o voto está na própria transação). */
   statement: unknown;
   txSignature: string | null;
   createdAt: number;
@@ -188,25 +156,6 @@ export type SquadsTransactionRecord = {
   intentId: string;
   createSignature: string;
   createdAt: number;
-};
-
-/**
- * Biometria (passkey/WebAuthn) de um aparelho. O servidor só assina a parte
- * dele depois de uma confirmação válida de uma biometria ativa da conta.
- * `activeAt` no futuro = vinculada sem aprovação de outra biometria: espera o prazo.
- */
-export type PasskeyRecord = {
-  /** credential id (base64url) */
-  id: string;
-  accountId: string;
-  /** chave pública COSE (base64url) */
-  publicKey: string;
-  counter: number;
-  rpId: string;
-  deviceName: string;
-  createdAt: number;
-  activeAt: number;
-  revokedAt: number | null;
 };
 
 /**
@@ -273,7 +222,6 @@ export interface Store {
 
   saveAccount(a: SmartAccountRecord): Promise<void>;
   getAccount(id: string): Promise<SmartAccountRecord | null>;
-  listAccounts(userId: string): Promise<SmartAccountRecord[]>;
   listAccountIds(): Promise<string[]>;
   /** Conta cuja CLIENT atual (esperada) é esta chave. */
   findAccountByClientKey(publicKey: string): Promise<SmartAccountRecord | null>;
@@ -289,19 +237,12 @@ export interface Store {
   getIntent(id: string): Promise<IntentRecord | null>;
   listIntents(accountId: string): Promise<IntentRecord[]>;
 
-  savePasskey(p: PasskeyRecord): Promise<void>;
-  listPasskeys(accountId: string): Promise<PasskeyRecord[]>;
-
   saveWebappKey(k: WebappKeyRecord): Promise<void>;
   listWebappKeys(accountId: string): Promise<WebappKeyRecord[]>;
 
   saveSecurityChange(c: SecurityChangeRecord): Promise<void>;
   getSecurityChange(id: string): Promise<SecurityChangeRecord | null>;
   listSecurityChanges(accountId: string): Promise<SecurityChangeRecord[]>;
-
-  saveRotation(r: RotationRecord): Promise<void>;
-  getRotation(id: string): Promise<RotationRecord | null>;
-  listRotations(accountId: string): Promise<RotationRecord[]>;
 
   /** Marca o nonce como usado. Devolve false se já tinha sido usado (replay). Atômico. */
   consumeNonce(scope: string, nonce: string, expiresAt: number): Promise<boolean>;
@@ -346,7 +287,6 @@ export class MemoryStore implements Store, ChallengeStore {
   private accounts = new Map<string, SmartAccountRecord>();
   private members: MemberRecord[] = [];
   private intents = new Map<string, IntentRecord>();
-  private rotations = new Map<string, RotationRecord>();
   private nonces = new Map<string, number>();
   private audit: AuditEvent[] = [];
 
@@ -356,7 +296,6 @@ export class MemoryStore implements Store, ChallengeStore {
   async getDevice(id: string) { const d = this.devices.get(id); return d ? clone(d) : null; }
   async saveAccount(a: SmartAccountRecord) { this.accounts.set(a.id, clone(a)); }
   async getAccount(id: string) { const a = this.accounts.get(id); return a ? clone(a) : null; }
-  async listAccounts(userId: string) { return [...this.accounts.values()].filter((a) => a.userId === userId).map(clone); }
   async listAccountIds() { return [...this.accounts.keys()]; }
   async findAccountByClientKey(publicKey: string) { const a = [...this.accounts.values()].find((x) => x.roles.client === publicKey); return a ? clone(a) : null; }
   async findAccountByWebappKey(publicKey: string) { const a = [...this.accounts.values()].find((x) => x.roles.webapp === publicKey); return a ? clone(a) : null; }
@@ -375,9 +314,6 @@ export class MemoryStore implements Store, ChallengeStore {
   async getIntent(id: string) { const r = this.intents.get(id); return r ? clone(r) : null; }
   async listIntents(accountId: string) { return [...this.intents.values()].filter((r) => r.accountId === accountId).map(clone); }
 
-  private passkeys = new Map<string, PasskeyRecord>();
-  async savePasskey(p: PasskeyRecord) { this.passkeys.set(p.id, clone(p)); }
-  async listPasskeys(accountId: string) { return [...this.passkeys.values()].filter((p) => p.accountId === accountId).map(clone); }
   private webappKeys: WebappKeyRecord[] = [];
   async saveWebappKey(k: WebappKeyRecord) {
     const i = this.webappKeys.findIndex((x) => x.accountId === k.accountId && x.blob.credentialId === k.blob.credentialId && x.publicKey === k.publicKey);
@@ -389,10 +325,6 @@ export class MemoryStore implements Store, ChallengeStore {
   async saveSecurityChange(c: SecurityChangeRecord) { this.changes.set(c.id, clone(c)); }
   async getSecurityChange(id: string) { const c = this.changes.get(id); return c ? clone(c) : null; }
   async listSecurityChanges(accountId: string) { return [...this.changes.values()].filter((c) => c.accountId === accountId).sort((a, b) => b.createdAt - a.createdAt).map(clone); }
-
-  async saveRotation(r: RotationRecord) { this.rotations.set(r.id, clone(r)); }
-  async getRotation(id: string) { const r = this.rotations.get(id); return r ? clone(r) : null; }
-  async listRotations(accountId: string) { return [...this.rotations.values()].filter((r) => r.accountId === accountId).map(clone); }
 
   async consumeNonce(scope: string, nonce: string, expiresAt: number) {
     const k = `${scope}:${nonce}`;
@@ -431,7 +363,7 @@ export class MemoryStore implements Store, ChallengeStore {
 
 export type ChallengeRecord = {
   id: string;
-  purpose: "ENROLL_CLIENT_KEY" | "AUTH" | "PASSKEY_REG" | "EMAIL_VERIFY";
+  purpose: "AUTH" | "EMAIL_VERIFY";
   subject: string;
   challenge: string;
   expiresAt: number;

@@ -5,14 +5,12 @@ import type {
   AuditEvent,
   AuditInput,
   ChallengeRecord,
-  PasskeyRecord,
   SecurityChangeRecord,
   WebappKeyRecord,
   ChallengeStore,
   DeviceRecord,
   IntentRecord,
   MemberRecord,
-  RotationRecord,
   SecurityEventRecord,
   SmartAccountRecord,
   SquadsTransactionRecord,
@@ -134,10 +132,6 @@ export class PgStore implements Store, ChallengeStore {
     const { rows } = await this.db.query<Record<string, unknown>>(`SELECT * FROM smart_accounts WHERE id = $1`, [id]);
     return rows[0] ? this.account(rows[0]) : null;
   }
-  async listAccounts(userId: string) {
-    const { rows } = await this.db.query<Record<string, unknown>>(`SELECT * FROM smart_accounts WHERE user_id = $1 ORDER BY created_at`, [userId]);
-    return rows.map((r) => this.account(r));
-  }
   async listAccountIds() {
     const { rows } = await this.db.query<{ id: string }>(`SELECT id FROM smart_accounts`);
     return rows.map((r) => r.id);
@@ -215,41 +209,6 @@ export class PgStore implements Store, ChallengeStore {
     return rows.map((r) => this.intent(r));
   }
 
-  // rotations -----------------------------------------------------------------
-  async saveRotation(r: RotationRecord) {
-    await this.db.query(
-      `INSERT INTO key_rotations (id, account_id, role, old_key, new_key, new_device_name, status, challenge, created_at, expires_at, intent_id, possession, history)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-       ON CONFLICT (id) DO UPDATE SET new_key = EXCLUDED.new_key, status = EXCLUDED.status, intent_id = EXCLUDED.intent_id, possession = EXCLUDED.possession, history = EXCLUDED.history`,
-      [r.id, r.accountId, r.role, r.oldKey, r.newKey, r.newDeviceName, r.status, r.challenge, r.createdAt, r.expiresAt, r.intentId, r.possession === null ? null : JSON.stringify(r.possession), JSON.stringify(r.history)],
-    );
-  }
-  private rotation(r: Record<string, unknown>): RotationRecord {
-    return {
-      id: r.id as string,
-      accountId: r.account_id as string,
-      role: r.role as RotationRecord["role"],
-      oldKey: r.old_key as string,
-      newKey: (r.new_key as string | null) ?? null,
-      newDeviceName: (r.new_device_name as string | null) ?? null,
-      status: r.status as RotationRecord["status"],
-      challenge: r.challenge as string,
-      createdAt: Number(r.created_at),
-      expiresAt: Number(r.expires_at),
-      intentId: (r.intent_id as string | null) ?? null,
-      possession: r.possession ?? null,
-      history: r.history as RotationRecord["history"],
-    };
-  }
-  async getRotation(id: string) {
-    const { rows } = await this.db.query<Record<string, unknown>>(`SELECT * FROM key_rotations WHERE id = $1`, [id]);
-    return rows[0] ? this.rotation(rows[0]) : null;
-  }
-  async listRotations(accountId: string) {
-    const { rows } = await this.db.query<Record<string, unknown>>(`SELECT * FROM key_rotations WHERE account_id = $1 ORDER BY created_at DESC`, [accountId]);
-    return rows.map((r) => this.rotation(r));
-  }
-
   // nonces / challenges -------------------------------------------------------
   async consumeNonce(scope: string, nonce: string, expiresAt: number) {
     const { rows } = await this.db.query(
@@ -265,29 +224,6 @@ export class PgStore implements Store, ChallengeStore {
     const { rows } = await this.db.query<Record<string, unknown>>(`DELETE FROM challenges WHERE id = $1 RETURNING *`, [id]);
     const r = rows[0];
     return r ? { id: r.id as string, purpose: r.purpose as ChallengeRecord["purpose"], subject: r.subject as string, challenge: r.challenge as string, expiresAt: Number(r.expires_at) } : null;
-  }
-
-  // biometria -----------------------------------------------------------------
-  async savePasskey(p: PasskeyRecord) {
-    await this.db.query(
-      `INSERT INTO passkeys (id, account_id, public_key, counter, rp_id, device_name, created_at, active_at, revoked_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-       ON CONFLICT (id) DO UPDATE SET counter = EXCLUDED.counter, active_at = EXCLUDED.active_at, revoked_at = EXCLUDED.revoked_at`,
-      [p.id, p.accountId, p.publicKey, p.counter, p.rpId, p.deviceName, p.createdAt, p.activeAt, p.revokedAt],
-    );
-  }
-  async listPasskeys(accountId: string) {
-    const { rows } = await this.db.query<Record<string, unknown>>(`SELECT * FROM passkeys WHERE account_id = $1 ORDER BY created_at`, [accountId]);
-    return rows.map((r) => ({
-      id: r.id as string,
-      accountId: r.account_id as string,
-      publicKey: r.public_key as string,
-      counter: Number(r.counter),
-      rpId: r.rp_id as string,
-      deviceName: r.device_name as string,
-      createdAt: Number(r.created_at),
-      activeAt: Number(r.active_at),
-      revokedAt: r.revoked_at === null ? null : Number(r.revoked_at),
-    }));
   }
 
   // chave do webapp e trocas de votante ---------------------------------------

@@ -37,6 +37,7 @@ PREPARED ──(pedido entra na chain)──► PENDING ──(72 h + execução
 - **PENDING:** aprovado na chain; começa o prazo.
 - **VETOED:** cancelado pela chave que seria trocada; o operador não executa. A proposta fica stale na próxima troca executada.
 - **EXECUTED:** a chave nova vale; a antiga fica revogada para sempre.
+- **FAILED:** o pedido não foi assinado a tempo, ou não está mais aprovado na chain. Se a execução entrou na chain sem ser registrada (o envio falhou depois de a transação chegar), o próximo `execute-prepare` vê a chave nova na multisig e conclui a troca (EXECUTED) em vez de marcá-la FAILED.
 
 ## Riscos residuais
 

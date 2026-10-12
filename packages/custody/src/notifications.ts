@@ -1,3 +1,5 @@
+import { shortKey } from "./display";
+
 export type NotificationTarget = { userId: string; accountId: string };
 
 /**
@@ -20,14 +22,17 @@ export interface NotificationService {
   sendCode(email: string, code: string): Promise<void>;
 }
 
+/** Endereço de e-mail para o log: só a primeira letra antes do @. */
+const logAddress = (a: string) => a.replace(/(.).+@/, "$1***@");
+
 /** Registra em memória e no log (testes e ambiente sem Resend). */
 export class LogNotificationService implements NotificationService {
   readonly sent: { kind: string; target: NotificationTarget | null; payload: unknown }[] = [];
   constructor(private readonly log: (msg: string) => void = () => {}) {}
   protected push(kind: string, target: NotificationTarget | null, payload: unknown) {
     this.sent.push({ kind, target, payload });
-    // O código de confirmação não vai para o log.
-    this.log(`[notificação] ${kind} ${kind === "sendCode" ? "(código enviado)" : JSON.stringify(payload)}`);
+    // O código de confirmação não vai para o log, nem o endereço antigo inteiro (troca de e-mail).
+    this.log(`[notificação] ${kind} ${kind === "sendCode" ? "(código enviado)" : JSON.stringify(payload, (k, v) => (k === "alsoTo" && typeof v === "string" ? logAddress(v) : v))}`);
   }
   async transactionApprovalRequested(t: NotificationTarget, p: { intentId: string; summary: string }) { this.push("transactionApprovalRequested", t, p); }
   async event(t: NotificationTarget, e: AlertEvent, opts?: { alsoTo?: string | null }) { this.push(`event:${e.kind}`, t, { ...e, alsoTo: opts?.alsoTo ?? null }); }
@@ -40,30 +45,29 @@ export class LogNotificationService implements NotificationService {
 
 export type Email = { to: string; subject: string; text: string; html: string };
 
-const short = (k: string) => `${k.slice(0, 4)}…${k.slice(-4)}`;
 const ROLE: Record<"CLIENT" | "WEBAPP" | "SERVER", string> = { CLIENT: "carteira", WEBAPP: "chave do webapp (biometria)", SERVER: "chave do serviço" };
 const sol = (lamports: string) => (Number(BigInt(lamports)) / 1e9).toLocaleString("pt-BR", { maximumFractionDigits: 9 });
 const when = (t: number) => new Date(t * 1000).toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo", dateStyle: "short", timeStyle: "short" }) + " (Brasília)";
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
 /** Texto dos e-mails. Sem link que faça algo: só aponta para o webapp, onde tudo é conferido. */
-export function renderEmail(e: AlertEvent | { kind: "CODE"; code: string }, appUrl: string): { subject: string; lines: string[] } {
+function renderEmail(e: AlertEvent | { kind: "CODE"; code: string }, appUrl: string): { subject: string; lines: string[] } {
   const security = `${appUrl.replace(/\/$/, "")}/#/security`;
   switch (e.kind) {
     case "CHANGE_REQUESTED":
       return {
         subject: `Alerta: pedido para trocar a ${ROLE[e.role]} da sua conta`,
         lines: [
-          `Foi pedido trocar a ${ROLE[e.role]} da sua conta Double Check pela chave ${short(e.newKey)}.`,
+          `Foi pedido trocar a ${ROLE[e.role]} da sua conta Double Check pela chave ${shortKey(e.newKey)}.`,
           `Se ninguém vetar, a troca executa em ${when(e.executeAfter)}.`,
           `Não foi você? Abra ${security} e toque em "Não fui eu" antes disso.`,
           "Este pedido sozinho não move fundos.",
         ],
       };
     case "CHANGE_VETOED":
-      return { subject: "Troca de chave cancelada", lines: [`O pedido para trocar a ${ROLE[e.role]} pela chave ${short(e.newKey)} foi cancelado ("Não fui eu").`] };
+      return { subject: "Troca de chave cancelada", lines: [`O pedido para trocar a ${ROLE[e.role]} pela chave ${shortKey(e.newKey)} foi cancelado ("Não fui eu").`] };
     case "CHANGE_EXECUTED":
-      return { subject: "Troca de chave concluída", lines: [`A ${ROLE[e.role]} da sua conta agora é ${short(e.newKey)}. A anterior não vale mais.`, `Não reconhece? Abra ${security}.`] };
+      return { subject: "Troca de chave concluída", lines: [`A ${ROLE[e.role]} da sua conta agora é ${shortKey(e.newKey)}. A anterior não vale mais.`, `Não reconhece? Abra ${security}.`] };
     case "TRANSFER_EXECUTED":
       return { subject: `Envio executado: ${sol(e.amountLamports)} SOL`, lines: [`Saíram ${sol(e.amountLamports)} SOL do seu Vault para ${e.destination}.`, `Transação: ${e.signature}`] };
     case "EMAIL_CHANGED":
@@ -110,7 +114,7 @@ export class EmailNotificationService extends LogNotificationService {
     try {
       await this.deps.mailer.send(toEmail(to, r), key);
     } catch (e) {
-      this.deps.log?.(`[e-mail] falhou para ${to.replace(/(.).+@/, "$1***@")}: ${String(e)}`);
+      this.deps.log?.(`[e-mail] falhou para ${logAddress(to)}: ${String(e)}`);
     }
   }
   override async event(t: NotificationTarget, e: AlertEvent, opts?: { alsoTo?: string | null }) {

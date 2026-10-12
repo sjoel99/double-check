@@ -3,7 +3,6 @@ import rateLimit from "@fastify/rate-limit";
 import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
 import { z } from "zod";
 import { SecurityError } from "@duplachave/shared";
-import type { WalletProof } from "@duplachave/crypto";
 import type { CustodyService, Store, ChallengeStore, IntentRecord } from "@duplachave/custody";
 import { renderIntent } from "@duplachave/custody";
 import type { Chain } from "@duplachave/solana";
@@ -99,7 +98,7 @@ export async function buildServer(d: ApiDeps) {
   // A carteira paga a criação da multisig; o limite por IP segura a geração de chaves do servidor.
   const enrollLimit = { config: { rateLimit: { max: 5, timeWindow: "1 minute" } } };
 
-  /** Monta a criação da conta 2-de-2, paga pela carteira. Ela assina e o app devolve em /submit. */
+  /** A chave do webapp cifrada pela passkey (o serviço só guarda o texto cifrado). */
   const keyBlob = z.object({ credentialId: z.string().min(8).max(512), salt: z.string().max(128), iv: z.string().max(64), ciphertext: z.string().max(512), deviceName: z.string().min(1).max(40) });
 
   /** Monta a criação da conta 2 de 3 (Phantom + chave do webapp + serviço), paga pela Phantom. */
@@ -186,8 +185,9 @@ export async function buildServer(d: ApiDeps) {
   });
 
   /**
-   * A transação atômica para a carteira assinar: o serviço já assinou (é o voto
-   * dele). Vale ~1 minuto (blockhash); o app prepara de novo se passar.
+   * A transação atômica, ainda sem assinaturas: o app confere os bytes, a chave
+   * do webapp assina (/authorize) e a carteira assina por último. Vale ~1 minuto
+   * (blockhash); o app prepara de novo se passar.
    */
   app.post("/v1/intents/:id/prepare", async (req) => {
     const { id } = req.params as { id: string };
@@ -196,7 +196,7 @@ export async function buildServer(d: ApiDeps) {
     return d.custody.prepareIntent(id, s.key);
   });
 
-  /** A biometria confirmou os bytes conferidos pelo app: o serviço assina a parte dele. */
+  /** A chave do webapp (biometria) assinou os bytes conferidos pelo app: o operador assina a parte dele. */
   app.post("/v1/intents/:id/authorize", async (req) => {
     const { id } = req.params as { id: string };
     await ownIntent(req, id);
@@ -255,7 +255,7 @@ export async function buildServer(d: ApiDeps) {
     return rest;
   };
   const ownChange = async (req: FastifyRequest, id: string) => {
-    const c = (await d.custody.listSecurityChangesById(id))!;
+    const c = await d.custody.listSecurityChangesById(id);
     if (!c) throw new SecurityError("CHANGE_NOT_FOUND", id);
     await ownAccount(req, c.accountId);
     return c;

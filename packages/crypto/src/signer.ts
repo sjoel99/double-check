@@ -14,21 +14,11 @@ export interface Signer {
 /** A interface pedida para o lado do servidor é a mesma. */
 export type ServerSigner = Signer;
 
-export type SignerDescription = {
-  kind: "dev-memory" | "secure-store" | "android-keystore" | "secure-enclave-wrapped" | "kms" | "hsm" | "mpc";
-  hardwareBacked: boolean;
-  label: string;
-};
-
-export interface DescribedSigner extends Signer {
-  describe(): SignerDescription;
-}
-
 /**
  * Signer de desenvolvimento: chave em memória. Nunca persiste nada. Recusa
  * rodar em mainnet (o chamador passa o cluster).
  */
-export class DevMemorySigner implements DescribedSigner {
+export class DevMemorySigner implements Signer {
   readonly #keypair: Keypair;
 
   private constructor(keypair: Keypair, private readonly label: string) {
@@ -52,10 +42,6 @@ export class DevMemorySigner implements DescribedSigner {
 
   async sign(message: Uint8Array): Promise<Uint8Array> {
     return ed25519.sign(message, this.#keypair.secretKey.subarray(0, 32));
-  }
-
-  describe(): SignerDescription {
-    return { kind: "dev-memory", hardwareBacked: false, label: this.label };
   }
 
   /** Impede que o objeto vaze a chave por JSON.stringify ou console.log. */

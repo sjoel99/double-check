@@ -2,7 +2,8 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 /**
  * Sessão HTTP: diz QUEM está chamando, não autoriza nada. Toda operação que
- * move fundos ou muda chaves continua exigindo a assinatura da CLIENT key.
+ * move fundos ou muda chaves continua exigindo as assinaturas das chaves do
+ * usuário (Phantom e chave do webapp).
  */
 export type Session = { sub: string; acc: string; key: string; exp: number };
 

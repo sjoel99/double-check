@@ -17,10 +17,3 @@ export const KNOWN_PROGRAM_NAMES: Record<string, string> = {
   [COMPUTE_BUDGET_PROGRAM.toBase58()]: "Compute Budget",
   [SQUADS_V4_PROGRAM.toBase58()]: "Squads v4",
 };
-
-export function associatedTokenAddress(owner: PublicKey, mint: PublicKey, tokenProgram = TOKEN_PROGRAM): PublicKey {
-  return PublicKey.findProgramAddressSync(
-    [owner.toBuffer(), tokenProgram.toBuffer(), mint.toBuffer()],
-    ATA_PROGRAM,
-  )[0];
-}

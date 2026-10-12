@@ -22,15 +22,15 @@ export type ApprovalRequest = {
   transaction: string;
 };
 
-export const MAX_INTENT_TTL = 60 * 60;
+const MAX_INTENT_TTL = 60 * 60;
 
 /** Memo da transação da Squads: liga o que entra na chain à intenção (auditoria). */
-export const intentMemo = (intent: TransactionIntent) => `dk1:${intent.intentHash.slice(0, 32)}`;
+const intentMemo = (intent: TransactionIntent) => `dk1:${intent.intentHash.slice(0, 32)}`;
 
 /** Quem é quem, lido da chain. O webapp sabe a própria chave; o serviço é o votante que sobra. */
 export type AccountRoles = { client: PublicKey; webapp: PublicKey; server: PublicKey; operator: PublicKey };
 
-export function rolesFromState(state: MultisigState, mine: { client: PublicKey; webapp: PublicKey }): AccountRoles {
+function rolesFromState(state: MultisigState, mine: { client: PublicKey; webapp: PublicKey }): AccountRoles {
   const voters = state.members.filter((m) => m.vote);
   const has = (k: PublicKey) => voters.find((m) => m.key === k.toBase58());
   if (!has(mine.client)) deny("NOT_A_VOTER", "esta carteira não é votante desta conta");
@@ -100,7 +100,7 @@ export function securityChangeParties(role: SecurityChangeRole, roles: AccountRo
 }
 
 /** Texto que a chave nova assina (memo): prova de posse ligada a esta troca e a esta conta. */
-export function securityChangeMemo(c: SecurityChangeDesc) {
+function securityChangeMemo(c: SecurityChangeDesc) {
   const what = c.role === "CLIENT" ? "nova carteira" : c.role === "WEBAPP" ? "nova chave do webapp" : "nova chave do serviço";
   return `Double Check: ${what} na conta ${c.multisig} (${c.cluster}). Pedido ${c.id}. Executa em ${Math.round(c.delaySeconds / 3600)} h, se ninguém vetar.`;
 }

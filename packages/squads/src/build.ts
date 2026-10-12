@@ -24,11 +24,8 @@ export type MultisigLayout = {
 
 export const VOTER_MASK = PERM.Vote;
 export const OPERATOR_MASK = PERM.Initiate | PERM.Execute;
-/** Compatibilidade de nomes: todos os votantes têm só Vote. */
-export const CLIENT_MASK = VOTER_MASK;
-export const SERVER_MASK = VOTER_MASK;
 
-export function layoutMembers(layout: MultisigLayout): multisig.types.Member[] {
+function layoutMembers(layout: MultisigLayout): multisig.types.Member[] {
   return [
     { key: layout.client, permissions: Permissions.fromPermissions([PERM.Vote]) },
     { key: layout.webapp, permissions: Permissions.fromPermissions([PERM.Vote]) },
@@ -145,17 +142,8 @@ export function rotationActions(oldKey: PublicKey, newKey: PublicKey, role: Rota
   return actions;
 }
 
-/** Memo da aprovação: liga o voto on-chain à intenção (auditoria). */
-export function approvalMemo(intentHash: string, transactionHash: string): string {
-  return `dk1:${intentHash.slice(0, 32)}:${transactionHash.slice(0, 32)}`;
-}
-
 export function approveIx(ms: PublicKey, index: bigint, member: PublicKey, memo?: string) {
   return ix.proposalApprove({ multisigPda: ms, transactionIndex: index, member, memo });
-}
-
-export function rejectIx(ms: PublicKey, index: bigint, member: PublicKey, memo?: string) {
-  return ix.proposalReject({ multisigPda: ms, transactionIndex: index, member, memo });
 }
 
 export function cancelIx(ms: PublicKey, index: bigint, member: PublicKey, memo?: string) {

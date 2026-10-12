@@ -7,7 +7,7 @@ import { Keypair, LAMPORTS_PER_SOL, PublicKey, VersionedTransaction } from "@sol
 import bs58 from "bs58";
 import { DevMemorySigner } from "@duplachave/crypto";
 import { SecurityError } from "@duplachave/shared";
-import { PREPARED_WINDOW, reviewPrepared, signAsWallet, verifyAuthorized, webappCopyMessage } from "@duplachave/custody";
+import { PREPARED_WINDOW, reviewPrepared, webappCopyMessage } from "@duplachave/custody";
 import { readMultisig } from "@duplachave/squads";
 import { setupService } from "./support/service";
 

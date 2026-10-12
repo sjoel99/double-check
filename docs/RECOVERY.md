@@ -1,6 +1,8 @@
 # Recuperação (RECOVERY_POLICY) — pesquisa e proposta
 
-Status: **não implementado**. O modo atual é `STRICT_2_OF_2`: perder de vez uma das duas chaves bloqueia a conta. Este documento registra por que não há atalho no Squads v4 puro e quais caminhos existem.
+> **Nota (2026-10):** este documento é do modelo **2 de 2** (carteira + serviço) e fica como registro da pesquisa. Ele **não descreve o sistema atual**. Hoje a conta é uma multisig **2 de 3** (Phantom, chave do webapp destravada pela biometria e serviço), só o operador do serviço executa, e a recuperação é uma troca de chave com prazo de 72 h e veto ("Não fui eu"), imposto pelo operador. Ver [ARCHITECTURE.md](ARCHITECTURE.md) (D15–D18) e [KEY_ROTATION.md](KEY_ROTATION.md). Os nomes citados abaixo (`STRICT_2_OF_2`, `RotationRecord`, `ServerKeyProvider` como ponto de extensão etc.) são da época; `RotationRecord` não existe mais no código.
+
+Status na época: **não implementado**. O modo era `STRICT_2_OF_2`: perder de vez uma das duas chaves bloqueava a conta. Este documento registra por que não há atalho no Squads v4 puro e quais caminhos existiam.
 
 ## O requisito
 

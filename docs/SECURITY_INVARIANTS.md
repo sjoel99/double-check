@@ -38,6 +38,6 @@
 ## Como rodar
 
 ```bash
-pnpm test        # on-chain (LiteSVM + ELF da mainnet), atômica, protocolo, regressões, banco, API
+pnpm test        # 76 testes, ~4 s, sem rede: on-chain (LiteSVM + ELF da mainnet), atômica, protocolo, regressões, alertas, política, banco, API
 pnpm test:pg     # protocolo com Postgres real
 ```

@@ -23,7 +23,6 @@
     "@duplachave/squads": "workspace:*",
     "@solana/web3.js": "^1.99.0",
     "@sqds/multisig": "2.1.4",
-    "@types/bn.js": "^5.2.0",
     "@types/node": "^24.0.0",
     "bs58": "^6.0.0",
     "litesvm": "0.8.0",

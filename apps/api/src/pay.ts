@@ -7,9 +7,7 @@ import { type CustodyService, qrLabel, renderIntent, type Store } from "@duplach
 /**
  * Continuar no celular. O computador mostra um QR com `<URL do app>/#/m/<token>`:
  * a câmera abre o NOSSO app no navegador do celular, que confere a transação,
- * pede a biometria e só então chama a carteira (Mobile Wallet Adapter). Antes
- * era Solana Pay e a carteira recebia a transação direto do servidor, sem
- * conferência independente (THREAT_MODEL #26).
+ * pede a biometria e só então chama a carteira (Mobile Wallet Adapter).
  *
  * O token só diz o que abrir; quem assina continua sendo a carteira da conta
  * (o celular entra com ela) e a biometria. O computador acompanha por GET /v1/pay/:token.
@@ -21,7 +19,7 @@ type Handoff = {
   token: string;
   kind: Kind;
   label: string;
-  /** intentId ou rotationId */
+  /** intentId (SIGN_INTENT) */
   subject: string | null;
   accountId: string | null;
   createdAt: number;
@@ -42,7 +40,6 @@ export type PayDeps = {
   now: () => number;
   ownAccount: (req: FastifyRequest, accountId: string) => Promise<unknown>;
 };
-
 
 export function registerPay(app: FastifyInstance, d: PayDeps) {
   const handoffs = new Map<string, Handoff>();
@@ -91,13 +88,12 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
   app.get("/v1/pay/:token", async (req) => view(get((req.params as { token: string }).token)));
 
   // ------------------------------------------------------------ o celular (nosso app)
-  /** O que o celular vai fazer. Na troca, inclui os campos do texto de posse (o token é o segredo). */
+  /** O que o celular vai fazer (o token é o segredo). `fields` fica null: era do modelo 2 de 2. */
   app.get("/v1/handoff/:token", async (req) => {
     const h = get((req.params as { token: string }).token);
     if (h.status !== "WAITING") throw new SecurityError("PAY_USED", "este QR já foi usado ou expirou");
-    const fields: unknown = null;
     const wallet = h.kind === "SIGN_INTENT" && h.accountId ? ((await d.store.getAccount(h.accountId))?.roles.client ?? null) : null;
-    return { kind: h.kind, label: h.label, intentId: h.kind === "SIGN_INTENT" ? h.subject : null, accountId: h.accountId, wallet, fields };
+    return { kind: h.kind, label: h.label, intentId: h.kind === "SIGN_INTENT" ? h.subject : null, accountId: h.accountId, wallet, fields: null };
   });
 
   // ------------------------------------------------------------ assinar pelo celular, sem entrar na conta

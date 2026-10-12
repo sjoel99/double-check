@@ -8,7 +8,7 @@ const Env = z.object({
   SOLANA_CLUSTER: z.enum(["localnet", "devnet", "mainnet-beta"]).default("localnet"),
   SQUADS_PROGRAM_ID: z.string().default(multisig.PROGRAM_ID.toBase58()),
   DATABASE_URL: z.string().optional(),
-  /** URL HTTPS pública do app (túnel), para o QR "continuar no celular". Também vira origem aceita da biometria. */
+  /** URL HTTPS pública do app (túnel ou domínio), para o QR "continuar no celular" e o link dos e-mails. */
   DK_PUBLIC_URL: z.string().url().optional(),
   /** Segundos entre o pedido de uma troca de chave e a execução. Padrão 72 h. */
   DK_SECURITY_DELAY: z.coerce.number().int().positive().optional(),

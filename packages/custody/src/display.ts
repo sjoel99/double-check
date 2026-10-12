@@ -4,9 +4,10 @@ import { KNOWN_PROGRAM_NAMES } from "@duplachave/solana";
 export type DisplayRow = { label: string; value: string; tone?: "normal" | "warning" | "danger" };
 export type Display = { kind: "OPERATION" | "SECURITY"; title: string; subtitle: string; rows: DisplayRow[]; warnings: string[] };
 
-const short = (k: string) => `${k.slice(0, 4)}…${k.slice(-4)}`;
+/** Chave abreviada para a tela e os e-mails: 4 primeiros…4 últimos. */
+export const shortKey = (k: string) => `${k.slice(0, 4)}…${k.slice(-4)}`;
 
-export function formatUnits(amount: string, decimals: number): string {
+function formatUnits(amount: string, decimals: number): string {
   const neg = amount.startsWith("-");
   const digits = (neg ? amount.slice(1) : amount).padStart(decimals + 1, "0");
   const int = digits.slice(0, digits.length - decimals).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
@@ -34,12 +35,12 @@ export function renderIntent(
   const warnings = flags.map((f) => RISK_TEXT[f] ?? f);
   const when = new Date(intent.createdAt * 1000).toLocaleString(opts.locale ?? "pt-BR", { dateStyle: "short", timeStyle: "short" });
   if (intent.kind === "OPERATION") {
-    const dest = intent.destination === intent.vault ? "Seu próprio Vault" : short(intent.destination);
-    const programs = intent.programs.map((p) => KNOWN_PROGRAM_NAMES[p] ?? short(p));
+    const dest = intent.destination === intent.vault ? "Seu próprio Vault" : shortKey(intent.destination);
+    const programs = intent.programs.map((p) => KNOWN_PROGRAM_NAMES[p] ?? shortKey(p));
     const amount =
       intent.type === "TRANSFER_SOL"
         ? `${formatUnits(intent.amountLamports, 9)} SOL`
-        : `${formatUnits(intent.amount, intent.decimals)} ${opts.tokenSymbol?.(intent.mint) ?? short(intent.mint)}`;
+        : `${formatUnits(intent.amount, intent.decimals)} ${opts.tokenSymbol?.(intent.mint) ?? shortKey(intent.mint)}`;
     return {
       kind: "OPERATION",
       title: "Confirmar transação",
@@ -60,8 +61,8 @@ export function renderIntent(
     title: "Alteração de segurança",
     subtitle: isClient ? "Substituir chave de aprovação?" : "O serviço está solicitando uma atualização da chave de segurança.",
     rows: [
-      { label: "Chave atual", value: short(intent.oldKey) },
-      { label: "Nova chave", value: short(intent.newKey), tone: "warning" },
+      { label: "Chave atual", value: shortKey(intent.oldKey) },
+      { label: "Nova chave", value: shortKey(intent.newKey), tone: "warning" },
       ...(opts.deviceName ? [{ label: "Dispositivo", value: opts.deviceName }] : []),
       { label: "Solicitado", value: when },
     ],
@@ -69,13 +70,10 @@ export function renderIntent(
   };
 }
 
-/**
- * Rótulo do QR do Solana Pay. A Phantom mostra o rótulo (do GET), não a
- * mensagem do POST — então o resumo do que vai ser assinado vai aqui.
- */
+/** Rótulo do pedido "continuar no celular" (QR): o resumo do que vai ser assinado. */
 export function qrLabel(intent: TransactionIntent): string {
-  if (intent.type === "TRANSFER_SOL") return `Double Check · Enviar ${formatUnits(intent.amountLamports, 9)} SOL para ${intent.destination === intent.vault ? "o seu Vault" : short(intent.destination)}`;
+  if (intent.type === "TRANSFER_SOL") return `Double Check · Enviar ${formatUnits(intent.amountLamports, 9)} SOL para ${intent.destination === intent.vault ? "o seu Vault" : shortKey(intent.destination)}`;
   if (intent.type === "ROTATE_MEMBER")
-    return intent.role === "CLIENT" ? `Double Check · Trocar a carteira da conta por ${short(intent.newKey)}` : "Double Check · Nova chave do serviço (recuse se não pediu)";
+    return intent.role === "CLIENT" ? `Double Check · Trocar a carteira da conta por ${shortKey(intent.newKey)}` : "Double Check · Nova chave do serviço (recuse se não pediu)";
   return "Double Check · Confirmar transação";
 }

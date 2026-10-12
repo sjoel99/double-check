@@ -38,16 +38,3 @@ export function assertAccountModel(state: MultisigState, expected: ExpectedRoles
   if (state.members.length !== 4) deny("UNEXPECTED_MEMBERS", `${state.members.length} membros on-chain; esperado 4`);
   if ((expected.timeLock ?? 0) !== state.timeLock) deny("TIMELOCK_MISMATCH", `time lock on-chain = ${state.timeLock}`);
 }
-
-/** Nome antigo, mantido nos chamadores. */
-export const assertStrictTwoOfTwo = assertAccountModel;
-
-/** Papel de uma chave segundo a chain (não o banco). */
-export function roleOf(state: MultisigState, key: string, expected: ExpectedRoles) {
-  if (!state.members.some((m) => m.key === key)) return null;
-  if (key === expected.client) return "CLIENT" as const;
-  if (key === expected.webapp) return "WEBAPP" as const;
-  if (key === expected.server) return "SERVER" as const;
-  if (key === expected.operator) return "OPERATOR" as const;
-  return null;
-}

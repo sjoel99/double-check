@@ -1,9 +1,8 @@
-import { PublicKey } from "@solana/web3.js";
+import type { PublicKey } from "@solana/web3.js";
 import type * as multisig from "@sqds/multisig";
 import type { TransactionIntent } from "@duplachave/shared";
-import { associatedTokenAddress, parseInstruction, type ParsedInstruction } from "@duplachave/solana";
-import { vaultMessageInstructions, writableAccounts } from "./message";
-import type { OnchainConfigTransaction, OnchainVaultTransaction, MultisigState } from "./state";
+import type { ParsedInstruction } from "@duplachave/solana";
+import type { MultisigState } from "./state";
 import type { ExpectedRoles } from "./invariants";
 
 export type DerivedOperation =
@@ -37,44 +36,7 @@ export type ConfigView = {
   rotation: DerivedRotation | null;
 };
 
-/** O que a transação on-chain faz, reconstruído só a partir dos bytes da chain. */
-export function viewVaultTransaction(tx: OnchainVaultTransaction, vault: PublicKey): VaultView {
-  const raw = vaultMessageInstructions(tx.account);
-  const instructions = raw.map(parseInstruction);
-  const programs = [...new Set(raw.map((r) => r.programId.toBase58()))].sort();
-  const v = vault.toBase58();
-  return { kind: "VAULT", vault: v, instructions, programs, writable: writableAccounts(tx.account), operation: deriveOperation(instructions, vault) };
-}
-
-function deriveOperation(ixs: ParsedInstruction[], vault: PublicKey): DerivedOperation | null {
-  const v = vault.toBase58();
-  if (ixs.length === 1 && ixs[0]!.kind === "SYSTEM_TRANSFER") {
-    const t = ixs[0]!;
-    if (t.from !== v) return null;
-    return { type: "TRANSFER_SOL", amountLamports: t.lamports.toString(), destination: t.to };
-  }
-  const last = ixs[ixs.length - 1];
-  if (last?.kind === "TOKEN_TRANSFER_CHECKED" && (ixs.length === 1 || ixs.length === 2)) {
-    const mint = new PublicKey(last.mint);
-    const program = new PublicKey(last.program);
-    if (last.authority !== v) return null;
-    if (last.source !== associatedTokenAddress(vault, mint, program).toBase58()) return null;
-    let destinationOwner: string | null = null;
-    if (ixs.length === 2) {
-      const create = ixs[0]!;
-      if (create.kind !== "ATA_CREATE" || !create.idempotent || create.payer !== v || create.mint !== last.mint || create.ata !== last.destination)
-        return null;
-      destinationOwner = create.owner;
-    } else {
-      return null; // sem a criação da ATA não dá para provar o dono do destino a partir dos bytes
-    }
-    if (associatedTokenAddress(new PublicKey(destinationOwner), mint, program).toBase58() !== last.destination) return null;
-    return { type: "TRANSFER_TOKEN", mint: last.mint, decimals: last.decimals, amount: last.amount.toString(), destination: destinationOwner };
-  }
-  return null;
-}
-
-export function normalizeConfigActions(actions: multisig.types.ConfigAction[]): NormalizedConfigAction[] {
+function normalizeConfigActions(actions: multisig.types.ConfigAction[]): NormalizedConfigAction[] {
   return actions.map((a) => {
     switch (a.__kind) {
       case "AddMember":
@@ -118,10 +80,6 @@ export function configView(rawActions: multisig.types.ConfigAction[], state: Mul
     if (role && isNew && shapeOk) rotation = { role, oldKey: remove.key, newKey: add.key };
   }
   return { kind: "CONFIG", actions, rotation };
-}
-
-export function viewConfigTransaction(tx: OnchainConfigTransaction, state: MultisigState, roles: ExpectedRoles): ConfigView {
-  return configView(tx.actions, state, roles);
 }
 
 /** Diferenças entre a intenção e o que a chain contém. Vazio = idênticas. */

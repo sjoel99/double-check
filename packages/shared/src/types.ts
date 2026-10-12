@@ -6,13 +6,13 @@ export type Cluster = (typeof CLUSTERS)[number];
 /**
  * Papel de cada chave na multisig (2 de 3). Votam: CLIENT (Phantom), WEBAPP
  * (chave do webapp, destravada pela biometria) e SERVER (serviço). Só o
- * OPERATOR (serviço) cria e executa. EXECUTOR/PROPOSER: modelo anterior.
+ * OPERATOR (serviço) cria e executa. EXECUTOR/PROPOSER só aparecem em linhas
+ * antigas do banco (modelo 2 de 2); nada novo usa esses papéis.
  */
 export type MemberRole = "CLIENT" | "WEBAPP" | "SERVER" | "OPERATOR" | "EXECUTOR" | "PROPOSER";
 
 const base58 = z.string().regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/, "endereço base58 inválido");
 const decimal = z.string().regex(/^(0|[1-9][0-9]*)$/, "inteiro decimal em string");
-const hex32 = z.string().regex(/^[0-9a-f]{64}$/, "sha256 em hex");
 const unixSeconds = z.number().int().nonnegative();
 
 // ---------------------------------------------------------------------------
@@ -42,7 +42,7 @@ export const TransferSolIntentSchema = z.object({
   programs: z.array(base58),
 });
 
-export const TransferTokenIntentSchema = z.object({
+const TransferTokenIntentSchema = z.object({
   ...intentCommon,
   kind: z.literal("OPERATION"),
   type: z.literal("TRANSFER_TOKEN"),
@@ -56,7 +56,7 @@ export const TransferTokenIntentSchema = z.object({
   programs: z.array(base58),
 });
 
-export const RotateMemberIntentSchema = z.object({
+const RotateMemberIntentSchema = z.object({
   ...intentCommon,
   kind: z.literal("CONFIG"),
   type: z.literal("ROTATE_MEMBER"),
@@ -73,8 +73,6 @@ export const IntentSchema = z.discriminatedUnion("type", [
 ]);
 
 export type TransferSolIntent = z.infer<typeof TransferSolIntentSchema>;
-export type TransferTokenIntent = z.infer<typeof TransferTokenIntentSchema>;
-export type RotateMemberIntent = z.infer<typeof RotateMemberIntentSchema>;
 export type IntentBody = z.infer<typeof IntentSchema>;
 export type TransactionIntent = IntentBody & { intentHash: string };
 

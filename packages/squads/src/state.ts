@@ -1,9 +1,9 @@
 import { PublicKey } from "@solana/web3.js";
 import * as multisig from "@sqds/multisig";
-import { deny, sha256Hex } from "@duplachave/shared";
+import { deny } from "@duplachave/shared";
 import type { Chain } from "@duplachave/solana";
 
-const { Multisig, Proposal, VaultTransaction, ConfigTransaction } = multisig.accounts;
+const { Multisig, Proposal } = multisig.accounts;
 
 export const PERM = multisig.types.Permission;
 
@@ -27,10 +27,6 @@ export type MultisigState = {
   rentCollector: string | null;
   members: MemberState[];
 };
-
-export function multisigPda(createKey: PublicKey): PublicKey {
-  return multisig.getMultisigPda({ createKey })[0];
-}
 
 export function vaultPda(multisigAddress: PublicKey, index = 0): PublicKey {
   return multisig.getVaultPda({ multisigPda: multisigAddress, index })[0];
@@ -90,50 +86,4 @@ export async function readProposal(chain: Chain, ms: PublicKey, index: bigint): 
     rejected: p.rejected.map((k) => k.toBase58()),
     cancelled: p.cancelled.map((k) => k.toBase58()),
   };
-}
-
-export type OnchainVaultTransaction = {
-  kind: "VAULT";
-  address: string;
-  /** sha256 dos bytes da conta. A conta não muda depois de criada e o índice nunca se repete. */
-  hash: string;
-  creator: string;
-  vaultIndex: number;
-  account: multisig.accounts.VaultTransaction;
-};
-
-export type OnchainConfigTransaction = {
-  kind: "CONFIG";
-  address: string;
-  hash: string;
-  creator: string;
-  actions: multisig.types.ConfigAction[];
-};
-
-/**
- * Lê a transação no índice e diz de que tipo é. Uma conta de outro tipo no
- * mesmo PDA é impossível, mas o discriminador é conferido mesmo assim.
- */
-export async function readTransaction(
-  chain: Chain,
-  ms: PublicKey,
-  index: bigint,
-): Promise<OnchainVaultTransaction | OnchainConfigTransaction | null> {
-  const address = transactionPda(ms, index);
-  const info = await chain.getAccountInfo(address);
-  if (!info) return null;
-  if (!info.owner.equals(multisig.PROGRAM_ID)) deny("TX_WRONG_OWNER", "conta de transação com dono inesperado");
-  const disc = Buffer.from(info.data.subarray(0, 8));
-  const hash = sha256Hex(new Uint8Array(info.data));
-  if (disc.equals(Buffer.from(multisig.generated.vaultTransactionDiscriminator))) {
-    const [vt] = VaultTransaction.fromAccountInfo(info);
-    if (!vt.multisig.equals(ms) || toBig(vt.index) !== index) deny("TX_MISMATCH", "transação não pertence a esta multisig/índice");
-    return { kind: "VAULT", address: address.toBase58(), hash, creator: vt.creator.toBase58(), vaultIndex: vt.vaultIndex, account: vt };
-  }
-  if (disc.equals(Buffer.from(multisig.generated.configTransactionDiscriminator))) {
-    const [ct] = ConfigTransaction.fromAccountInfo(info);
-    if (!ct.multisig.equals(ms) || toBig(ct.index) !== index) deny("TX_MISMATCH", "transação não pertence a esta multisig/índice");
-    return { kind: "CONFIG", address: address.toBase58(), hash, creator: ct.creator.toBase58(), actions: ct.actions };
-  }
-  deny("TX_UNKNOWN_KIND", "tipo de transação não suportado (batch não é usado por este sistema)");
 }

@@ -4,8 +4,8 @@
 //
 // - Rede: devnet (a carteira do celular envia a transação para a rede dela; localnet não serve).
 // - Túnel HTTPS (cloudflared) para o APP (Vite, que repassa /api para a API): o QR abre o nosso app
-//   no celular, e a biometria (WebAuthn) exige HTTPS. A biometria fica presa ao domínio do túnel:
-//   túnel novo = biometria nova (vale depois de DK_PASSKEY_RESET_DELAY, 5 min aqui).
+//   no celular, e a biometria (WebAuthn) exige HTTPS. A passkey fica presa ao domínio do túnel:
+//   túnel novo = a chave do webapp só volta por "Recuperar o webapp" (troca com prazo).
 // - Postgres em Docker (volume persistente) e chaves de serviço cifradas em .data/devnet-keys:
 //   contas sobrevivem a reinícios. O serviço não paga nada: a Phantom precisa de SOL de devnet.
 // - .env.devnet (criado na primeira vez, fora do git) guarda os segredos locais.
@@ -110,7 +110,6 @@ const apiEnv = {
   DK_SESSION_SECRET: env.DK_SESSION_SECRET!,
   DK_ADMIN_TOKEN: env.DK_ADMIN_TOKEN!,
   DK_KEYS_DIR: env.DK_KEYS_DIR ?? ".data/devnet-keys",
-  DK_PASSKEY_RESET_DELAY: process.env.DK_PASSKEY_RESET_DELAY ?? "300",
   ...(databaseUrl ? { DATABASE_URL: databaseUrl } : {}),
 };
 log(`API (devnet, RPC ${masked})`);

@@ -1,4 +1,4 @@
 export * from "./signer";
-export * from "./statement";
 export * from "./walletMessage";
-export * from "./softPasskey";
+export * from "./base64url";
+export * from "./random";
