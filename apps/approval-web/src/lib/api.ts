@@ -9,7 +9,7 @@ export class ApiError extends Error {
 }
 
 /** Mensagem do serviço pronta para a tela: sem "[CÓDIGO]" e com maiúscula no começo. */
-const sentence = (m: string) => {
+export const sentence = (m: string) => {
   const t = String(m).replace(/^\[[A-Z0-9_]+\]\s*/, "");
   return t.charAt(0).toUpperCase() + t.slice(1);
 };

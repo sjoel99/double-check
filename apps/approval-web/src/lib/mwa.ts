@@ -6,7 +6,7 @@ import { tr } from "./i18n";
 /**
  * Carteira do celular (Android) pelo Mobile Wallet Adapter, falando direto com
  * o protocolo. Cada operação é UMA sessão: autoriza e assina na mesma abertura
- * da Phantom, sem token de reautorização.
+ * da carteira, sem token de reautorização.
  *
  * Por quê: com a biblioteca de Wallet Standard (@solana-mobile/wallet-standard-mobile),
  * a segunda abertura reautorizava com o token da conexão; quando a Phantom
@@ -40,7 +40,7 @@ export function makeMwaWallet(opts: { chain: string; identity: { name: string; u
   let account: MwaAccount | null = null;
   const toAccount = (addressB64: string): MwaAccount => ({ address: addressB64, publicKey: fromB64(addressB64), chains: [opts.chain], features: [] });
 
-  /** Uma sessão: autoriza (a Phantom mostra quem pede) e roda `fn` na mesma conexão. */
+  /** Uma sessão: autoriza (a carteira mostra quem pede) e roda `fn` na mesma conexão. */
   const session = async <T>(what: string, fn: (wallet: any, acc: MwaAccount) => Promise<T>, expected?: Uint8Array): Promise<T> => {
     await ensureLocalNetwork();
     trace(`mwa:${what}:inicio`);

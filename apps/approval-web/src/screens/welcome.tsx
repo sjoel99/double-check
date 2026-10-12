@@ -78,7 +78,7 @@ export function Welcome() {
   const [phone, setPhone] = useState(false);
 
   const fromPhone = async (r: { sessionToken: string; accountId: string; publicKey: string }) => {
-    await ctx.setSession({ token: r.sessionToken, accountId: r.accountId, walletName: "Carteira do celular", publicKey: r.publicKey, myRotations: [], via: "phone" });
+    await ctx.setSession({ token: r.sessionToken, accountId: r.accountId, walletName: "Carteira do celular", publicKey: r.publicKey, via: "phone" });
     ctx.go("/");
     ctx.toast(tr("Você entrou pelo celular. As assinaturas continuam no celular.", "You signed in from your phone. Signing stays on the phone."));
   };
@@ -86,7 +86,7 @@ export function Welcome() {
   const pick = async (w: StandardWallet) => {
     setErr(null);
     try {
-      setStep(tr(`Conectando à ${w.name}…`, `Connecting to ${walletDisplay(w.name)}…`));
+      setStep(tr(`Conectando à ${walletDisplay(w.name)}…`, `Connecting to ${walletDisplay(w.name)}…`));
       const c = await ctx.connect(w);
       const s = await loginOrEnroll(ctx, c, setStep);
       ctx.go("/");

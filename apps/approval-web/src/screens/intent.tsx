@@ -10,21 +10,9 @@ import { now, parseSol, short, sol, solInput } from "../lib/chain";
 import { Icon } from "../icons";
 import { type IntentView, useAccount } from "./home";
 import { PhoneQrSheet, SCAN_STEPS } from "../components/PhoneQr";
+import { TopBar } from "../components/TopBar";
 import { fmtWhen, lang, tr } from "../lib/i18n";
 import { errorEn } from "../lib/errors-en";
-
-function TopBar({ title, right }: { title: string; right?: React.ReactNode }) {
-  const { go } = useApp();
-  return (
-    <div className="topbar">
-      <button type="button" className="iconbtn" aria-label={tr("Voltar", "Back")} onClick={() => go("/")}>
-        <Icon name="back" />
-      </button>
-      <h1>{title}</h1>
-      {right}
-    </div>
-  );
-}
 
 function Countdown({ until }: { until: number }) {
   const [t, setT] = useState(now());
@@ -481,7 +469,7 @@ function RotationApproval({ request, header, actions, err }: { request: Approval
   const intent = request.intent;
   if (intent.type !== "ROTATE_MEMBER") return null;
   const isClient = intent.role === "CLIENT";
-  const when = fmtWhen(intent.createdAt);
+  const currentWallet = session?.walletName && session.walletName !== "sem carteira" ? walletDisplay(session.walletName) : null;
   return (
     <>
       <TopBar title={tr("Segurança", "Security")} right={<Countdown until={intent.expiresAt} />} />
@@ -501,7 +489,7 @@ function RotationApproval({ request, header, actions, err }: { request: Approval
             </div>
             <div className="grow">
               <div className="muted" style={{ fontSize: 12 }}>
-                {isClient ? tr(`Atual (${session?.walletName ?? "carteira da conta"})`, `Current (${session?.walletName ?? "account wallet"})`) : tr("Chave atual do serviço", "Current service key")}
+                {isClient ? tr(`Atual (${currentWallet ?? "carteira da conta"})`, `Current (${currentWallet ?? "account wallet"})`) : tr("Chave atual do serviço", "Current service key")}
               </div>
               <div className="mono" style={{ fontSize: 17, color: "var(--muted)", textDecoration: "line-through", textDecorationColor: "#5b6270" }}>
                 {short(intent.oldKey)}
@@ -531,7 +519,7 @@ function RotationApproval({ request, header, actions, err }: { request: Approval
         </div>
         {header}
         <div>
-          <Detail label={tr("Solicitado", "Requested")} value={when} />
+          <Detail label={tr("Solicitado", "Requested")} value={fmtWhen(intent.createdAt)} />
           <Detail label={tr("Quem aprova", "Who approves")} value={isClient ? tr("Carteira atual + serviço", "Current wallet + service") : tr("Você + chave atual do serviço", "You + current service key")} />
         </div>
         {isClient ? (

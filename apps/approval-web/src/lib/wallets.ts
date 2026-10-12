@@ -43,7 +43,7 @@ export type StandardWallet = {
 
 const REQUIRED = ["standard:connect", "solana:signTransaction", "solana:signMessage"];
 
-export function isUsable(w: StandardWallet) {
+function isUsable(w: StandardWallet) {
   return REQUIRED.every((f) => f in w.features) && w.chains.some((c) => c.startsWith("solana:"));
 }
 
@@ -102,7 +102,7 @@ export class ConnectedWallet {
 
   /**
    * Carteira já conhecida (a da conta), sem abrir a carteira para conectar: no
-   * celular, a conexão e a assinatura acontecem na mesma abertura da Phantom.
+   * celular, a conexão e a assinatura acontecem na mesma abertura da carteira.
    */
   static forAddress(wallet: StandardWallet, publicKey: string, cluster: string): ConnectedWallet {
     return new ConnectedWallet(wallet, { address: publicKey, publicKey: new PublicKey(publicKey).toBytes() }, cluster);
@@ -115,9 +115,6 @@ export class ConnectedWallet {
   /** Abre outro app (Mobile Wallet Adapter): precisa de um toque recente. */
   private async gate(what: string) {
     if (this.wallet.name === "Mobile Wallet Adapter") await ensureActivation(what);
-  }
-  get icon() {
-    return this.wallet.icon;
   }
   get publicKey(): string {
     return new PublicKey(this.account.publicKey).toBase58();

@@ -3,7 +3,7 @@
  * `?lang=pt|en` na URL força e fica guardado neste navegador.
  * Os textos que a carteira assina e os e-mails continuam em português: o serviço confere o texto exato.
  */
-export type Lang = "pt" | "en";
+type Lang = "pt" | "en";
 
 function detect(): Lang {
   try {

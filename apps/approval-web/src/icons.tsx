@@ -21,10 +21,8 @@ const P: Record<string, JSX.Element> = {
   finger: <><path d="M7.5 18.5c1-1.6 1.5-3.4 1.5-5.5a3 3 0 0 1 6 0c0 1.2-.1 2.4-.4 3.5" /><path d="M5 15.5c.6-1.2 1-2.5 1-4a6 6 0 0 1 10.5-4" /><path d="M18.4 10c.1.6.1 1.2.1 2 0 2.6-.6 5-1.7 7" /><path d="M12 13c0 3-.8 5.5-2.3 7.5" /><path d="M14.7 18.5c-.3.9-.7 1.7-1.2 2.5" /></>,
   ext: <><path d="M14 5h5v5" /><path d="M19 5l-8 8" /><path d="M17 14v4a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 5 18V8.5A1.5 1.5 0 0 1 6.5 7H10" /></>,
   lock: <><rect x="5" y="10.5" width="14" height="10" rx="2.5" /><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" /></>,
-  plus: <><path d="M12 5v14" /><path d="M5 12h14" /></>,
   copy: <><rect x="8" y="8" width="12" height="12" rx="2.5" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></>,
   drop: <path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11Z" />,
-  refresh: <><path d="M20 11a8 8 0 0 0-14.5-4.5L4 8" /><path d="M4 4v4h4" /><path d="M4 13a8 8 0 0 0 14.5 4.5L20 16" /><path d="M20 20v-4h-4" /></>,
 };
 
 export function Icon({ name, size = 20, color = "currentColor", sw = 1.8 }: { name: keyof typeof P | string; size?: number; color?: string; sw?: number }) {

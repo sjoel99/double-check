@@ -1,22 +1,22 @@
-import { PublicKey, VersionedTransaction } from "@solana/web3.js";
+import { PublicKey } from "@solana/web3.js";
 import { verifyEnrollmentTransaction } from "@duplachave/custody/src/client";
 import { makeMwaWallet } from "./lib/mwa";
 import { type BiometricConfirm, createWebappKey, deviceName, unlockWebappKey, type UnlockedKey, type WebappKeyBlob } from "./lib/webappKey";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Chain } from "@duplachave/solana";
 import type { Cluster } from "@duplachave/shared";
-import { api, ApiError } from "./lib/api";
+import { api, ApiError, sentence } from "./lib/api";
 import { appChain, short } from "./lib/chain";
 import { makeDevWallet, type DevConfirm } from "./lib/devwallet";
-import { loadSession, saveSession, type Session } from "./lib/storage";
+import { saveSession, type Session } from "./lib/storage";
 import { ConnectedWallet, discoverWallets, registerWallet, type StandardWallet, walletDisplay, walletLabel } from "./lib/wallets";
 import { setActivationGate } from "./lib/activation";
 import { trace } from "./lib/trace";
 import { lang, tr } from "./lib/i18n";
 import { errorEn } from "./lib/errors-en";
+import { Icon } from "./icons";
 
 let mwaRegistered = false;
-import { Icon } from "./icons";
 
 export type Config = { cluster: Cluster; mode: string; devTools: boolean };
 
@@ -36,7 +36,6 @@ type Ctx = {
   route: string;
   go: (path: string) => void;
   toast: (msg: string) => void;
-  initiatedHere: (rotationId: string) => boolean;
   /** Janela da biometria de teste (localnet). */
   biometric: BiometricConfirm;
   dev: { malicious: boolean; setMalicious: (v: boolean) => void };
@@ -80,7 +79,7 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
       registerWallet(makeDevWallet("Carteira de teste A", () => devConfirm.current) as unknown as StandardWallet);
       registerWallet(makeDevWallet("Carteira de teste B", () => devConfirm.current) as unknown as StandardWallet);
     }
-    // No Android, a Phantom do celular entra pelo Mobile Wallet Adapter (a página chama o app da carteira).
+    // No Android, a carteira do celular entra pelo Mobile Wallet Adapter (a página chama o app da carteira).
     if (/Android/i.test(navigator.userAgent) && config.cluster !== "localnet" && !mwaRegistered) {
       mwaRegistered = true;
       registerWallet(makeMwaWallet({ chain: config.cluster === "devnet" ? "solana:devnet" : "solana:mainnet", identity: { name: "Double Check", uri: location.origin, icon: "icon.svg" } }) as unknown as StandardWallet);
@@ -134,7 +133,6 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
       clearTimeout(toastTimer.current);
       toastTimer.current = window.setTimeout(() => setToast(null), 4200);
     },
-    initiatedHere: (rotationId) => Boolean(session?.myRotations.includes(rotationId)),
     biometric: (text) => devConfirm.current({ walletName: tr("Biometria de teste", "Test biometrics"), kind: "biometric", text }),
     dev: { malicious, setMalicious },
   };
@@ -235,8 +233,8 @@ function DevWalletSheet({ req, onDone }: { req: ConfirmReq; onDone: (ok: boolean
 
 /**
  * Entra com a carteira: se ela já tem conta, assina o texto de entrada (sem
- * custo); se não, assina e paga a criação da conta 2-de-2 (~0,003 SOL), depois
- * de o app conferir a transação.
+ * custo); se não, cria a chave do webapp (biometria) e a carteira assina e paga
+ * a criação da conta 2 de 3 (~0,003 SOL), depois de o app conferir a transação.
  */
 export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: string) => void): Promise<Session & { created?: boolean }> {
   const publicKey = c.publicKey;
@@ -248,11 +246,11 @@ export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: st
     const ch = await api("POST", "/v1/auth/challenge", { publicKey }, { auth: false });
     const signature = await c.signMessage(ch.message);
     const r = await api("POST", "/v1/auth/verify", { challengeId: ch.challengeId, publicKey, signature }, { auth: false });
-    const s: Session = { token: r.token, accountId: r.account.id, walletName: c.name, publicKey, myRotations: [], via: "extension" };
+    const s: Session = { token: r.token, accountId: r.account.id, walletName: c.name, publicKey, via: "extension" };
     await ctx.setSession(s);
     return s;
   }
-  // Em localnet, a carteira de teste (ou a Phantom) recebe SOL de teste para pagar a criação.
+  // Em localnet, a carteira (de teste ou não) recebe SOL de teste para pagar a criação.
   if (ctx.config.devTools && (await ctx.chain.getBalance(new PublicKey(publicKey))) < 10_000_000n) {
     onStep(tr("Pedindo SOL de teste para a sua carteira…", "Requesting test SOL for your wallet…"));
     await api("POST", "/v1/dev/airdrop", { address: publicKey, sol: 2 }, { auth: false });
@@ -269,7 +267,7 @@ export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: st
     const signed = await c.signTransaction(transaction);
     onStep(tr("Criando sua conta 2 de 3 na Solana…", "Creating your 2-of-3 account on Solana…"));
     const r = await api("POST", "/v1/enrollment/submit", { enrollmentId: p.enrollmentId, transaction: signed, keyBlob: { ...key.blob, deviceName: deviceName() } }, { auth: false });
-    const s: Session = { token: r.token, accountId: r.account.id, walletName: c.name, publicKey, myRotations: [], via: "extension" };
+    const s: Session = { token: r.token, accountId: r.account.id, walletName: c.name, publicKey, via: "extension" };
     await ctx.setSession(s);
     return { ...s, created: true };
   } finally {
@@ -278,29 +276,23 @@ export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: st
 }
 
 /**
- * Entrar só com a biometria (perdeu a Phantom): o aparelho descobre a passkey,
+ * Entrar só com a biometria (perdeu a carteira): o aparelho descobre a passkey,
  * pede ao serviço a cópia cifrada da chave do webapp, abre e assina a entrada.
  */
 export async function loginWithBiometrics(ctx: Ctx, onStep: (s: string) => void): Promise<Session> {
   onStep(tr("Confirme a biometria deste aparelho…", "Confirm with this device's fingerprint or face…"));
-  let found: { accountId: string; publicKey: string; client: string } | null = null;
   const key = await unlockWebappKey(null, {
     devTools: ctx.config.devTools,
     confirm: ctx.biometric,
     what: tr("Entrar com a biometria (sem a carteira)", "Sign in with biometrics (no wallet)"),
-    lookup: async (credentialId) => {
-      const r = await api("POST", "/v1/webapp-keys/lookup", { credentialId }, { auth: false });
-      found = r;
-      return r;
-    },
+    lookup: (credentialId) => api("POST", "/v1/webapp-keys/lookup", { credentialId }, { auth: false }),
   });
   try {
     const pub = key.publicKey.toBase58();
     const ch = await api("POST", "/v1/auth/challenge", { publicKey: pub }, { auth: false });
     const signature = (await import("bs58")).default.encode(key.sign(new TextEncoder().encode(ch.message)));
     const r = await api("POST", "/v1/auth/webapp", { challengeId: ch.challengeId, publicKey: pub, signature }, { auth: false });
-    const s: Session = { token: r.token, accountId: r.account.id, walletName: "sem carteira", publicKey: r.account.roles.client, myRotations: [], via: "webapp" };
-    void found;
+    const s: Session = { token: r.token, accountId: r.account.id, walletName: "sem carteira", publicKey: r.account.roles.client, via: "webapp" };
     await ctx.setSession(s);
     return s;
   } finally {
@@ -329,10 +321,7 @@ export function errorText(e: unknown): string {
   const code = (e as { code?: unknown })?.code;
   if (typeof code === "string" && /^[A-Z0-9_]+$/.test(code)) {
     const pt = m.replace(/^\[[A-Z0-9_]+\]\s*/, "");
-    const text = (lang === "en" && errorEn(code, pt)) || pt;
-    return text.charAt(0).toUpperCase() + text.slice(1);
+    return sentence((lang === "en" && errorEn(code, pt)) || pt);
   }
   return m;
 }
-
-export { loadSession };

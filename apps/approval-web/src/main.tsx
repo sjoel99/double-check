@@ -7,14 +7,7 @@ import { api } from "./lib/api";
 import { PINNED_CLUSTER } from "./lib/chain";
 import { trace } from "./lib/trace";
 import { tr } from "./lib/i18n";
-
-// Diagnóstico no celular: erros soltos e quando a página sai/volta (troca para o app da carteira).
-if (/Android|iPhone|iPad/i.test(navigator.userAgent)) {
-  addEventListener("error", (e) => trace("erro", e.message));
-  addEventListener("unhandledrejection", (e) => trace("promessa-rejeitada", e.reason));
-  document.addEventListener("visibilitychange", () => trace(`pagina:${document.visibilityState}`));
-  trace("pagina:abriu", navigator.userAgent);
-}
+import { isMobile } from "./lib/activation";
 import { ed25519Supported, loadSession, type Session } from "./lib/storage";
 import { Deposit, Home } from "./screens/home";
 import { IntentScreen, Send } from "./screens/intent";
@@ -23,9 +16,17 @@ import { Welcome } from "./screens/welcome";
 import { MobileHandoff } from "./screens/handoff";
 import { PrfCheck } from "./screens/prfcheck";
 
+// Diagnóstico no celular: erros soltos e quando a página sai/volta (troca para o app da carteira).
+if (isMobile()) {
+  addEventListener("error", (e) => trace("erro", e.message));
+  addEventListener("unhandledrejection", (e) => trace("promessa-rejeitada", e.reason));
+  document.addEventListener("visibilitychange", () => trace(`pagina:${document.visibilityState}`));
+  trace("pagina:abriu", navigator.userAgent);
+}
+
 function Router() {
   const { route, session } = useApp();
-  const [path, query = ""] = route.split("?");
+  const [path] = route.split("?");
   if (path === "/prf") return <PrfCheck />;
   if (path?.startsWith("/m/")) return <MobileHandoff key={path} token={path.slice(3)} />;
   if (!session) return <Welcome />;

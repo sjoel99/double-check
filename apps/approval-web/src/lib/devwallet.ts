@@ -3,7 +3,7 @@ import { kvGet, kvSet } from "./storage";
 import { tr } from "./i18n";
 
 /**
- * Carteira de teste (só localnet): faz o papel da Phantom para testar sem
+ * Carteira de teste (só localnet): faz o papel de uma carteira de verdade para testar sem
  * extensão e sem SOL de verdade. A chave é Ed25519 do WebCrypto, não
  * exportável, no IndexedDB. Antes de assinar, pede confirmação numa janela
  * parecida com a de uma carteira.
@@ -21,14 +21,6 @@ async function key(name: string): Promise<{ privateKey: CryptoKey; publicKey: Ui
   const k = { privateKey: pair.privateKey, publicKey: new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey)) };
   await kvSet(`devwallet:${name}`, k);
   return k;
-}
-
-/** Para o celular de teste: chave pública e assinatura crua da carteira de teste. */
-export async function devWalletPublicKey(name: string) {
-  return new PublicKey((await key(name)).publicKey);
-}
-export async function devWalletSign(name: string, bytes: Uint8Array) {
-  return new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, (await key(name)).privateKey, bytes as BufferSource));
 }
 
 export function makeDevWallet(name: string, confirm: () => DevConfirm) {

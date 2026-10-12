@@ -22,7 +22,7 @@ export type UnlockedKey = { publicKey: PublicKey; sign: (msg: Uint8Array) => Uin
 type Opts = { devTools: boolean; confirm: BiometricConfirm; what: string };
 
 const enc = new TextEncoder();
-/** Sal fixo da PRF: deixa a passkey ser descoberta sem saber antes qual é (perdeu a Phantom, aparelho novo…). */
+/** Sal fixo da PRF: deixa a passkey ser descoberta sem saber antes qual é (perdeu a carteira, aparelho novo…). */
 const PRF_SALT = Uint8Array.from("00a51f9e00616db284f6a595e239644760e218a6ae1daa15b01de5284b21fd7f".match(/../g)!, (x) => parseInt(x, 16)); // sha256("duplachave/webapp-key/prf/v1")
 
 async function aesKey(prf: Uint8Array) {
@@ -108,7 +108,7 @@ export async function createWebappKey(opts: Opts): Promise<UnlockedKey & { blob:
 /**
  * Abre a chave do webapp com a biometria. `blobs`: as cópias cifradas da conta
  * (o aparelho escolhe a passkey dele). Sem `blobs`, descobre a passkey e pede
- * a cópia ao serviço (`lookup`) — para quem perdeu a Phantom.
+ * a cópia ao serviço (`lookup`) — para quem perdeu a carteira.
  */
 export async function unlockWebappKey(
   blobs: { publicKey: string; blob: WebappKeyBlob }[] | null,

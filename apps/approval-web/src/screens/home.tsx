@@ -10,16 +10,19 @@ import QRCode from "qrcode";
 import type { VersionedTransaction as VTx } from "@solana/web3.js";
 import { reviewSecurityRequest, verifyAuthorized } from "@duplachave/custody/src/client";
 import { useChanges } from "./security";
+import { TopBar } from "../components/TopBar";
 import { fmtWhen, lang, tr } from "../lib/i18n";
 
-export type AccountView = {
-  account: { id: string; multisig: string; vault: string; roles: { client: string; server: string; executor: string; proposer: string }; frozenBy: string | null };
+type AccountView = {
+  account: { id: string; multisig: string; vault: string; roles: { client: string; webapp: string; server: string; operator: string }; frozenBy: string | null };
   invariantOk: boolean;
   vaultLamports: string;
   walletLamports: string;
   /** E-mail de alerta (mascarado), ou null se não há. */
   alertEmail: string | null;
   limits?: { maxLamportsPerTx: string };
+  /** Aparelhos com a cópia cifrada da chave atual do webapp. */
+  webappDevices?: { deviceName: string; createdAt: number }[];
 };
 
 /** Saldo que a carteira precisa ter na hora de assinar: o depósito das contas volta na mesma transação. */
@@ -36,23 +39,34 @@ export type IntentView = {
   display: { title: string; subtitle: string; rows: { label: string; value: string }[]; warnings: string[] };
 };
 
-/** Busca conta + intenções; sessão de carteira substituída volta para o início. */
+/**
+ * Busca conta + intenções; sessão de carteira substituída volta para o início.
+ * As duas chamadas são independentes: a conta lê a chain no serviço (e falha
+ * quando a RPC falha), a lista de intenções não pode sumir por causa disso.
+ * `intentsLoaded`: a lista já veio ao menos uma vez (vazia ≠ ainda carregando).
+ */
 export function useAccount(pollMs = 5000) {
   const ctx = useApp();
   const [acc, setAcc] = useState<AccountView | null>(null);
   const [intents, setIntents] = useState<IntentView[]>([]);
+  const [intentsLoaded, setIntentsLoaded] = useState(false);
   const [balance, setBalance] = useState<bigint | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const accountId = ctx.session?.accountId;
 
   const load = useCallback(async () => {
     if (!accountId) return;
+    const [a, l] = await Promise.allSettled([api<AccountView>("GET", `/v1/accounts/${accountId}/security`), api<{ intents: IntentView[] }>("GET", `/v1/accounts/${accountId}/intents`)]);
+    if (l.status === "fulfilled") {
+      setIntents(l.value.intents);
+      setIntentsLoaded(true);
+    }
     try {
-      const [a, l] = await Promise.all([api<AccountView>("GET", `/v1/accounts/${accountId}/security`), api<{ intents: IntentView[] }>("GET", `/v1/accounts/${accountId}/intents`)]);
-      setAcc(a);
-      setIntents(l.intents);
+      if (a.status === "rejected") throw a.reason;
+      setAcc(a.value);
       // Saldo lido pela RPC do app, não pela API.
-      setBalance(await ctx.chain.getBalance(new PublicKey(a.account.vault)));
+      setBalance(await ctx.chain.getBalance(new PublicKey(a.value.account.vault)));
+      if (l.status === "rejected") throw l.reason;
       setErr(null);
     } catch (e) {
       if (e instanceof ApiError && e.status === 401) return void (await ctx.setSession(null));
@@ -66,13 +80,13 @@ export function useAccount(pollMs = 5000) {
     return () => clearInterval(t);
   }, [load, pollMs]);
 
-  return { acc, intents, balance, err, reload: load };
+  return { acc, intents, intentsLoaded, balance, err, reload: load };
 }
 
 export function Tabs() {
   const { route, go } = useApp();
   const tab = (path: string, icon: string, label: string) => (
-    <button type="button" className={route === path ? "on" : ""} onClick={() => go(path)}>
+    <button type="button" className={route === path ? "on" : ""} aria-current={route === path ? "page" : undefined} onClick={() => go(path)}>
       <Icon name={icon} size={22} />
       {label}
     </button>
@@ -97,7 +111,7 @@ const STATUS: Record<string, string> = {
   FAILED: tr("Falhou", "Failed"),
 };
 
-export function intentTitle(i: IntentView) {
+function intentTitle(i: IntentView) {
   if (i.intent.type === "ROTATE_MEMBER") return i.intent.role === "CLIENT" ? tr("Troca da sua carteira", "Wallet change") : tr("Troca da chave do serviço", "Service key change");
   return tr(`Enviar ${sol(i.intent.amountLamports)} SOL`, `Send ${sol(i.intent.amountLamports)} SOL`);
 }
@@ -106,7 +120,6 @@ export function IntentRow({ i }: { i: IntentView }) {
   const { go } = useApp();
   const rot = i.intent.type === "ROTATE_MEMBER";
   const icon = rot ? "key" : i.status === "EXECUTED" ? "arrowup" : i.status === "REJECTED" || i.status === "EXPIRED" ? "x" : "send";
-  const when = fmtWhen(i.updatedAt);
   return (
     <button type="button" className="list-row as-button" onClick={() => go(`/intent/${i.intent.id}`)}>
       <div className="ico">
@@ -115,7 +128,7 @@ export function IntentRow({ i }: { i: IntentView }) {
       <div className="grow">
         <div className="t">{intentTitle(i)}</div>
         <div className="s">
-          {rot ? short(i.intent.newKey) : tr(`Para ${short(i.intent.destination)}`, `To ${short(i.intent.destination)}`)} · {when}
+          {rot ? short(i.intent.newKey) : tr(`Para ${short(i.intent.destination)}`, `To ${short(i.intent.destination)}`)} · {fmtWhen(i.updatedAt)}
         </div>
       </div>
       <div className="subtle" style={{ fontSize: 12 }}>
@@ -335,7 +348,7 @@ function DevTools({ vault, accountId, reload }: { vault: string; accountId: stri
         disabled={busy}
         onClick={() =>
           run(async () => {
-            // Pedido de troca da chave do serviço: a Phantom vota e paga; executa depois do prazo.
+            // Pedido de troca da chave do serviço: a carteira vota e paga; executa depois do prazo.
             const r = await api("POST", `/v1/dev/accounts/${accountId}/security-changes/server`, {});
             const sec = await api("GET", `/v1/accounts/${accountId}/security`);
             const review = await reviewSecurityRequest(ctx.chain, r.desc, r.transaction, { client: new PublicKey(sec.account.roles.client), webapp: new PublicKey(sec.account.roles.webapp) });
@@ -389,7 +402,7 @@ export function Deposit() {
       const lamports = parseSol(amount);
       if (!lamports) throw new Error(tr("Use um número maior que zero, com até 9 casas decimais (por exemplo 0,5).", "Enter a number greater than zero, with up to 9 decimal places (for example 0.5)."));
       const c = await ctx.accountWallet();
-      // O Vault de destino é conferido na chain: 2-de-2 com esta carteira, não um endereço que o servidor disse.
+      // O Vault de destino é conferido na chain: esta carteira vota na multisig, não um endereço que o servidor disse.
       const vault = await verifyAccountOnChain(ctx.chain, acc.account.multisig, new PublicKey(c.publicKey));
       if (vault !== acc.account.vault) throw new Error(tr("o Vault informado não é o desta conta", "the Vault given is not this account's Vault"));
       const msg = new TransactionMessage({
@@ -410,12 +423,7 @@ export function Deposit() {
 
   return (
     <>
-      <div className="topbar">
-        <button type="button" className="iconbtn" aria-label={tr("Voltar", "Back")} onClick={() => ctx.go("/")}>
-          <Icon name="back" />
-        </button>
-        <h1>{tr("Depositar no Vault", "Deposit to Vault")}</h1>
-      </div>
+      <TopBar title={tr("Depositar no Vault", "Deposit to Vault")} />
       <div className="page">
         <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
           {tr(

@@ -10,24 +10,10 @@ import { createWebappKey, deviceName, signatureB58 } from "../lib/webappKey";
 import { Icon } from "../icons";
 import { IntentRow, Tabs, useAccount } from "./home";
 import { WalletList } from "./welcome";
+import { TopBar } from "../components/TopBar";
 import { fmtWhen, lang, tr } from "../lib/i18n";
 
-/** `back={null}`: tela de aba (a barra de abas já navega). */
-function TopBar({ title, back = "/" }: { title: string; back?: string | null }) {
-  const { go } = useApp();
-  return (
-    <div className="topbar">
-      {back !== null && (
-        <button type="button" className="iconbtn" aria-label={tr("Voltar", "Back")} onClick={() => go(back)}>
-          <Icon name="back" />
-        </button>
-      )}
-      <h1>{title}</h1>
-    </div>
-  );
-}
-
-export type ChangeView = {
+type ChangeView = {
   id: string;
   role: "CLIENT" | "WEBAPP" | "SERVER";
   oldKey: string;
@@ -39,7 +25,6 @@ export type ChangeView = {
 };
 
 const ROLE_NAME: Record<ChangeView["role"], string> = { CLIENT: tr("carteira", "wallet"), WEBAPP: tr("chave do webapp", "webapp key"), SERVER: tr("chave do serviço", "service key") };
-const when = (t: number) => fmtWhen(t);
 const fromB64 = (b: string) => VersionedTransaction.deserialize(Uint8Array.from(atob(b), (c) => c.charCodeAt(0)));
 
 /** Trocas de chave da conta. */
@@ -96,7 +81,7 @@ function Countdown({ until }: { until: number }) {
  * Troca pendente: o que vai mudar, quando executa, "Não fui eu" (assinado pela
  * chave que seria trocada) e "Concluir" depois do prazo.
  */
-export function PendingChange({ c, onDone }: { c: ChangeView; onDone: () => void }) {
+function PendingChange({ c, onDone }: { c: ChangeView; onDone: () => void }) {
   const ctx = useApp();
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -174,11 +159,11 @@ export function PendingChange({ c, onDone }: { c: ChangeView; onDone: () => void
       <div className="muted" style={{ fontSize: 13 }}>
         {due ? tr("O prazo passou: pode concluir.", "The wait is over: you can complete it.") : lang === "pt" ? (
           <>
-            Executa em <Countdown until={c.executeAfter!} /> ({when(c.executeAfter!)}). Não foi você? Vete.
+            Executa em <Countdown until={c.executeAfter!} /> ({fmtWhen(c.executeAfter!)}). Não foi você? Vete.
           </>
         ) : (
           <>
-            Runs in <Countdown until={c.executeAfter!} /> ({when(c.executeAfter!)}). Wasn't you? Veto it.
+            Runs in <Countdown until={c.executeAfter!} /> ({fmtWhen(c.executeAfter!)}). Wasn't you? Veto it.
           </>
         )}
       </div>
@@ -216,7 +201,7 @@ export function PendingChange({ c, onDone }: { c: ChangeView; onDone: () => void
 
 /**
  * E-mail de alerta. Cadastrar ou trocar exige a chave do webapp (biometria) e o
- * código que chega no endereço novo: quem só tem a seed da Phantom não desvia os alertas.
+ * código que chega no endereço novo: quem só tem a seed da carteira não desvia os alertas.
  */
 function AlertEmail() {
   const ctx = useApp();
@@ -331,12 +316,9 @@ export function Security() {
   const ctx = useApp();
   const { acc } = useAccount(8000);
   const { state, ok } = useOnchainCheck(acc?.account.multisig);
-  const { changes, pending, reload } = useChanges();
-  const [devices, setDevices] = useState<{ deviceName: string; createdAt: number }[]>([]);
-  useEffect(() => {
-    if (ctx.session) void api("GET", `/v1/accounts/${ctx.session.accountId}/security`).then((r) => setDevices(r.webappDevices ?? [])).catch(() => {});
-  }, [ctx.session]);
-  const roles = acc?.account.roles as unknown as { client: string; webapp: string; server: string; operator: string } | undefined;
+  const { pending, reload } = useChanges();
+  const devices = acc?.webappDevices ?? [];
+  const roles = acc?.account.roles;
   const label = (k: string) =>
     k === roles?.client
       ? { icon: "key", title: tr("Sua carteira", "Your wallet"), sub: tr("vota e paga", "votes and pays"), role: tr("Vota", "Votes"), accent: true }
@@ -348,7 +330,7 @@ export function Security() {
             ? { icon: "bolt", title: tr("Operador do serviço", "Service operator"), sub: tr("não vota", "doesn't vote"), role: tr("Executa", "Executes"), accent: false }
             : { icon: "shieldalert", title: tr("Chave desconhecida", "Unknown key"), sub: tr("não esperada", "not expected"), role: "?", accent: false };
   const order = (k: string) => [roles?.client, roles?.webapp, roles?.server, roles?.operator].indexOf(k) + 1 || 9;
-  const open = changes.some((c) => c.status === "PENDING");
+  const open = pending.length > 0;
 
   return (
     <>
@@ -434,9 +416,9 @@ async function accountInfo(accountId: string) {
 }
 
 /**
- * Trocar a Phantom (perdeu, vazou, ou quer outra). A chave do webapp (biometria)
- * e o serviço votam o pedido; a Phantom NOVA paga e prova que é sua assinando.
- * Executa em 72 h, se a Phantom atual não vetar.
+ * Trocar a carteira (perdeu, vazou, ou quer outra). A chave do webapp (biometria)
+ * e o serviço votam o pedido; a carteira NOVA paga e prova que é sua assinando.
+ * Executa em 72 h, se a carteira atual não vetar.
  */
 export function ChangeClient() {
   const ctx = useApp();
@@ -448,7 +430,7 @@ export function ChangeClient() {
   const pick = async (w: StandardWallet) => {
     setErr(null);
     try {
-      setBusy(tr(`Conectando à ${w.name}…`, `Connecting to ${walletDisplay(w.name)}…`));
+      setBusy(tr(`Conectando à ${walletDisplay(w.name)}…`, `Connecting to ${walletDisplay(w.name)}…`));
       const next = await ctx.connect(w);
       if (next.publicKey === s.publicKey) throw new Error(tr("Essa é a carteira atual da conta. Na carteira, mude para a conta nova (ou use outra carteira).", "That's the account's current wallet. In the wallet, switch to the new account (or use another wallet)."));
       const info = await accountInfo(s.accountId);
@@ -484,11 +466,11 @@ export function ChangeClient() {
             <Icon name="check" size={18} color="var(--accent)" />
             {lang === "pt" ? (
               <div>
-                Pedido feito. A carteira nova passa a valer em <b>{when(done.executeAfter!)}</b>, se a atual não vetar. Depois disso, toque em "Concluir troca" em Segurança.
+                Pedido feito. A carteira nova passa a valer em <b>{fmtWhen(done.executeAfter!)}</b>, se a atual não vetar. Depois disso, toque em "Concluir troca" em Segurança.
               </div>
             ) : (
               <div>
-                Request made. The new wallet takes effect on <b>{when(done.executeAfter!)}</b>, unless the current one vetoes. After that, tap "Complete change" in Security.
+                Request made. The new wallet takes effect on <b>{fmtWhen(done.executeAfter!)}</b>, unless the current one vetoes. After that, tap "Complete change" in Security.
               </div>
             )}
           </div>
@@ -521,7 +503,7 @@ export function ChangeClient() {
 /**
  * Recuperar o webapp neste aparelho (perdeu o aparelho ou trocou de celular):
  * uma chave nova do webapp nasce aqui, cifrada pela biometria deste aparelho;
- * a Phantom e o serviço votam o pedido; executa em 72 h, se a chave antiga não vetar.
+ * a carteira e o serviço votam o pedido; executa em 72 h, se a chave antiga não vetar.
  */
 export function ChangeWebapp() {
   const ctx = useApp();
@@ -570,11 +552,11 @@ export function ChangeWebapp() {
             <Icon name="check" size={18} color="var(--accent)" />
             {lang === "pt" ? (
               <div>
-                Pedido feito. A chave nova (neste aparelho) passa a valer em <b>{when(done.executeAfter!)}</b>, se a antiga não vetar. Depois, toque em "Concluir troca" em Segurança.
+                Pedido feito. A chave nova (neste aparelho) passa a valer em <b>{fmtWhen(done.executeAfter!)}</b>, se a antiga não vetar. Depois, toque em "Concluir troca" em Segurança.
               </div>
             ) : (
               <div>
-                Request made. The new key (on this device) takes effect on <b>{when(done.executeAfter!)}</b>, unless the old one vetoes. Then tap "Complete change" in Security.
+                Request made. The new key (on this device) takes effect on <b>{fmtWhen(done.executeAfter!)}</b>, unless the old one vetoes. Then tap "Complete change" in Security.
               </div>
             )}
           </div>
@@ -607,7 +589,7 @@ export function ChangeWebapp() {
 
 // ---------------------------------------------------------------- atividade
 
-/** Eventos da auditoria em português (o código fica no registro, para quem conferir a cadeia). */
+/** Eventos da auditoria no idioma do app (o código fica no `title`, para quem conferir a cadeia). */
 const AUDIT_LABEL: Record<string, string> = {
   SMART_ACCOUNT_CREATED: tr("Conta 2 de 3 criada na Solana", "2-of-3 account created on Solana"),
   TRANSACTION_PROPOSED: tr("Envio criado", "Send created"),
@@ -642,7 +624,7 @@ const AUDIT_ALERT = new Set(["INVARIANT_VIOLATION", "SECURITY_CHANGE_REQUESTED",
 
 export function Activity() {
   const ctx = useApp();
-  const { intents } = useAccount(6000);
+  const { intents, intentsLoaded, err } = useAccount(6000);
   const [audit, setAudit] = useState<{ seq: number; type: string; at: number; hash: string }[]>([]);
   useEffect(() => {
     const id = ctx.session?.accountId;
@@ -650,12 +632,11 @@ export function Activity() {
   }, [ctx.session, intents.length]);
   return (
     <>
-      <div className="topbar">
-        <h1>{tr("Atividade", "Activity")}</h1>
-      </div>
+      <TopBar title={tr("Atividade", "Activity")} back={null} />
       <div className="page">
         <div>
-          {intents.length === 0 && <div className="subtle" style={{ fontSize: 13 }}>{tr("Nenhuma transação ainda.", "No transactions yet.")}</div>}
+          {!intentsLoaded && !err && <span className="spinner" />}
+          {intentsLoaded && intents.length === 0 && <div className="subtle" style={{ fontSize: 13 }}>{tr("Nenhuma transação ainda.", "No transactions yet.")}</div>}
           {intents.map((i) => (
             <IntentRow key={i.intent.id} i={i} />
           ))}
@@ -684,6 +665,7 @@ export function Activity() {
             </div>
           ))}
         </div>
+        {err && <div className="err">{err}</div>}
       </div>
       <Tabs />
     </>

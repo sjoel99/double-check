@@ -41,16 +41,14 @@ async function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBReq
 
 export const kvGet = async <T>(key: string): Promise<T | null> => ((await tx("readonly", (s) => s.get(key))) as T | undefined) ?? null;
 export const kvSet = async (key: string, value: unknown) => void (await tx("readwrite", (s) => s.put(value, key)));
-export const kvDel = async (key: string) => void (await tx("readwrite", (s) => s.delete(key)));
+const kvDel = async (key: string) => void (await tx("readwrite", (s) => s.delete(key)));
 
 export type Session = {
   token: string;
   accountId: string;
   walletName: string;
   publicKey: string;
-  /** Trocas de carteira pedidas por esta sessão (o app só aprova estas). */
-  myRotations: string[];
-  /** Como esta sessão assina: carteira do celular (QR) ou extensão do navegador. */
+  /** Como esta sessão assina: carteira do celular (QR), extensão do navegador ou só a biometria (entrou sem a carteira). */
   via?: "phone" | "extension" | "webapp";
 };
 

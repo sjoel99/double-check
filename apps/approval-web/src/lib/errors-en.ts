@@ -283,5 +283,3 @@ export function errorEn(code: string, pt: string): string | null {
   return typeof rule === "string" ? rule : rule(String(pt ?? ""));
 }
 
-/** Quantos códigos têm tradução (para o teste e para conferência). */
-export const ERROR_CODES_EN = Object.keys(ERRORS_EN);

@@ -37,7 +37,7 @@ export function MobileHandoff({ token }: { token: string }) {
     if (!info) return;
     setErr(null);
     try {
-      setStep(tr(`Conectando à ${w.name}…`, `Connecting to ${walletDisplay(w.name)}…`));
+      setStep(tr(`Conectando à ${walletDisplay(w.name)}…`, `Connecting to ${walletDisplay(w.name)}…`));
       const c = await ctx.connect(w);
       const s = await loginOrEnroll(ctx, c, setStep);
       if (info.kind === "SIGN_INTENT") {
@@ -53,7 +53,7 @@ export function MobileHandoff({ token }: { token: string }) {
     }
   };
 
-  // Assinar pelo QR, sem entrar na conta: uma abertura só da Phantom (conecta e assina juntos).
+  // Assinar pelo QR, sem entrar na conta: uma abertura só da carteira (conecta e assina juntos).
   const mwa = ctx.wallets.some((w) => w.name === "Mobile Wallet Adapter");
   if (info?.kind === "SIGN_INTENT" && info.wallet && mwa && !login && ctx.session?.accountId !== info.accountId)
     return (
