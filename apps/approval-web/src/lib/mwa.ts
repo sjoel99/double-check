@@ -2,6 +2,7 @@ import { transact } from "@solana-mobile/mobile-wallet-adapter-protocol";
 import { VersionedTransaction } from "@solana/web3.js";
 import { trace } from "./trace";
 import { tr } from "./i18n";
+import { ensureActivation } from "./activation";
 
 /**
  * Carteira do celular (Android) pelo Mobile Wallet Adapter, falando direto com
@@ -22,18 +23,37 @@ const b64 = (u: Uint8Array) => {
 };
 const fromB64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 
-/** Pede ao Chrome a permissão de rede local (o app conversa com a carteira por ws://localhost). */
+/**
+ * Acesso do Chrome ao próprio aparelho: o app conversa com a carteira por ws://localhost.
+ * Desde o Chrome 145 isso é a permissão "loopback-network" ("Apps no dispositivo"),
+ * separada de "local-network" (o antigo "local-network-access" virou apelido dela), e
+ * desde o 147 ela também vale para WebSocket. Sem ela a carteira abre e nada conecta.
+ */
 async function ensureLocalNetwork() {
-  for (const name of ["local-network-access", "loopback-network"]) {
+  const query = async (name: string): Promise<PermissionState | null> => {
     try {
-      const st = await navigator.permissions.query({ name: name as PermissionName });
-      trace("mwa:permissao", `${name}=${st.state}`);
-      if (st.state === "prompt") await fetch("http://localhost", { mode: "no-cors" }).catch(() => {});
-      return;
+      return (await navigator.permissions.query({ name: name as PermissionName })).state;
     } catch {
-      /* nome não suportado neste Chrome */
+      return null; // nome não suportado neste Chrome
     }
+  };
+  const read = async () => (await query("loopback-network")) ?? (await query("local-network-access"));
+  let state = await read();
+  trace("mwa:permissao", `loopback=${await query("loopback-network")} local=${await query("local-network-access")}`);
+  if (state === "prompt") {
+    // Uma requisição ao localhost faz o Chrome perguntar; a resposta pode levar mais que o toque vale.
+    await fetch("http://localhost", { mode: "no-cors" }).catch(() => {});
+    state = await read();
+    trace("mwa:permissao:depois", String(state));
+    if (state !== "denied") await ensureActivation(tr("Abrir a carteira", "Open the wallet"));
   }
+  if (state === "denied")
+    throw new Error(
+      tr(
+        "O Chrome bloqueou a conversa com o app da carteira. Toque no ícone à esquerda do endereço → Permissões → \"Apps no dispositivo\" (ou \"Rede local\") → Permitir, e tente de novo.",
+        "Chrome blocked the connection to the wallet app. Tap the icon left of the address → Permissions → \"Apps on device\" (or \"Local network\") → Allow, then try again.",
+      ),
+    );
 }
 
 export function makeMwaWallet(opts: { chain: string; identity: { name: string; uri: string; icon: string } }) {
