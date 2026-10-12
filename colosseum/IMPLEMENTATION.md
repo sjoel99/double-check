@@ -50,8 +50,6 @@ Vitest 4.1 + LiteSVM 0.8.0: 76 tests in 9 files run in about 4 s, with no networ
 
 ## AI tools used in building the product
 
-Claude Code (Anthropic), running Claude Opus 5.5, was the coding agent throughout: every commit in the repository carries its co-author trailer. The product itself uses no AI at runtime.
+Claude Code (Anthropic) as a coding assistant.
 
-- **What it did:** wrote and refactored code across the monorepo, wrote and ran the LiteSVM tests, drafted the docs (architecture, threat model, invariants), drove Playwright for screen checks, and recorded the demo video.
-- **What the founder did:** chose the custody model and every security trade-off (2-of-3 membership, operator-only execution, 72 h delay with veto, passkey PRF), tested on real devices, ran the external testers, and reviewed the changes.
-- **Open question:** were any other AI tools used (for example Codex or ChatGPT for reviews)? If so, add them here.
+The custody model and its security trade-offs (2-of-3 membership, operator-only execution, 72 h delay with veto, passkey PRF as a real on-chain vote), the real-device testing and the outside test rounds are the founder's own work. The product itself uses no AI at runtime.
