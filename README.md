@@ -3,7 +3,7 @@
 Solana custody where **no single key can move funds**.
 
 - Live app (devnet): https://dupla.sjoel99.com
-- Demo video (2:13): https://cdn.jsdelivr.net/gh/sjoel99/double-check@ee0da0fc0f214093eecc7394ddd75ca293eea32d/colosseum/double-check-demo.mp4
+- Demo video (2:13): https://cdn.jsdelivr.net/gh/sjoel99/double-check@ca4ad1eef3b14d540359cab1605a323835638ab6/colosseum/double-check-demo.mp4
 - Colosseum submission materials: [colosseum/](colosseum/)
 - Leia em português: [README.pt-BR.md](README.pt-BR.md)
 

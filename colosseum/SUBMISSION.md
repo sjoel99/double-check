@@ -240,4 +240,4 @@ Obrigado.
 - **GitHub:** https://github.com/sjoel99/double-check (public)
 - **Live demo:** https://dupla.sjoel99.com (devnet; Android + Chrome or desktop Chrome; iPhone not supported yet)
 - **Pitch video (2–3 min):** script above. `[JOEL: link after upload]`
-- **Demo video (2:13):** https://cdn.jsdelivr.net/gh/sjoel99/double-check@ee0da0fc0f214093eecc7394ddd75ca293eea32d/colosseum/double-check-demo.mp4 (recorded by [record-demo.cjs](record-demo.cjs) against the local app)
+- **Demo video (2:13):** https://cdn.jsdelivr.net/gh/sjoel99/double-check@ca4ad1eef3b14d540359cab1605a323835638ab6/colosseum/double-check-demo.mp4 (recorded by [record-demo.cjs](record-demo.cjs) against the local app)
