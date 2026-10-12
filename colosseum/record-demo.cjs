@@ -1,4 +1,4 @@
-// Grava a demo do Double Check (localnet) com legendas em inglês.
+// Grava a demo do Double Check (localnet), em inglês.
 // Uso: pnpm dev (em outro terminal) e depois node colosseum/record-demo.cjs
 // Precisa do Playwright (npm i -g playwright ou PLAYWRIGHT=<caminho>); CHROME=<binário> opcional.
 const { chromium } = require(process.env.PLAYWRIGHT || 'playwright');
@@ -53,7 +53,7 @@ const OVERLAY = `
 
 (async () => {
   const b = await chromium.launch(process.env.CHROME ? { executablePath: process.env.CHROME } : {});
-  const ctx = await b.newContext({ viewport: { width: W, height: H }, recordVideo: { dir: 'video', size: { width: W, height: H } } });
+  const ctx = await b.newContext({ viewport: { width: W, height: H }, locale: 'en-US', recordVideo: { dir: process.env.VIDEO_DIR || 'video', size: { width: W, height: H } } });
   await ctx.addInitScript(OVERLAY);
   const p = await ctx.newPage();
   const wait = (ms) => p.waitForTimeout(ms);
@@ -78,36 +78,36 @@ const OVERLAY = `
   // 0. Cartão de abertura
   await p.goto('http://127.0.0.1:5173/');
   await wait(800);
-  await card('Double <span>Check</span>', 'Solana custody where no single key can move your funds.<br>Squads v4 multisig, 2 of 3: your wallet + a passkey-protected device key + the service.', 'local demo · UI in Portuguese, captions in English');
+  await card('Double <span>Check</span>', 'Solana custody where no single key can move your funds.<br>Squads v4 multisig, 2 of 3: your wallet + a passkey-protected device key + the service.', 'local demo against the real Squads v4 program');
   await wait(6000);
   await card(null);
-  await cap('Sign-up', 'One account, three keys', 'Connect any Solana wallet (Phantom, Backpack, Solflare). In this local demo, <b>"Carteira de teste A"</b> plays the role of the wallet popup and <b>"Biometria de teste"</b> plays the fingerprint.');
+  await cap('Sign-up', 'One account, three keys', 'Connect any Solana wallet (Phantom, Backpack, Solflare). In this local demo, <b>Test wallet A</b> plays the wallet popup and <b>Test biometrics</b> plays the fingerprint.');
   await wait(5500);
 
   // 1. Cadastro
-  await click(p.getByRole('button', { name: 'Carteira de teste A' }));
+  await click(p.getByRole('button', { name: 'Test wallet A' }));
   await cap('Sign-up · step 1', 'Your fingerprint creates the webapp key', 'A new Ed25519 key is generated on this device and encrypted with the passkey\'s <b>PRF</b> secret. The service only ever stores the ciphertext.');
   await sheetOk(3500);
   await cap('Sign-up · step 2', 'Your wallet creates the 2-of-3 account', 'The webapp checks the transaction first: only the Squads multisig creation, with the right members. Your wallet signs and pays about <b>0.003 SOL</b>, once.');
   await sheetOk(4000);
   await wait(1500);
-  await cap('Home', 'Your Vault is a Squads v4 multisig', '<b>"Proteção 2 de 3"</b>: any move needs two votes. The service holds no SOL and pays nothing: fees come from your wallet.');
+  await cap('Home', 'Your Vault is a Squads v4 multisig', '<b>2-of-3 protection</b>: any move needs two votes. The service holds no SOL and pays nothing: fees come from your wallet.');
   await KEYS(['vote', 'on'], ['vote', 'on'], ['vote', 'on'], ['executes', 'on']);
   await wait(5000);
-  await click(p.getByRole('button', { name: '10 SOL no Vault' }), 1500);
+  await click(p.getByRole('button', { name: '10 SOL to Vault' }), 1500);
   await p.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
   await wait(1200);
 
   // 2. Envio
   await cap('Send', 'Sending 1.5 SOL', 'The service checks your policy (limits, destination) and simulates. Nothing touches the chain yet.');
   await KEYS(['waiting', 'off'], ['waiting', 'off'], ['does not vote on sends', 'off'], ['waiting', 'off']);
-  await click(p.getByRole('button', { name: 'Enviar', exact: true }), 800);
+  await click(p.getByRole('button', { name: 'Send', exact: true }), 800);
   await type('#dest', DEST);
   await type('#amt', '1.5');
-  await click(p.getByRole('button', { name: 'Revisar' }), 2500);
-  await cap('Review', 'No blind signing', 'The webapp rebuilds the transaction <b>on its own</b> from what it shows you and compares it <b>byte by byte</b> with what the server sent. "Conferido" = verified: it does exactly this.');
+  await click(p.getByRole('button', { name: 'Review', exact: true }), 2500);
+  await cap('Review', 'No blind signing', 'The webapp rebuilds the transaction <b>on its own</b> from what it shows you and compares it <b>byte by byte</b> with what the server sent. <b>Verified</b>: it does exactly this.');
   await wait(7000);
-  await click(p.locator('.btn.primary', { hasText: /^Assinar$/ }));
+  await click(p.locator('.btn.primary', { hasText: /^Sign$/ }));
   await cap('Send · vote 1', 'Fingerprint approves these exact bytes', 'The passkey unlocks the webapp key, which signs the approval. Then the service operator signs the execution, after the policy check.');
   await sheetOk(3500);
   await KEYS(['waiting', 'off'], ['voted', 'on'], ['does not vote on sends', 'off'], ['signed execute', 'on']);
@@ -118,37 +118,37 @@ const OVERLAY = `
   await cap('Done', 'Executed on Solana', 'The four real steps: fingerprint, policy + operator, your wallet, execution. A leaked seed phrase alone could never have done this.');
   await wait(6000);
   await side(null);
-  await click(p.getByRole('button', { name: 'Voltar ao início' }), 1200);
+  await click(p.getByRole('button', { name: 'Back to home' }), 1200);
 
   // 3. Servidor malicioso
   await cap('Attack 1', 'What if our server is hacked?', 'This test switch makes the server <b>lie</b>: it shows 1/10 of the real amount. Let\'s send 2 SOL.');
-  await p.getByText('Simular servidor malicioso').scrollIntoViewIfNeeded();
-  await click(p.getByText('Simular servidor malicioso'), 1500);
+  await p.getByText('Simulate a malicious server').scrollIntoViewIfNeeded();
+  await click(p.getByText('Simulate a malicious server'), 1500);
   await p.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
   await wait(800);
-  await click(p.getByRole('button', { name: 'Enviar', exact: true }), 800);
+  await click(p.getByRole('button', { name: 'Send', exact: true }), 800);
   await type('#dest', DEST);
   await type('#amt', '2');
-  await click(p.getByRole('button', { name: 'Revisar' }), 2500);
-  await cap('Attack 1', 'Transaction blocked', '<b>"Transação bloqueada"</b>: the server showed 0.2 SOL, the transaction moves 2 SOL. The webapp caught the mismatch before any signature. Nothing was signed, no funds moved.');
+  await click(p.getByRole('button', { name: 'Review', exact: true }), 2500);
+  await cap('Attack 1', 'Transaction blocked', 'The server showed 0.2 SOL, the transaction moves 2 SOL. The webapp caught the mismatch before any signature. Nothing was signed, no funds moved.');
   await wait(8000);
-  await click(p.getByRole('button', { name: 'Entendi' }), 1000);
-  const cb = p.getByLabel(/Simular servidor malicioso/);
-  if (await cb.isVisible().catch(() => false) && await cb.isChecked()) await click(p.getByText('Simular servidor malicioso'), 600);
+  await click(p.getByRole('button', { name: 'Got it' }), 1000);
+  const cb = p.getByLabel(/Simulate a malicious server/);
+  if (await cb.isVisible().catch(() => false) && await cb.isChecked()) await click(p.getByText('Simulate a malicious server'), 600);
   await p.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
   await wait(800);
 
   // 4. Troca de chave + veto
   await cap('Attack 2', 'Someone tries to swap a key', 'Any key can be replaced with two votes (lost phone, lost wallet). Here a test button simulates a request to replace the <b>service key</b>, as an attacker would.');
-  await p.getByRole('button', { name: 'Simular pedido de troca da chave do serviço' }).scrollIntoViewIfNeeded();
-  await click(p.getByRole('button', { name: 'Simular pedido de troca da chave do serviço' }), 800);
+  await p.getByRole('button', { name: 'Simulate a service key change request' }).scrollIntoViewIfNeeded();
+  await click(p.getByRole('button', { name: 'Simulate a service key change request' }), 800);
   await sheetOk(2500);
   await wait(1500);
   await p.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));
-  await cap('Attack 2', '72-hour delay, and you get warned', '<b>"Troca de chave pendente"</b>: every key change waits 72 h (2 min in this local demo). An email alert goes out, and the key being replaced can veto.');
+  await cap('Attack 2', '72-hour delay, and you get warned', 'Every key change waits 72 h (2 min in this local demo). An email alert goes out, and the key being replaced can veto.');
   await wait(7000);
-  await click(p.getByRole('button', { name: /Não fui eu/ }), 800);
-  await cap('Attack 2', '"Não fui eu" = "It wasn\'t me"', 'Your fingerprint signs the veto. Only the operator can execute, so the veto takes effect immediately, and the request can never run.');
+  await click(p.getByRole('button', { name: /It wasn't me/ }), 800);
+  await cap('Attack 2', '"It wasn\'t me"', 'Your fingerprint signs the veto. Only the operator can execute, so the veto takes effect immediately, and the request can never run.');
   await sheetOk(3500);
   await wait(1500);
   await p.evaluate(() => window.scrollTo({ top: 0, behavior: 'smooth' }));

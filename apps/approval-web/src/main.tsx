@@ -6,6 +6,7 @@ import { AppProvider, type Config, useApp } from "./app";
 import { api } from "./lib/api";
 import { PINNED_CLUSTER } from "./lib/chain";
 import { trace } from "./lib/trace";
+import { tr } from "./lib/i18n";
 
 // Diagnóstico no celular: erros soltos e quando a página sai/volta (troca para o app da carteira).
 if (/Android|iPhone|iPad/i.test(navigator.userAgent)) {
@@ -44,11 +45,11 @@ function Boot() {
     (async () => {
       try {
         const [config, session] = await Promise.all([api<Config>("GET", "/v1/config", undefined, { auth: false }), loadSession()]);
-        if (config.cluster !== PINNED_CLUSTER) return setState({ error: `A API está em ${config.cluster}, mas este app foi feito para ${PINNED_CLUSTER}. Não continue.` });
-        if (config.devTools && !(await ed25519Supported())) return setState({ error: "As carteiras de teste precisam de Ed25519 no WebCrypto (Chrome 137+, Firefox 129+, Safari 17+)." });
+        if (config.cluster !== PINNED_CLUSTER) return setState({ error: tr(`A API está em ${config.cluster}, mas este app foi feito para ${PINNED_CLUSTER}. Não continue.`, `The API is on ${config.cluster}, but this app was built for ${PINNED_CLUSTER}. Do not continue.`) });
+        if (config.devTools && !(await ed25519Supported())) return setState({ error: tr("As carteiras de teste precisam de Ed25519 no WebCrypto (Chrome 137+, Firefox 129+, Safari 17+).", "Test wallets need Ed25519 in WebCrypto (Chrome 137+, Firefox 129+, Safari 17+).") });
         setState({ config, session });
       } catch (e) {
-        setState({ error: `API indisponível: ${(e as Error).message}. Rode \`pnpm dev\` na raiz do projeto.` });
+        setState({ error: tr(`API indisponível: ${(e as Error).message}. Rode \`pnpm dev\` na raiz do projeto.`, `API unavailable: ${(e as Error).message}. Run \`pnpm dev\` at the project root.`) });
       }
     })();
   }, []);

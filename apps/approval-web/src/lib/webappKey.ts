@@ -5,6 +5,7 @@ import { b64url, fromB64url } from "@duplachave/crypto";
 import { kvGet, kvSet } from "./storage";
 import { ensureActivation, isMobile } from "./activation";
 import { trace } from "./trace";
+import { tr } from "./i18n";
 
 /**
  * Chave do webapp: um dos três votos da multisig. É uma chave Ed25519 gerada
@@ -33,7 +34,7 @@ async function aesKey(prf: Uint8Array) {
 type SoftPrf = { id: string; key: CryptoKey };
 const SOFT = () => `softprf:${location.host}`;
 async function softCreate(confirm: BiometricConfirm) {
-  if (!(await confirm("Criar a biometria de teste deste navegador?"))) throw new Error("biometria recusada");
+  if (!(await confirm(tr("Criar a biometria de teste deste navegador?", "Set up test biometrics in this browser?")))) throw new Error("biometria recusada");
   const key = await crypto.subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
   const cred: SoftPrf = { id: b64url(crypto.getRandomValues(new Uint8Array(16))), key };
   await kvSet(SOFT(), [...((await kvGet<SoftPrf[]>(SOFT())) ?? []), cred]);
@@ -48,11 +49,11 @@ type PrfResult = { credentialId: string; prf: Uint8Array };
 type PrfExt = { prf?: { enabled?: boolean; results?: { first?: ArrayBuffer } } };
 
 async function passkeyCreate(): Promise<PrfResult> {
-  if (isMobile()) await ensureActivation("Criar a biometria deste aparelho");
+  if (isMobile()) await ensureActivation(tr("Criar a biometria deste aparelho", "Set up biometrics on this device"));
   const cred = (await navigator.credentials.create({
     publicKey: {
       rp: { id: location.hostname, name: "Double Check" },
-      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "Double Check", displayName: "Chave do webapp" },
+      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "Double Check", displayName: tr("Chave do webapp", "Webapp key") },
       challenge: crypto.getRandomValues(new Uint8Array(32)),
       pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
       authenticatorSelection: { residentKey: "required", userVerification: "required" },
@@ -62,7 +63,7 @@ async function passkeyCreate(): Promise<PrfResult> {
   if (!cred) throw new Error("biometria recusada");
   const ext = cred.getClientExtensionResults() as PrfExt;
   trace("webappkey:criada", `prf.enabled=${ext.prf?.enabled} resultado=${Boolean(ext.prf?.results?.first)}`);
-  if (ext.prf?.enabled === false) throw new Error("Este aparelho não suporta a biometria com chave (PRF). Use o Chrome no Android com o gerenciador de senhas do Google.");
+  if (ext.prf?.enabled === false) throw new Error(tr("Este aparelho não suporta a biometria com chave (PRF). Use o Chrome no Android com o gerenciador de senhas do Google.", "This device doesn't support biometrics with a key (PRF). Use Chrome on Android with Google Password Manager."));
   const credentialId = b64url(new Uint8Array(cred.rawId));
   if (ext.prf?.results?.first) return { credentialId, prf: new Uint8Array(ext.prf.results.first) };
   // Muitos aparelhos só entregam a PRF numa leitura: pede a biometria de novo.
@@ -70,7 +71,7 @@ async function passkeyCreate(): Promise<PrfResult> {
 }
 
 async function passkeyGet(allow: string[] | null): Promise<PrfResult> {
-  if (isMobile()) await ensureActivation("Confirmar com a biometria");
+  if (isMobile()) await ensureActivation(tr("Confirmar com a biometria", "Confirm with fingerprint or face"));
   const a = (await navigator.credentials.get({
     publicKey: {
       challenge: crypto.getRandomValues(new Uint8Array(32)),
@@ -82,7 +83,7 @@ async function passkeyGet(allow: string[] | null): Promise<PrfResult> {
   })) as PublicKeyCredential | null;
   if (!a) throw new Error("biometria recusada");
   const first = (a.getClientExtensionResults() as PrfExt).prf?.results?.first;
-  if (!first) throw new Error("Este aparelho não devolveu a chave da biometria (PRF).");
+  if (!first) throw new Error(tr("Este aparelho não devolveu a chave da biometria (PRF).", "This device didn't return the biometrics key (PRF)."));
   return { credentialId: b64url(new Uint8Array(a.rawId)), prf: new Uint8Array(first) };
 }
 
@@ -128,20 +129,20 @@ export async function unlockWebappKey(
         break;
       }
     }
-    if (!pick) throw new Error("Este navegador não tem a biometria desta conta.");
+    if (!pick) throw new Error(tr("Este navegador não tem a biometria desta conta.", "This browser doesn't have this account's biometrics."));
     r = { credentialId: pick.id, prf: await softEval(pick) };
   } else r = await passkeyGet(blobs ? blobs.map((b) => b.blob.credentialId) : null);
   found ??= blobs?.find((b) => b.blob.credentialId === r.credentialId) ?? (opts.lookup ? await opts.lookup(r.credentialId) : null);
-  if (!found) throw new Error("Esta biometria não abre a chave desta conta.");
+  if (!found) throw new Error(tr("Esta biometria não abre a chave desta conta.", "These biometrics don't unlock this account's key."));
   try {
     const seed = new Uint8Array(
       await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromB64url(found.blob.iv) as BufferSource, additionalData: enc.encode(found.publicKey) }, await aesKey(r.prf), fromB64url(found.blob.ciphertext) as BufferSource),
     );
     const publicKey = new PublicKey(ed25519.getPublicKey(seed));
-    if (publicKey.toBase58() !== found.publicKey) throw new Error("chave aberta não confere");
+    if (publicKey.toBase58() !== found.publicKey) throw new Error(tr("chave aberta não confere", "unlocked key doesn't match"));
     return unlocked(seed, publicKey);
   } catch (e) {
-    throw new Error(`Não deu para abrir a chave do webapp: ${(e as Error).message}`);
+    throw new Error(tr(`Não deu para abrir a chave do webapp: ${(e as Error).message}`, `Couldn't unlock the webapp key: ${(e as Error).message}`));
   } finally {
     r.prf.fill(0);
   }
@@ -164,5 +165,5 @@ export function deviceName() {
   if (/Mac/i.test(ua)) return "Mac";
   if (/Windows/i.test(ua)) return "Windows";
   if (/Linux/i.test(ua)) return "Linux";
-  return "Navegador";
+  return tr("Navegador", "Browser");
 }

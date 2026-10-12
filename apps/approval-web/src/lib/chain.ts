@@ -1,6 +1,7 @@
 import { type AccountInfo, Connection, type PublicKey } from "@solana/web3.js";
 import { RpcChain, type Chain } from "@duplachave/solana";
 import type { Cluster } from "@duplachave/shared";
+import { locale, tr } from "./i18n";
 
 /**
  * RPC e cluster que o app usa para conferir a chain: FIXOS NO BUILD, nunca
@@ -23,11 +24,11 @@ class QuorumChain implements Chain {
   async getAccountInfo(pk: PublicKey): Promise<AccountInfo<Buffer> | null> {
     const [x, y] = await Promise.all([this.a.getAccountInfo(pk), this.b.getAccountInfo(pk)]);
     const same = (!x && !y) || (x && y && x.owner.equals(y.owner) && Buffer.from(x.data).equals(Buffer.from(y.data)));
-    if (!same) throw new Error(`as duas RPCs divergem sobre ${pk.toBase58()}: não aprove nada`);
+    if (!same) throw new Error(tr(`as duas RPCs divergem sobre ${pk.toBase58()}: não aprove nada`, `the two RPCs disagree about ${pk.toBase58()}: do not approve anything`));
     return x;
   }
   getLatestBlockhash() { return this.a.getLatestBlockhash(); }
-  sendTransaction(): Promise<string> { throw new Error("o app não envia transações"); }
+  sendTransaction(): Promise<string> { throw new Error(tr("o app não envia transações", "the app does not send transactions")); }
   getBalance(pk: PublicKey) { return this.a.getBalance(pk); }
   now() { return this.a.now(); }
 }
@@ -47,7 +48,7 @@ export const short = (k: string) => `${k.slice(0, 4)}…${k.slice(-4)}`;
 
 export function sol(lamports: string | bigint | number, max = 4): string {
   const v = Number(BigInt(lamports.toString())) / 1e9;
-  return v.toLocaleString("pt-BR", { maximumFractionDigits: max });
+  return v.toLocaleString(locale, { maximumFractionDigits: max });
 }
 
 /** "1,5" ou "1.5" → lamports; null se não for um valor com até 9 casas. */
@@ -58,10 +59,10 @@ export function parseSol(input: string): bigint | null {
   return BigInt(i!) * 1_000_000_000n + BigInt(f.padEnd(9, "0"));
 }
 
-/** lamports → texto para o campo ("1,5"), sem perder casas. */
+/** lamports → texto para o campo ("1,5" em pt, "1.5" em en), sem perder casas; parseSol aceita os dois. */
 export function solInput(lamports: bigint): string {
   const f = (lamports % 1_000_000_000n).toString().padStart(9, "0").replace(/0+$/, "");
-  return f ? `${lamports / 1_000_000_000n},${f}` : `${lamports / 1_000_000_000n}`;
+  return f ? `${lamports / 1_000_000_000n}${tr(",", ".")}${f}` : `${lamports / 1_000_000_000n}`;
 }
 
 /**
@@ -74,9 +75,9 @@ export async function sendSigned(transactionB64: string): Promise<string> {
   const sig = await conn.sendRawTransaction(raw, { preflightCommitment: "confirmed" });
   for (let i = 0; i < 60; i++) {
     const st = (await conn.getSignatureStatuses([sig])).value[0];
-    if (st?.err) throw new Error(`a transação falhou: ${JSON.stringify(st.err)}`);
+    if (st?.err) throw new Error(tr(`a transação falhou: ${JSON.stringify(st.err)}`, `the transaction failed: ${JSON.stringify(st.err)}`));
     if (st?.confirmationStatus === "confirmed" || st?.confirmationStatus === "finalized") return sig;
     await new Promise((r) => setTimeout(r, 500));
   }
-  throw new Error("a transação não confirmou a tempo; confira o saldo antes de tentar de novo");
+  throw new Error(tr("a transação não confirmou a tempo; confira o saldo antes de tentar de novo", "the transaction did not confirm in time; check your balance before trying again"));
 }

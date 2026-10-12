@@ -9,9 +9,11 @@ import { api, ApiError } from "./lib/api";
 import { appChain, short } from "./lib/chain";
 import { makeDevWallet, type DevConfirm } from "./lib/devwallet";
 import { loadSession, saveSession, type Session } from "./lib/storage";
-import { ConnectedWallet, discoverWallets, registerWallet, type StandardWallet, walletLabel } from "./lib/wallets";
+import { ConnectedWallet, discoverWallets, registerWallet, type StandardWallet, walletDisplay, walletLabel } from "./lib/wallets";
 import { setActivationGate } from "./lib/activation";
 import { trace } from "./lib/trace";
+import { lang, tr } from "./lib/i18n";
+import { errorEn } from "./lib/errors-en";
 
 let mwaRegistered = false;
 import { Icon } from "./icons";
@@ -108,15 +110,19 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
     wallet,
     connect,
     accountWallet: async () => {
-      if (!session) throw new Error("sem sessão");
+      if (!session) throw new Error(tr("sem sessão", "not signed in"));
       let c = wallet;
       if (!c || c.name !== session.walletName) {
         const w = wallets.find((x) => walletLabel(x.name) === session.walletName);
-        if (!w) throw new Error(session.via === "webapp" ? `Conecte a carteira da conta (${short(session.publicKey)}) para assinar: entre de novo com ela.` : `Abra ou instale a carteira ${session.walletName} para assinar.`);
+        if (!w) throw new Error(
+            session.via === "webapp"
+              ? tr(`Conecte a carteira da conta (${short(session.publicKey)}) para assinar: entre de novo com ela.`, `Connect the account's wallet (${short(session.publicKey)}) to sign: sign in again with it.`)
+              : tr(`Abra ou instale a carteira ${session.walletName} para assinar.`, `Open or install the ${walletDisplay(session.walletName)} wallet to sign.`),
+          );
         c = await connect(w);
       }
       if (c.refresh() !== session.publicKey)
-        throw new Error(`A ${c.name} está na conta ${short(c.publicKey)}, mas esta conta é da ${short(session.publicKey)}. Troque de conta na carteira e tente de novo.`);
+        throw new Error(tr(`A ${c.name} está na conta ${short(c.publicKey)}, mas esta conta é da ${short(session.publicKey)}. Troque de conta na carteira e tente de novo.`, `${walletDisplay(c.name)} is on account ${short(c.publicKey)}, but this account belongs to ${short(session.publicKey)}. Switch accounts in the wallet and try again.`));
       return c;
     },
     route,
@@ -129,7 +135,7 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
       toastTimer.current = window.setTimeout(() => setToast(null), 4200);
     },
     initiatedHere: (rotationId) => Boolean(session?.myRotations.includes(rotationId)),
-    biometric: (text) => devConfirm.current({ walletName: "Biometria de teste", kind: "biometric", text }),
+    biometric: (text) => devConfirm.current({ walletName: tr("Biometria de teste", "Test biometrics"), kind: "biometric", text }),
     dev: { malicious, setMalicious },
   };
 
@@ -149,9 +155,9 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
         <div className="sheet-wrap" role="dialog" aria-modal="true" aria-label={tapReq.label}>
           <div className="sheet" style={{ alignItems: "stretch" }}>
             <div className="grab" style={{ alignSelf: "center" }} />
-            <div style={{ fontSize: 17, fontWeight: 600, textAlign: "center" }}>Continue com um toque</div>
+            <div style={{ fontSize: 17, fontWeight: 600, textAlign: "center" }}>{tr("Continue com um toque", "Tap to continue")}</div>
             <div className="muted" style={{ fontSize: 13, textAlign: "center", lineHeight: 1.5 }}>
-              O celular só deixa abrir a carteira ou a biometria logo depois de um toque seu.
+              {tr("O celular só deixa abrir a carteira ou a biometria logo depois de um toque seu.", "Your phone only opens the wallet or biometrics right after you tap.")}
             </div>
             <button
               type="button"
@@ -172,7 +178,7 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
                 setTapReq(null);
               }}
             >
-              Cancelar
+              {tr("Cancelar", "Cancel")}
             </button>
           </div>
         </div>
@@ -189,7 +195,7 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
 /** Janela da carteira de teste: imita a confirmação de uma carteira de verdade. */
 function DevWalletSheet({ req, onDone }: { req: ConfirmReq; onDone: (ok: boolean) => void }) {
   return (
-    <div className="sheet-wrap" role="dialog" aria-modal="true" aria-label={`${req.walletName}: confirmar assinatura`}>
+    <div className="sheet-wrap" role="dialog" aria-modal="true" aria-label={tr(`${req.walletName}: confirmar assinatura`, `${walletDisplay(req.walletName)}: confirm signature`)}>
       <div className="sheet" style={{ alignItems: "stretch" }}>
         <div className="grab" style={{ alignSelf: "center" }} />
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -197,9 +203,13 @@ function DevWalletSheet({ req, onDone }: { req: ConfirmReq; onDone: (ok: boolean
             <Icon name="lock" size={18} />
           </div>
           <div className="grow">
-            <div style={{ fontWeight: 600 }}>{req.walletName}</div>
+            <div style={{ fontWeight: 600 }}>{walletDisplay(req.walletName)}</div>
             <div className="muted" style={{ fontSize: 12 }}>
-              {req.kind === "message" ? "Pedido de assinatura de mensagem" : req.kind === "biometric" ? "Confirmação por biometria (digital, rosto)" : "Pedido de assinatura de transação"}
+              {req.kind === "message"
+                ? tr("Pedido de assinatura de mensagem", "Message signature request")
+                : req.kind === "biometric"
+                  ? tr("Confirmação por biometria (digital, rosto)", "Confirm with fingerprint or face")
+                  : tr("Pedido de assinatura de transação", "Transaction signature request")}
             </div>
           </div>
           <span className="pill">localnet</span>
@@ -207,14 +217,16 @@ function DevWalletSheet({ req, onDone }: { req: ConfirmReq; onDone: (ok: boolean
         <pre className="wallet-text">{req.text}</pre>
         <div style={{ display: "flex", gap: 12 }}>
           <button type="button" className="btn" style={{ flex: 1 }} onClick={() => onDone(false)}>
-            Recusar
+            {tr("Recusar", "Decline")}
           </button>
           <button type="button" className="btn primary" style={{ flex: 1 }} onClick={() => onDone(true)}>
-            {req.kind === "biometric" ? "Confirmar" : "Assinar"}
+            {req.kind === "biometric" ? tr("Confirmar", "Confirm") : tr("Assinar", "Sign")}
           </button>
         </div>
         <div className="subtle" style={{ fontSize: 11, textAlign: "center" }}>
-          {req.kind === "biometric" ? "Biometria de teste do ambiente local. No celular, é a digital ou o rosto do próprio aparelho." : "Carteira de teste do ambiente local. Com uma carteira de verdade, esta janela é a da própria carteira."}
+          {req.kind === "biometric"
+            ? tr("Biometria de teste do ambiente local. No celular, é a digital ou o rosto do próprio aparelho.", "Local test biometrics. On a phone, it's the device's own fingerprint or face.")
+            : tr("Carteira de teste do ambiente local. Com uma carteira de verdade, esta janela é a da própria carteira.", "Local test wallet. With a real wallet, this window is the wallet's own.")}
         </div>
       </div>
     </div>
@@ -229,10 +241,10 @@ function DevWalletSheet({ req, onDone }: { req: ConfirmReq; onDone: (ok: boolean
 export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: string) => void): Promise<Session & { created?: boolean }> {
   const publicKey = c.publicKey;
   const status = await api<{ enrolled: boolean; revoked: boolean }>("GET", `/v1/wallets/${publicKey}`, undefined, { auth: false });
-  if (status.revoked && !status.enrolled) throw new Error("Esta carteira foi substituída em uma conta e não volta a valer. Use outra carteira.");
+  if (status.revoked && !status.enrolled) throw new Error(tr("Esta carteira foi substituída em uma conta e não volta a valer. Use outra carteira.", "This wallet was replaced on an account and can't be used again. Use another wallet."));
   if (status.enrolled) {
     trace("login:desafio");
-    onStep(`Confirme a entrada na ${c.name}…`);
+    onStep(tr(`Confirme a entrada na ${c.name}…`, `Confirm sign-in in ${walletDisplay(c.name)}…`));
     const ch = await api("POST", "/v1/auth/challenge", { publicKey }, { auth: false });
     const signature = await c.signMessage(ch.message);
     const r = await api("POST", "/v1/auth/verify", { challengeId: ch.challengeId, publicKey, signature }, { auth: false });
@@ -242,20 +254,20 @@ export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: st
   }
   // Em localnet, a carteira de teste (ou a Phantom) recebe SOL de teste para pagar a criação.
   if (ctx.config.devTools && (await ctx.chain.getBalance(new PublicKey(publicKey))) < 10_000_000n) {
-    onStep("Pedindo SOL de teste para a sua carteira…");
+    onStep(tr("Pedindo SOL de teste para a sua carteira…", "Requesting test SOL for your wallet…"));
     await api("POST", "/v1/dev/airdrop", { address: publicKey, sol: 2 }, { auth: false });
   }
   // A chave do webapp nasce aqui, cifrada pela biometria deste aparelho; é um dos três votos.
-  onStep("Confirme a biometria: ela protege a chave do webapp neste aparelho…");
-  const key = await createWebappKey({ devTools: ctx.config.devTools, confirm: ctx.biometric, what: "Criar a chave do webapp" });
+  onStep(tr("Confirme a biometria: ela protege a chave do webapp neste aparelho…", "Confirm with fingerprint or face: it protects the webapp key on this device…"));
+  const key = await createWebappKey({ devTools: ctx.config.devTools, confirm: ctx.biometric, what: tr("Criar a chave do webapp", "Create the webapp key") });
   try {
-    onStep("Preparando sua conta 2 de 3…");
+    onStep(tr("Preparando sua conta 2 de 3…", "Preparing your 2-of-3 account…"));
     const p = await api("POST", "/v1/enrollment/prepare", { publicKey, webappPublicKey: key.publicKey.toBase58(), walletName: c.name }, { auth: false });
     const { transaction } = verifyEnrollmentTransaction(p.transaction, new PublicKey(publicKey), key.publicKey);
     transaction.addSignature(key.publicKey, key.sign(transaction.message.serialize()));
-    onStep(`Confirme na ${c.name}: criar a conta custa ~0,003 SOL, pagos pela sua carteira…`);
+    onStep(tr(`Confirme na ${c.name}: criar a conta custa ~0,003 SOL, pagos pela sua carteira…`, `Confirm in ${walletDisplay(c.name)}: creating the account costs ~0.003 SOL, paid by your wallet…`));
     const signed = await c.signTransaction(transaction);
-    onStep("Criando sua conta 2 de 3 na Solana…");
+    onStep(tr("Criando sua conta 2 de 3 na Solana…", "Creating your 2-of-3 account on Solana…"));
     const r = await api("POST", "/v1/enrollment/submit", { enrollmentId: p.enrollmentId, transaction: signed, keyBlob: { ...key.blob, deviceName: deviceName() } }, { auth: false });
     const s: Session = { token: r.token, accountId: r.account.id, walletName: c.name, publicKey, myRotations: [], via: "extension" };
     await ctx.setSession(s);
@@ -270,12 +282,12 @@ export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: st
  * pede ao serviço a cópia cifrada da chave do webapp, abre e assina a entrada.
  */
 export async function loginWithBiometrics(ctx: Ctx, onStep: (s: string) => void): Promise<Session> {
-  onStep("Confirme a biometria deste aparelho…");
+  onStep(tr("Confirme a biometria deste aparelho…", "Confirm with this device's fingerprint or face…"));
   let found: { accountId: string; publicKey: string; client: string } | null = null;
   const key = await unlockWebappKey(null, {
     devTools: ctx.config.devTools,
     confirm: ctx.biometric,
-    what: "Entrar com a biometria (sem a carteira)",
+    what: tr("Entrar com a biometria (sem a carteira)", "Sign in with biometrics (no wallet)"),
     lookup: async (credentialId) => {
       const r = await api("POST", "/v1/webapp-keys/lookup", { credentialId }, { auth: false });
       found = r;
@@ -303,16 +315,23 @@ export async function accountKeyBlobs(path: string, auth = true): Promise<{ publ
 
 /** Abre a chave do webapp desta conta com a biometria, para uma assinatura. */
 export async function unlockAccountKey(ctx: Ctx, keys: { publicKey: string; blob: WebappKeyBlob }[], what: string): Promise<UnlockedKey> {
-  if (!keys.length) throw new Error("Esta conta não tem a chave do webapp guardada.");
+  if (!keys.length) throw new Error(tr("Esta conta não tem a chave do webapp guardada.", "This account has no stored webapp key."));
   return unlockWebappKey(keys, { devTools: ctx.config.devTools, confirm: ctx.biometric, what });
 }
 
 export function errorText(e: unknown): string {
   if (e instanceof ApiError) return e.message;
   const m = (e as Error)?.message ?? String(e);
-  if (/User rejected|rejected the request|recusad/i.test(m)) return "Assinatura recusada na carteira.";
-  if (/insufficient|Attempt to debit an account but found no record/i.test(m)) return "Sua carteira não tem SOL suficiente para a taxa.";
-  if (/NotAllowedError|The operation either timed out or was not allowed|biometria recusada/i.test(m)) return "Biometria cancelada.";
+  if (/NotAllowedError|The operation either timed out or was not allowed|biometria recusada/i.test(m)) return tr("Biometria cancelada.", "Biometrics canceled.");
+  if (/User rejected|rejected the request|recusad/i.test(m)) return tr("Assinatura recusada na carteira.", "Signature declined in the wallet.");
+  if (/insufficient|Attempt to debit an account but found no record/i.test(m)) return tr("Sua carteira não tem SOL suficiente para a taxa.", "Your wallet doesn't have enough SOL for the fee.");
+  // Erros de segurança gerados no próprio webapp ("[CÓDIGO] mensagem"): sem o código e, em inglês, pelo mapa.
+  const code = (e as { code?: unknown })?.code;
+  if (typeof code === "string" && /^[A-Z0-9_]+$/.test(code)) {
+    const pt = m.replace(/^\[[A-Z0-9_]+\]\s*/, "");
+    const text = (lang === "en" && errorEn(code, pt)) || pt;
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
   return m;
 }
 

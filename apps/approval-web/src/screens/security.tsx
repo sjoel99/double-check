@@ -5,11 +5,12 @@ import { emailBindingMessage, emailInput, reviewSecurityRequest, verifyAuthorize
 import { accountKeyBlobs, errorText, unlockAccountKey, useApp } from "../app";
 import { api } from "../lib/api";
 import { now, short } from "../lib/chain";
-import type { ConnectedWallet, StandardWallet } from "../lib/wallets";
+import { type ConnectedWallet, type StandardWallet, walletDisplay } from "../lib/wallets";
 import { createWebappKey, deviceName, signatureB58 } from "../lib/webappKey";
 import { Icon } from "../icons";
 import { IntentRow, Tabs, useAccount } from "./home";
 import { WalletList } from "./welcome";
+import { fmtWhen, lang, tr } from "../lib/i18n";
 
 /** `back={null}`: tela de aba (a barra de abas já navega). */
 function TopBar({ title, back = "/" }: { title: string; back?: string | null }) {
@@ -17,7 +18,7 @@ function TopBar({ title, back = "/" }: { title: string; back?: string | null }) 
   return (
     <div className="topbar">
       {back !== null && (
-        <button type="button" className="iconbtn" aria-label="Voltar" onClick={() => go(back)}>
+        <button type="button" className="iconbtn" aria-label={tr("Voltar", "Back")} onClick={() => go(back)}>
           <Icon name="back" />
         </button>
       )}
@@ -37,8 +38,8 @@ export type ChangeView = {
   executeAfter: number | null;
 };
 
-const ROLE_NAME: Record<ChangeView["role"], string> = { CLIENT: "carteira", WEBAPP: "chave do webapp", SERVER: "chave do serviço" };
-const when = (t: number) => new Date(t * 1000).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+const ROLE_NAME: Record<ChangeView["role"], string> = { CLIENT: tr("carteira", "wallet"), WEBAPP: tr("chave do webapp", "webapp key"), SERVER: tr("chave do serviço", "service key") };
+const when = (t: number) => fmtWhen(t);
 const fromB64 = (b: string) => VersionedTransaction.deserialize(Uint8Array.from(atob(b), (c) => c.charCodeAt(0)));
 
 /** Trocas de chave da conta. */
@@ -88,7 +89,7 @@ function Countdown({ until }: { until: number }) {
     return () => clearInterval(i);
   }, []);
   const left = Math.max(0, until - t);
-  return <span className="mono">{left === 0 ? "agora" : `${Math.floor(left / 3600)} h ${String(Math.floor((left % 3600) / 60)).padStart(2, "0")} min`}</span>;
+  return <span className="mono">{left === 0 ? tr("agora", "now") : `${Math.floor(left / 3600)} h ${String(Math.floor((left % 3600) / 60)).padStart(2, "0")} min`}</span>;
 }
 
 /**
@@ -110,13 +111,13 @@ export function PendingChange({ c, onDone }: { c: ChangeView; onDone: () => void
       let publicKey: string;
       let signature: string;
       if (c.role === "CLIENT") {
-        setBusy("Assine o veto na carteira atual…");
+        setBusy(tr("Assine o veto na carteira atual…", "Sign the veto in your current wallet…"));
         const w = await ctx.accountWallet();
         publicKey = w.publicKey;
         signature = await w.signMessage(text);
       } else {
-        setBusy("Confirme com a biometria para vetar…");
-        const key = await unlockAccountKey(ctx, await accountKeyBlobs(`/v1/accounts/${ctx.session!.accountId}/webapp-keys`), "Não fui eu: cancelar a troca de chave");
+        setBusy(tr("Confirme com a biometria para vetar…", "Confirm with biometrics to veto…"));
+        const key = await unlockAccountKey(ctx, await accountKeyBlobs(`/v1/accounts/${ctx.session!.accountId}/webapp-keys`), tr("Não fui eu: cancelar a troca de chave", "It wasn't me: cancel the key change"));
         try {
           publicKey = key.publicKey.toBase58();
           signature = signatureB58(key.sign(new TextEncoder().encode(text)));
@@ -125,7 +126,7 @@ export function PendingChange({ c, onDone }: { c: ChangeView; onDone: () => void
         }
       }
       await api("POST", `/v1/security-changes/${c.id}/veto`, { publicKey, signature }, { auth: false });
-      ctx.toast("Troca cancelada.");
+      ctx.toast(tr("Troca cancelada.", "Change cancelled."));
       onDone();
     } catch (e) {
       setErr(errorText(e));
@@ -137,18 +138,18 @@ export function PendingChange({ c, onDone }: { c: ChangeView; onDone: () => void
   const execute = async (payerWallet?: ConnectedWallet) => {
     setErr(null);
     try {
-      setBusy("Preparando a execução…");
+      setBusy(tr("Preparando a execução…", "Preparing to execute…"));
       const r = await api<{ transaction: string; payer: string }>("POST", `/v1/security-changes/${c.id}/execute-prepare`, {});
       const w = payerWallet ?? (c.role === "CLIENT" ? null : await ctx.accountWallet());
       if (!w || w.publicKey !== r.payer) {
         setPickPayer(true);
-        throw new Error(`Quem paga a conclusão é a carteira ${short(r.payer)}: conecte essa carteira abaixo.`);
+        throw new Error(tr(`Quem paga a conclusão é a carteira ${short(r.payer)}: conecte essa carteira abaixo.`, `The wallet ${short(r.payer)} pays to complete this: connect that wallet below.`));
       }
-      setBusy(`Confirme na ${w.name} (ela paga a taxa)…`);
+      setBusy(tr(`Confirme na ${w.name} (ela paga a taxa)…`, `Confirm in ${walletDisplay(w.name)} (it pays the fee)…`));
       const signed = await w.signTransaction(fromB64(r.transaction));
-      setBusy("Executando na Solana…");
+      setBusy(tr("Executando na Solana…", "Executing on Solana…"));
       await api("POST", `/v1/security-changes/${c.id}/execute`, { transaction: signed });
-      ctx.toast("Troca concluída.");
+      ctx.toast(tr("Troca concluída.", "Change complete."));
       if (c.role === "CLIENT") {
         await ctx.setSession(null);
         ctx.go("/");
@@ -165,25 +166,29 @@ export function PendingChange({ c, onDone }: { c: ChangeView; onDone: () => void
   return (
     <div className="card" style={{ gap: 10, borderColor: "#5a4a1a" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--warn)", fontSize: 12, fontWeight: 600, letterSpacing: "0.1em", textTransform: "uppercase" }}>
-        <Icon name="clock" size={14} color="#F2B33D" /> Troca de chave pendente
+        <Icon name="clock" size={14} color="#F2B33D" /> {tr("Troca de chave pendente", "Pending key change")}
       </div>
       <div style={{ fontSize: 15, lineHeight: 1.45 }}>
-        Trocar a <b>{ROLE_NAME[c.role]}</b> <span className="mono">{short(c.oldKey)}</span> → <span className="mono">{short(c.newKey)}</span>
+        {tr("Trocar a", "Replace the")} <b>{ROLE_NAME[c.role]}</b> <span className="mono">{short(c.oldKey)}</span> → <span className="mono">{short(c.newKey)}</span>
       </div>
       <div className="muted" style={{ fontSize: 13 }}>
-        {due ? "O prazo passou: pode concluir." : (
+        {due ? tr("O prazo passou: pode concluir.", "The wait is over: you can complete it.") : lang === "pt" ? (
           <>
             Executa em <Countdown until={c.executeAfter!} /> ({when(c.executeAfter!)}). Não foi você? Vete.
+          </>
+        ) : (
+          <>
+            Runs in <Countdown until={c.executeAfter!} /> ({when(c.executeAfter!)}). Wasn't you? Veto it.
           </>
         )}
       </div>
       <div style={{ display: "flex", gap: 10 }}>
         <button type="button" className="btn" style={{ flex: 1 }} disabled={Boolean(busy)} onClick={veto}>
-          Não fui eu
+          {tr("Não fui eu", "It wasn't me")}
         </button>
         {due && (
           <button type="button" className="btn primary" style={{ flex: 1 }} disabled={Boolean(busy)} onClick={() => execute()}>
-            Concluir troca
+            {tr("Concluir troca", "Complete change")}
           </button>
         )}
       </div>
@@ -231,18 +236,18 @@ function AlertEmail() {
   const start = async () => {
     setErr(null);
     const e = emailInput(email);
-    if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(e)) return setErr("E-mail inválido.");
+    if (!/^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(e)) return setErr(tr("E-mail inválido.", "Invalid email."));
     try {
-      setBusy("Confirme com a biometria…");
+      setBusy(tr("Confirme com a biometria…", "Confirm with biometrics…"));
       const sec = await api("GET", `/v1/accounts/${accountId}/security`);
-      const key = await unlockAccountKey(ctx, await accountKeyBlobs(`/v1/accounts/${accountId}/webapp-keys`), `Enviar os alertas da conta para ${e}`);
+      const key = await unlockAccountKey(ctx, await accountKeyBlobs(`/v1/accounts/${accountId}/webapp-keys`), tr(`Enviar os alertas da conta para ${e}`, `Send account alerts to ${e}`));
       let signature: string;
       try {
         signature = signatureB58(key.sign(new TextEncoder().encode(emailBindingMessage(sec.account.multisig, e))));
       } finally {
         key.wipe();
       }
-      setBusy("Enviando o código…");
+      setBusy(tr("Enviando o código…", "Sending the code…"));
       const r = await api("POST", `/v1/accounts/${accountId}/email/start`, { email: e, signature });
       setSent({ challengeId: r.challengeId, email: r.email });
       setCode("");
@@ -256,9 +261,9 @@ function AlertEmail() {
   const confirm = async () => {
     setErr(null);
     try {
-      setBusy("Confirmando…");
+      setBusy(tr("Confirmando…", "Confirming…"));
       const r = await api("POST", `/v1/accounts/${accountId}/email/confirm`, { challengeId: sent!.challengeId, code: code.trim() });
-      ctx.toast(`Alertas vão para ${r.email}.`);
+      ctx.toast(tr(`Alertas vão para ${r.email}.`, `Alerts go to ${r.email}.`));
       setSent(null);
       setEditing(false);
       setEmail("");
@@ -276,44 +281,44 @@ function AlertEmail() {
     <div className="card">
       <div className="row-between">
         <div className="muted" style={{ fontSize: 13 }}>
-          E-mail de alerta
+          {tr("E-mail de alerta", "Alert email")}
         </div>
-        {current === undefined ? <span className="spinner" /> : current ? <span className="pill">Confirmado</span> : <span className="pill danger">Sem alerta</span>}
+        {current === undefined ? <span className="spinner" /> : current ? <span className="pill">{tr("Confirmado", "Confirmed")}</span> : <span className="pill danger">{tr("Sem alerta", "No alerts")}</span>}
       </div>
       {!editing && (
         <>
           <div className="mono" style={{ fontSize: 15 }}>
-            {current ?? "Nenhum"}
+            {current ?? tr("Nenhum", "None")}
           </div>
-          <div style={{ fontSize: 13, color: "#b4bac4", lineHeight: 1.45 }}>Avisa pedidos de troca de chave (a tempo do "Não fui eu"), trocas concluídas e envios.</div>
+          <div style={{ fontSize: 13, color: "#b4bac4", lineHeight: 1.45 }}>{tr('Avisa pedidos de troca de chave (a tempo do "Não fui eu"), trocas concluídas e envios.', 'Warns you about key change requests (in time for "It wasn\'t me"), completed changes and sends.')}</div>
           <button type="button" className="btn" style={{ height: 44 }} onClick={() => setEditing(true)}>
-            <Icon name="finger" size={16} /> {current ? "Trocar o e-mail" : "Cadastrar e-mail"}
+            <Icon name="finger" size={16} /> {current ? tr("Trocar o e-mail", "Change email") : tr("Cadastrar e-mail", "Add email")}
           </button>
         </>
       )}
       {editing && !sent && (
         <>
           <div className="field">
-            <label htmlFor="alert-email">E-mail</label>
-            <input id="alert-email" className="input" type="email" inputMode="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="voce@exemplo.com" />
+            <label htmlFor="alert-email">{tr("E-mail", "Email")}</label>
+            <input id="alert-email" className="input" type="email" inputMode="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={tr("voce@exemplo.com", "you@example.com")} />
           </div>
           <button type="button" className="btn primary" style={{ height: 44 }} disabled={!!busy || !email} onClick={start}>
-            {busy ?? "Confirmar com a biometria e enviar código"}
+            {busy ?? tr("Confirmar com a biometria e enviar código", "Confirm with biometrics and send code")}
           </button>
           <button type="button" className="linkbtn" onClick={() => (setEditing(false), setErr(null))}>
-            Cancelar
+            {tr("Cancelar", "Cancel")}
           </button>
         </>
       )}
       {sent && (
         <>
-          <div style={{ fontSize: 13, color: "#b4bac4" }}>Enviamos um código de 6 dígitos para {sent.email}. Vale por 10 minutos.</div>
+          <div style={{ fontSize: 13, color: "#b4bac4" }}>{tr(`Enviamos um código de 6 dígitos para ${sent.email}. Vale por 10 minutos.`, `We sent a 6-digit code to ${sent.email}. It's valid for 10 minutes.`)}</div>
           <div className="field">
-            <label htmlFor="alert-code">Código</label>
+            <label htmlFor="alert-code">{tr("Código", "Code")}</label>
             <input id="alert-code" className="input mono" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} placeholder="000000" />
           </div>
           <button type="button" className="btn primary" style={{ height: 44 }} disabled={!!busy || code.length !== 6} onClick={confirm}>
-            {busy ?? "Confirmar"}
+            {busy ?? tr("Confirmar", "Confirm")}
           </button>
         </>
       )}
@@ -334,20 +339,20 @@ export function Security() {
   const roles = acc?.account.roles as unknown as { client: string; webapp: string; server: string; operator: string } | undefined;
   const label = (k: string) =>
     k === roles?.client
-      ? { icon: "key", title: "Sua carteira", sub: "vota e paga", role: "Vota", accent: true }
+      ? { icon: "key", title: tr("Sua carteira", "Your wallet"), sub: tr("vota e paga", "votes and pays"), role: tr("Vota", "Votes"), accent: true }
       : k === roles?.webapp
-        ? { icon: "finger", title: "Chave do webapp", sub: "aberta pela biometria", role: "Vota", accent: true }
+        ? { icon: "finger", title: tr("Chave do webapp", "Webapp key"), sub: tr("aberta pela biometria", "unlocked by biometrics"), role: tr("Vota", "Votes"), accent: true }
         : k === roles?.server
-          ? { icon: "server", title: "Chave do serviço", sub: "só em recuperação, com prazo", role: "Vota", accent: false }
+          ? { icon: "server", title: tr("Chave do serviço", "Service key"), sub: tr("só em recuperação, com prazo", "recovery only, with a wait"), role: tr("Vota", "Votes"), accent: false }
           : k === roles?.operator
-            ? { icon: "bolt", title: "Operador do serviço", sub: "não vota", role: "Executa", accent: false }
-            : { icon: "shieldalert", title: "Chave desconhecida", sub: "não esperada", role: "?", accent: false };
+            ? { icon: "bolt", title: tr("Operador do serviço", "Service operator"), sub: tr("não vota", "doesn't vote"), role: tr("Executa", "Executes"), accent: false }
+            : { icon: "shieldalert", title: tr("Chave desconhecida", "Unknown key"), sub: tr("não esperada", "not expected"), role: "?", accent: false };
   const order = (k: string) => [roles?.client, roles?.webapp, roles?.server, roles?.operator].indexOf(k) + 1 || 9;
   const open = changes.some((c) => c.status === "PENDING");
 
   return (
     <>
-      <TopBar title="Segurança" back={null} />
+      <TopBar title={tr("Segurança", "Security")} back={null} />
       <div className="page">
         {pending.map((c) => (
           <PendingChange key={c.id} c={c} onDone={reload} />
@@ -355,20 +360,23 @@ export function Security() {
         <div className="card">
           <div className="row-between">
             <div className="muted" style={{ fontSize: 13 }}>
-              Modo
+              {tr("Modo", "Mode")}
             </div>
-            {state ? ok ? <span className="pill">Conferido na Solana</span> : <span className="pill danger">Diferente do esperado</span> : <span className="spinner" />}
+            {state ? ok ? <span className="pill">{tr("Conferido na Solana", "Verified on Solana")}</span> : <span className="pill danger">{tr("Diferente do esperado", "Not as expected")}</span> : <span className="spinner" />}
           </div>
           <div className="big" style={{ fontSize: 34 }}>
-            2 de 3
+            {tr("2 de 3", "2 of 3")}
           </div>
           <div style={{ fontSize: 13, color: "#b4bac4", lineHeight: 1.45 }}>
-            Envios: sua carteira + a chave do webapp (biometria), e só o operador do serviço executa, depois de conferir a política. Trocar qualquer chave leva 72 h e pode ser vetado.
+            {tr(
+              "Envios: sua carteira + a chave do webapp (biometria), e só o operador do serviço executa, depois de conferir a política. Trocar qualquer chave leva 72 h e pode ser vetado.",
+              "Sends: your wallet + the webapp key (biometrics), and only the service operator executes, after checking the policy. Changing any key takes 72 h and can be vetoed.",
+            )}
           </div>
         </div>
         <div>
           <div className="section-title" style={{ paddingBottom: 4 }}>
-            Chaves da conta
+            {tr("Chaves da conta", "Account keys")}
           </div>
           {[...(state?.members ?? [])]
             .sort((a, b) => order(a.key) - order(b.key))
@@ -393,14 +401,14 @@ export function Security() {
         <AlertEmail />
         {devices.length > 0 && (
           <div className="subtle" style={{ fontSize: 12 }}>
-            Chave do webapp guardada para: {devices.map((d) => d.deviceName).join(", ")}
+            {tr("Chave do webapp guardada para:", "Webapp key stored for:")} {devices.map((d) => d.deviceName).join(", ")}
           </div>
         )}
         <button type="button" className="btn" style={{ height: 52 }} disabled={open} onClick={() => ctx.go("/change/client")}>
-          <Icon name="key" size={18} /> Trocar a carteira
+          <Icon name="key" size={18} /> {tr("Trocar a carteira", "Replace the wallet")}
         </button>
         <button type="button" className="btn" style={{ height: 52 }} disabled={open || ctx.session?.via === "webapp"} onClick={() => ctx.go("/change/webapp")}>
-          <Icon name="finger" size={18} /> Recuperar o webapp neste aparelho
+          <Icon name="finger" size={18} /> {tr("Recuperar o webapp neste aparelho", "Recover the webapp on this device")}
         </button>
         <button
           type="button"
@@ -411,7 +419,7 @@ export function Security() {
             ctx.go("/");
           }}
         >
-          Sair
+          {tr("Sair", "Sign out")}
         </button>
       </div>
       <Tabs />
@@ -440,15 +448,15 @@ export function ChangeClient() {
   const pick = async (w: StandardWallet) => {
     setErr(null);
     try {
-      setBusy(`Conectando à ${w.name}…`);
+      setBusy(tr(`Conectando à ${w.name}…`, `Connecting to ${walletDisplay(w.name)}…`));
       const next = await ctx.connect(w);
-      if (next.publicKey === s.publicKey) throw new Error("Essa é a carteira atual da conta. Na carteira, mude para a conta nova (ou use outra carteira).");
+      if (next.publicKey === s.publicKey) throw new Error(tr("Essa é a carteira atual da conta. Na carteira, mude para a conta nova (ou use outra carteira).", "That's the account's current wallet. In the wallet, switch to the new account (or use another wallet)."));
       const info = await accountInfo(s.accountId);
-      setBusy("Preparando o pedido…");
+      setBusy(tr("Preparando o pedido…", "Preparing the request…"));
       const r = await api<{ change: ChangeView; desc: SecurityChangeDesc; transaction: string }>("POST", `/v1/accounts/${s.accountId}/security-changes`, { role: "CLIENT", newKey: next.publicKey });
       const review = await reviewSecurityRequest(ctx.chain, r.desc, r.transaction, { client: new PublicKey(info.client), webapp: new PublicKey(info.webapp) });
-      setBusy("Confirme com a biometria (a chave do webapp vota o pedido)…");
-      const key = await unlockAccountKey(ctx, await accountKeyBlobs(`/v1/accounts/${s.accountId}/webapp-keys`), `Trocar a carteira por ${short(next.publicKey)} (executa em 72 h)`);
+      setBusy(tr("Confirme com a biometria (a chave do webapp vota o pedido)…", "Confirm with biometrics (the webapp key votes on the request)…"));
+      const key = await unlockAccountKey(ctx, await accountKeyBlobs(`/v1/accounts/${s.accountId}/webapp-keys`), tr(`Trocar a carteira por ${short(next.publicKey)} (executa em 72 h)`, `Replace the wallet with ${short(next.publicKey)} (runs in 72 h)`));
       let webappSignature: string;
       try {
         webappSignature = signatureB58(key.sign(review.message));
@@ -457,7 +465,7 @@ export function ChangeClient() {
       }
       const auth = await api<{ transaction: string }>("POST", `/v1/security-changes/${r.change.id}/authorize`, { message: Buffer.from(review.message).toString("base64"), webappSignature });
       const tx = verifyAuthorized(review, auth.transaction, [review.roles.operator, review.roles.webapp, review.roles.server]);
-      setBusy(`Confirme na ${next.name} (a carteira nova paga ~0,006 SOL, que voltam na conclusão)…`);
+      setBusy(tr(`Confirme na ${next.name} (a carteira nova paga ~0,006 SOL, que voltam na conclusão)…`, `Confirm in ${walletDisplay(next.name)} (the new wallet pays ~0.006 SOL, returned when the change completes)…`));
       const signed = await next.signTransaction(tx);
       setDone(await api<ChangeView>("POST", `/v1/security-changes/${r.change.id}/submit`, { transaction: signed }));
     } catch (e) {
@@ -469,21 +477,33 @@ export function ChangeClient() {
 
   return (
     <>
-      <TopBar title="Trocar a carteira" back="/security" />
+      <TopBar title={tr("Trocar a carteira", "Replace the wallet")} back="/security" />
       <div className="page">
         {done ? (
           <div className="banner ok">
             <Icon name="check" size={18} color="var(--accent)" />
-            <div>
-              Pedido feito. A carteira nova passa a valer em <b>{when(done.executeAfter!)}</b>, se a atual não vetar. Depois disso, toque em "Concluir troca" em Segurança.
-            </div>
+            {lang === "pt" ? (
+              <div>
+                Pedido feito. A carteira nova passa a valer em <b>{when(done.executeAfter!)}</b>, se a atual não vetar. Depois disso, toque em "Concluir troca" em Segurança.
+              </div>
+            ) : (
+              <div>
+                Request made. The new wallet takes effect on <b>{when(done.executeAfter!)}</b>, unless the current one vetoes. After that, tap "Complete change" in Security.
+              </div>
+            )}
           </div>
         ) : (
           <>
-            <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
-              A chave do webapp (com a sua biometria) e o serviço aprovam o pedido. A carteira nova paga a taxa e o depósito das contas (~0,006 SOL, que voltam). A troca só executa em <b>72 h</b>: se alguém pedir no seu lugar, a carteira atual veta.
-            </div>
-            <div className="section-title">Conecte a carteira NOVA</div>
+            {lang === "pt" ? (
+              <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
+                A chave do webapp (com a sua biometria) e o serviço aprovam o pedido. A carteira nova paga a taxa e o depósito das contas (~0,006 SOL, que voltam). A troca só executa em <b>72 h</b>: se alguém pedir no seu lugar, a carteira atual veta.
+              </div>
+            ) : (
+              <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
+                The webapp key (with your biometrics) and the service approve the request. The new wallet pays the fee and the account deposit (~0.006 SOL, returned). The change only runs after <b>72 h</b>: if someone else asks in your place, the current wallet vetoes it.
+              </div>
+            )}
+            <div className="section-title">{tr("Conecte a carteira NOVA", "Connect the NEW wallet")}</div>
             <WalletList onPick={pick} busy={Boolean(busy)} exclude={s.walletName} />
           </>
         )}
@@ -515,10 +535,10 @@ export function ChangeWebapp() {
     try {
       const w = await ctx.accountWallet();
       const info = await accountInfo(s.accountId);
-      setBusy("Confirme a biometria deste aparelho (ela protege a chave nova)…");
-      const key = await createWebappKey({ devTools: ctx.config.devTools, confirm: ctx.biometric, what: "Criar a chave nova do webapp" });
+      setBusy(tr("Confirme a biometria deste aparelho (ela protege a chave nova)…", "Confirm biometrics on this device (it protects the new key)…"));
+      const key = await createWebappKey({ devTools: ctx.config.devTools, confirm: ctx.biometric, what: tr("Criar a chave nova do webapp", "Create the new webapp key") });
       try {
-        setBusy("Preparando o pedido…");
+        setBusy(tr("Preparando o pedido…", "Preparing the request…"));
         const r = await api<{ change: ChangeView; desc: SecurityChangeDesc; transaction: string }>("POST", `/v1/accounts/${s.accountId}/security-changes`, {
           role: "WEBAPP",
           newKey: key.publicKey.toBase58(),
@@ -528,7 +548,7 @@ export function ChangeWebapp() {
         const auth = await api<{ transaction: string }>("POST", `/v1/security-changes/${r.change.id}/authorize`, { message: Buffer.from(review.message).toString("base64") });
         const tx = verifyAuthorized(review, auth.transaction, [review.roles.operator, review.roles.server]);
         tx.addSignature(key.publicKey, key.sign(tx.message.serialize())); // a chave nova prova que existe (memo)
-        setBusy(`Confirme na ${w.name} (ela vota e paga)…`);
+        setBusy(tr(`Confirme na ${w.name} (ela vota e paga)…`, `Confirm in ${walletDisplay(w.name)} (it votes and pays)…`));
         const signed = await w.signTransaction(tx);
         setDone(await api<ChangeView>("POST", `/v1/security-changes/${r.change.id}/submit`, { transaction: signed }));
       } finally {
@@ -543,22 +563,34 @@ export function ChangeWebapp() {
 
   return (
     <>
-      <TopBar title="Recuperar o webapp" back="/security" />
+      <TopBar title={tr("Recuperar o webapp", "Recover the webapp")} back="/security" />
       <div className="page">
         {done ? (
           <div className="banner ok">
             <Icon name="check" size={18} color="var(--accent)" />
-            <div>
-              Pedido feito. A chave nova (neste aparelho) passa a valer em <b>{when(done.executeAfter!)}</b>, se a antiga não vetar. Depois, toque em "Concluir troca" em Segurança.
-            </div>
+            {lang === "pt" ? (
+              <div>
+                Pedido feito. A chave nova (neste aparelho) passa a valer em <b>{when(done.executeAfter!)}</b>, se a antiga não vetar. Depois, toque em "Concluir troca" em Segurança.
+              </div>
+            ) : (
+              <div>
+                Request made. The new key (on this device) takes effect on <b>{when(done.executeAfter!)}</b>, unless the old one vetoes. Then tap "Complete change" in Security.
+              </div>
+            )}
           </div>
         ) : (
           <>
-            <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
-              Use quando perder o aparelho com a chave do webapp. Uma chave nova nasce aqui, protegida pela sua biometria. A sua carteira e o serviço aprovam; a troca só executa em <b>72 h</b>. Se alguém com a sua carteira tentar isso, a chave atual do webapp veta.
-            </div>
+            {lang === "pt" ? (
+              <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
+                Use quando perder o aparelho com a chave do webapp. Uma chave nova nasce aqui, protegida pela sua biometria. A sua carteira e o serviço aprovam; a troca só executa em <b>72 h</b>. Se alguém com a sua carteira tentar isso, a chave atual do webapp veta.
+              </div>
+            ) : (
+              <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
+                Use this if you lose the device with the webapp key. A new key is created here, protected by your biometrics. Your wallet and the service approve; the change only runs after <b>72 h</b>. If someone with your wallet tries this, the current webapp key vetoes it.
+              </div>
+            )}
             <button type="button" className="btn primary" disabled={Boolean(busy)} onClick={run}>
-              <Icon name="finger" color="#0B0D10" sw={2} /> Criar a chave nova aqui e pedir a troca
+              <Icon name="finger" color="#0B0D10" sw={2} /> {tr("Criar a chave nova aqui e pedir a troca", "Create the new key here and request the change")}
             </button>
           </>
         )}
@@ -577,34 +609,34 @@ export function ChangeWebapp() {
 
 /** Eventos da auditoria em português (o código fica no registro, para quem conferir a cadeia). */
 const AUDIT_LABEL: Record<string, string> = {
-  SMART_ACCOUNT_CREATED: "Conta 2 de 3 criada na Solana",
-  TRANSACTION_PROPOSED: "Envio criado",
-  TRANSACTION_POLICY_DENIED: "Envio recusado pela política",
-  CLIENT_APPROVED: "Você assinou na carteira",
-  CLIENT_REJECTED: "Você cancelou um envio",
-  SERVER_APPROVED: "Biometria conferida; o serviço assinou",
-  SERVER_REJECTED: "O serviço recusou",
-  TRANSACTION_APPROVED: "Envio aprovado",
-  TRANSACTION_EXECUTED: "Envio executado na Solana",
-  TRANSACTION_REJECTED: "Envio cancelado",
-  TRANSACTION_EXPIRED: "Envio expirou (prazo de 10 min)",
-  TRANSACTION_CANCELLED: "Envio cancelado",
-  EXECUTION_FAILED: "Execução falhou",
-  APPROVAL_REFUSED: "Tentativa de envio não aceita",
-  ALERT_EMAIL_CHANGED: "E-mail de alerta alterado",
-  SECURITY_CHANGE_REQUESTED: "Pedido de troca de chave (72 h)",
-  SECURITY_CHANGE_VETOED: "Troca de chave vetada (\"Não fui eu\")",
-  SECURITY_CHANGE_EXECUTED: "Troca de chave concluída",
-  PASSKEY_ADDED: "Biometria de outro aparelho adicionada",
-  INVARIANT_VIOLATION: "Conta diferente do esperado na Solana",
-  CLIENT_KEY_ROTATION_REQUESTED: "Pedido de troca da carteira",
-  SERVER_KEY_ROTATION_REQUESTED: "Pedido de troca da chave do serviço",
-  ROTATION_COMPLETED: "Troca de chave concluída",
-  ROTATION_REJECTED: "Troca de chave recusada",
-  ROTATION_EXPIRED: "Troca de chave expirou",
-  ROTATION_FAILED: "Troca de chave falhou",
-  OPERATIONS_FROZEN: "Envios pausados",
-  OPERATIONS_UNFROZEN: "Envios liberados",
+  SMART_ACCOUNT_CREATED: tr("Conta 2 de 3 criada na Solana", "2-of-3 account created on Solana"),
+  TRANSACTION_PROPOSED: tr("Envio criado", "Send created"),
+  TRANSACTION_POLICY_DENIED: tr("Envio recusado pela política", "Send denied by policy"),
+  CLIENT_APPROVED: tr("Você assinou na carteira", "You signed in your wallet"),
+  CLIENT_REJECTED: tr("Você cancelou um envio", "You cancelled a send"),
+  SERVER_APPROVED: tr("Biometria conferida; o serviço assinou", "Biometrics checked; the service signed"),
+  SERVER_REJECTED: tr("O serviço recusou", "The service refused"),
+  TRANSACTION_APPROVED: tr("Envio aprovado", "Send approved"),
+  TRANSACTION_EXECUTED: tr("Envio executado na Solana", "Send executed on Solana"),
+  TRANSACTION_REJECTED: tr("Envio cancelado", "Send cancelled"),
+  TRANSACTION_EXPIRED: tr("Envio expirou (prazo de 10 min)", "Send expired (10 min limit)"),
+  TRANSACTION_CANCELLED: tr("Envio cancelado", "Send cancelled"),
+  EXECUTION_FAILED: tr("Execução falhou", "Execution failed"),
+  APPROVAL_REFUSED: tr("Tentativa de envio não aceita", "Send attempt not accepted"),
+  ALERT_EMAIL_CHANGED: tr("E-mail de alerta alterado", "Alert email changed"),
+  SECURITY_CHANGE_REQUESTED: tr("Pedido de troca de chave (72 h)", "Key change requested (72 h)"),
+  SECURITY_CHANGE_VETOED: tr("Troca de chave vetada (\"Não fui eu\")", "Key change vetoed (\"It wasn't me\")"),
+  SECURITY_CHANGE_EXECUTED: tr("Troca de chave concluída", "Key change completed"),
+  PASSKEY_ADDED: tr("Biometria de outro aparelho adicionada", "Biometrics from another device added"),
+  INVARIANT_VIOLATION: tr("Conta diferente do esperado na Solana", "Account on Solana is not as expected"),
+  CLIENT_KEY_ROTATION_REQUESTED: tr("Pedido de troca da carteira", "Wallet change requested"),
+  SERVER_KEY_ROTATION_REQUESTED: tr("Pedido de troca da chave do serviço", "Service key change requested"),
+  ROTATION_COMPLETED: tr("Troca de chave concluída", "Key change completed"),
+  ROTATION_REJECTED: tr("Troca de chave recusada", "Key change refused"),
+  ROTATION_EXPIRED: tr("Troca de chave expirou", "Key change expired"),
+  ROTATION_FAILED: tr("Troca de chave falhou", "Key change failed"),
+  OPERATIONS_FROZEN: tr("Envios pausados", "Sends paused"),
+  OPERATIONS_UNFROZEN: tr("Envios liberados", "Sends resumed"),
 };
 const AUDIT_ALERT = new Set(["INVARIANT_VIOLATION", "SECURITY_CHANGE_REQUESTED", "ALERT_EMAIL_CHANGED", "TRANSACTION_POLICY_DENIED", "APPROVAL_REFUSED", "EXECUTION_FAILED"]);
 
@@ -619,21 +651,24 @@ export function Activity() {
   return (
     <>
       <div className="topbar">
-        <h1>Atividade</h1>
+        <h1>{tr("Atividade", "Activity")}</h1>
       </div>
       <div className="page">
         <div>
-          {intents.length === 0 && <div className="subtle" style={{ fontSize: 13 }}>Nenhuma transação ainda.</div>}
+          {intents.length === 0 && <div className="subtle" style={{ fontSize: 13 }}>{tr("Nenhuma transação ainda.", "No transactions yet.")}</div>}
           {intents.map((i) => (
             <IntentRow key={i.intent.id} i={i} />
           ))}
         </div>
         <div>
           <div className="section-title" style={{ paddingBottom: 6 }}>
-            Histórico da conta
+            {tr("Histórico da conta", "Account history")}
           </div>
           <div className="subtle" style={{ fontSize: 12, paddingBottom: 6 }}>
-            Tudo o que aconteceu na conta, na ordem. O registro só aceita inclusões e é encadeado: apagar ou editar um evento quebra a cadeia.
+            {tr(
+              "Tudo o que aconteceu na conta, na ordem. O registro só aceita inclusões e é encadeado: apagar ou editar um evento quebra a cadeia.",
+              "Everything that happened on the account, in order. The log is append-only and chained: deleting or editing an event breaks the chain.",
+            )}
           </div>
           {audit.slice(0, 30).map((e) => (
             <div className="list-row" key={e.seq} style={{ padding: "9px 0" }}>
@@ -641,7 +676,7 @@ export function Activity() {
                 <div className="t" style={{ fontSize: 14, color: AUDIT_ALERT.has(e.type) ? "var(--warn)" : undefined }} title={e.type}>
                   {AUDIT_LABEL[e.type] ?? e.type}
                 </div>
-                <div className="s">{new Date(e.at * 1000).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "medium" })}</div>
+                <div className="s">{fmtWhen(e.at, "medium")}</div>
               </div>
               <div className="subtle mono" style={{ fontSize: 11 }}>
                 #{e.seq} {e.hash.slice(0, 8)}

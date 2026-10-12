@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
 import { errorText, loginOrEnroll, useApp } from "../app";
 import { api } from "../lib/api";
-import type { StandardWallet } from "../lib/wallets";
+import { type StandardWallet, walletDisplay } from "../lib/wallets";
 import { Icon, Logo } from "../icons";
 import { IosNotice, WalletList } from "./welcome";
 import { isIOS } from "../lib/activation";
+import { tr } from "../lib/i18n";
 import { IntentScreen } from "./intent";
 
 type Info = { kind: "CONNECT" | "SIGN_INTENT"; label: string; intentId: string | null; accountId: string | null; wallet: string | null };
@@ -36,15 +37,15 @@ export function MobileHandoff({ token }: { token: string }) {
     if (!info) return;
     setErr(null);
     try {
-      setStep(`Conectando à ${w.name}…`);
+      setStep(tr(`Conectando à ${w.name}…`, `Connecting to ${walletDisplay(w.name)}…`));
       const c = await ctx.connect(w);
       const s = await loginOrEnroll(ctx, c, setStep);
       if (info.kind === "SIGN_INTENT") {
-        if (s.accountId !== info.accountId) throw new Error("Esta carteira não é a da conta que pediu a assinatura. Troque de conta na carteira e tente de novo.");
+        if (s.accountId !== info.accountId) throw new Error(tr("Esta carteira não é a da conta que pediu a assinatura. Troque de conta na carteira e tente de novo.", "This isn't the wallet of the account that asked for the signature. Switch accounts in the wallet and try again."));
         return ctx.go(`/intent/${info.intentId}`);
       }
       await api("POST", `/v1/handoff/${token}/claim`, { accountId: s.accountId });
-      setDone("Pronto. O computador entrou na sua conta.");
+      setDone(tr("Pronto. O computador entrou na sua conta.", "Done. The computer is signed in to your account."));
     } catch (e) {
       setErr(errorText(e));
     } finally {
@@ -60,21 +61,21 @@ export function MobileHandoff({ token }: { token: string }) {
         <IntentScreen id={info.intentId!} handoff={{ token, wallet: info.wallet }} />
         <div style={{ display: "flex", justifyContent: "center", padding: "0 16px 16px" }}>
           <button type="button" className="linkbtn" onClick={() => setLogin(true)}>
-            Biometria não ativa neste celular? Entrar e ativar
+            {tr("Biometria não ativa neste celular? Entrar e ativar", "Biometrics not set up on this phone? Sign in and set up")}
           </button>
         </div>
       </>
     );
 
   const title =
-    info?.kind === "SIGN_INTENT" ? "Entre com a carteira da conta" : "Entre com a sua carteira";
+    info?.kind === "SIGN_INTENT" ? tr("Entre com a carteira da conta", "Sign in with the account's wallet") : tr("Entre com a sua carteira", "Sign in with your wallet");
   return (
     <div className="page" style={{ paddingTop: 36, gap: 20 }}>
       <Logo size={44} />
       {info && (
         <div className="card" style={{ gap: 6 }}>
           <div className="muted" style={{ fontSize: 12 }}>
-            Pedido do computador
+            {tr("Pedido do computador", "Request from the computer")}
           </div>
           <div style={{ fontSize: 18, fontWeight: 600, lineHeight: 1.3 }}>{info.label}</div>
         </div>
@@ -93,7 +94,7 @@ export function MobileHandoff({ token }: { token: string }) {
           <>
             <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>{title}</div>
             <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
-              O webapp confere a transação aqui no celular e pede a sua biometria antes de abrir a carteira.
+              {tr("O webapp confere a transação aqui no celular e pede a sua biometria antes de abrir a carteira.", "The webapp checks the transaction here on the phone and asks for your fingerprint or face before opening the wallet.")}
             </div>
             <WalletList onPick={pick} busy={Boolean(step)} />
           </>

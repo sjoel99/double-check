@@ -3,7 +3,7 @@
 Solana custody where **no single key can move funds**.
 
 - Live app (devnet): https://dupla.sjoel99.com
-- Demo video (2:13, captions in English): https://cdn.jsdelivr.net/gh/sjoel99/double-check@ee0da0fc0f214093eecc7394ddd75ca293eea32d/colosseum/double-check-demo.mp4
+- Demo video (2:13): https://cdn.jsdelivr.net/gh/sjoel99/double-check@ee0da0fc0f214093eecc7394ddd75ca293eea32d/colosseum/double-check-demo.mp4
 - Colosseum submission materials: [colosseum/](colosseum/)
 - Leia em português: [README.pt-BR.md](README.pt-BR.md)
 
@@ -146,7 +146,7 @@ pnpm test     # 76 tests, ~4 s, no network: mainnet Squads v4 running in LiteSVM
 pnpm dev      # offline surfpool (Squads v4 from fixtures) + API :8787 + app :5173
 ```
 
-Open **http://127.0.0.1:5173**. The UI text is in Portuguese for now; the labels below are given as they appear on screen, with a translation.
+Open **http://127.0.0.1:5173**. The UI follows the browser language (English or Portuguese; force it with `?lang=en` or `?lang=pt`). The labels below are the Portuguese ones, with a translation.
 
 ### 5-minute walkthrough
 

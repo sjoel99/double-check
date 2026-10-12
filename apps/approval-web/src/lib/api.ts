@@ -1,4 +1,6 @@
 import { loadSession } from "./storage";
+import { lang } from "./i18n";
+import { errorEn } from "./errors-en";
 
 export class ApiError extends Error {
   constructor(public readonly code: string, message: string, public readonly status: number) {
@@ -21,6 +23,12 @@ export async function api<T = any>(method: "GET" | "POST", path: string, body?: 
   }
   const r = await fetch(`/api${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   const json = await r.json().catch(() => ({}));
-  if (!r.ok) throw new ApiError(json.error ?? "HTTP", sentence(json.message ?? r.statusText), r.status);
+  if (!r.ok) {
+    const code: string = json.error ?? "HTTP";
+    const pt = String(json.message ?? r.statusText);
+    // Em inglês, a mensagem sai da tabela pelo código; código desconhecido fica com o texto do serviço.
+    const message = (lang === "en" && errorEn(code, pt)) || pt;
+    throw new ApiError(code, sentence(message), r.status);
+  }
   return json as T;
 }

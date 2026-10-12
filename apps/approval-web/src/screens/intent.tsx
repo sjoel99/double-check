@@ -5,17 +5,19 @@ import { signatureB58, type WebappKeyBlob } from "../lib/webappKey";
 import { KNOWN_PROGRAM_NAMES } from "@duplachave/solana";
 import { accountKeyBlobs, errorText, unlockAccountKey, useApp } from "../app";
 import { api, ApiError } from "../lib/api";
-import { ConnectedWallet, walletWord } from "../lib/wallets";
+import { ConnectedWallet, walletDisplay, walletWord } from "../lib/wallets";
 import { now, parseSol, short, sol, solInput } from "../lib/chain";
 import { Icon } from "../icons";
 import { type IntentView, useAccount } from "./home";
 import { PhoneQrSheet, SCAN_STEPS } from "../components/PhoneQr";
+import { fmtWhen, lang, tr } from "../lib/i18n";
+import { errorEn } from "../lib/errors-en";
 
 function TopBar({ title, right }: { title: string; right?: React.ReactNode }) {
   const { go } = useApp();
   return (
     <div className="topbar">
-      <button type="button" className="iconbtn" aria-label="Voltar" onClick={() => go("/")}>
+      <button type="button" className="iconbtn" aria-label={tr("Voltar", "Back")} onClick={() => go("/")}>
         <Icon name="back" />
       </button>
       <h1>{title}</h1>
@@ -65,18 +67,18 @@ export function Send() {
     try {
       new PublicKey(dest.trim());
     } catch {
-      return "Endereço Solana inválido. Confira se copiou inteiro.";
+      return tr("Endereço Solana inválido. Confira se copiou inteiro.", "Invalid Solana address. Check that you copied all of it.");
     }
-    if (acc && dest.trim() === acc.account.vault) return "Esse é o próprio Vault da conta.";
+    if (acc && dest.trim() === acc.account.vault) return tr("Esse é o próprio Vault da conta.", "That is the account's own Vault.");
     return null;
   })();
   const lamports = parseSol(amount);
   const amountErr = (() => {
     if (!amount.trim()) return null;
-    if (lamports === null) return "Use um número com até 9 casas decimais, por exemplo 0,5.";
-    if (lamports === 0n) return "O valor precisa ser maior que zero.";
-    if (limit !== null && lamports > limit) return `Acima do limite de ${sol(limit, 9)} SOL por envio.`;
-    if (balance !== null && lamports > balance) return `Maior que o saldo do Vault (${sol(balance, 9)} SOL).`;
+    if (lamports === null) return tr("Use um número com até 9 casas decimais, por exemplo 0,5.", "Use a number with up to 9 decimal places, for example 0.5.");
+    if (lamports === 0n) return tr("O valor precisa ser maior que zero.", "The amount must be greater than zero.");
+    if (limit !== null && lamports > limit) return tr(`Acima do limite de ${sol(limit, 9)} SOL por envio.`, `Above the limit of ${sol(limit, 9)} SOL per transfer.`);
+    if (balance !== null && lamports > balance) return tr(`Maior que o saldo do Vault (${sol(balance, 9)} SOL).`, `More than the Vault balance (${sol(balance, 9)} SOL).`);
     return null;
   })();
   const valid = Boolean(dest.trim() && lamports && !destErr && !amountErr);
@@ -86,7 +88,7 @@ export function Send() {
       const t = (await navigator.clipboard.readText()).trim();
       if (t) setDest(t);
     } catch {
-      ctx.toast("O navegador não deixou ler a área de transferência. Cole no campo.");
+      ctx.toast(tr("O navegador não deixou ler a área de transferência. Cole no campo.", "The browser didn't allow reading the clipboard. Paste into the field."));
     }
   };
 
@@ -104,35 +106,38 @@ export function Send() {
   };
   return (
     <>
-      <TopBar title="Enviar SOL" />
+      <TopBar title={tr("Enviar SOL", "Send SOL")} />
       <div className="page">
         <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
-          O serviço confere a sua política. Depois você revisa, confirma com a biometria e assina uma vez na {walletWord(ctx.session!.walletName)}, que paga a taxa da rede (~0,000015 SOL).
+          {tr(
+            `O serviço confere a sua política. Depois você revisa, confirma com a biometria e assina uma vez na ${walletWord(ctx.session!.walletName)}, que paga a taxa da rede (~0,000015 SOL).`,
+            `The service checks your policy. Then you review, confirm with biometrics and sign once in ${walletWord(ctx.session!.walletName)}, which pays the network fee (~0.000015 SOL).`,
+          )}
         </div>
         <div className="field">
           <div className="row-between">
-            <label htmlFor="dest">Endereço de destino</label>
+            <label htmlFor="dest">{tr("Endereço de destino", "Destination address")}</label>
             <button type="button" className="linkbtn small" onClick={paste}>
-              Colar
+              {tr("Colar", "Paste")}
             </button>
           </div>
-          <input id="dest" className="input mono" value={dest} onChange={(e) => setDest(e.target.value)} placeholder="Endereço Solana" spellCheck={false} autoComplete="off" aria-invalid={Boolean(destErr)} />
+          <input id="dest" className="input mono" value={dest} onChange={(e) => setDest(e.target.value)} placeholder={tr("Endereço Solana", "Solana address")} spellCheck={false} autoComplete="off" aria-invalid={Boolean(destErr)} />
           {destErr && <div className="err">{destErr}</div>}
         </div>
         <div className="field">
           <div className="row-between">
-            <label htmlFor="amt">Quantidade (SOL)</label>
+            <label htmlFor="amt">{tr("Quantidade (SOL)", "Amount (SOL)")}</label>
             <button type="button" className="linkbtn small" disabled={!max} onClick={() => max && setAmount(solInput(max))}>
-              Máx
+              {tr("Máx", "Max")}
             </button>
           </div>
-          <input id="amt" className="input mono" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0,5" aria-invalid={Boolean(amountErr)} />
+          <input id="amt" className="input mono" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={tr("0,5", "0.5")} aria-invalid={Boolean(amountErr)} />
           {amountErr ? (
             <div className="err">{amountErr}</div>
           ) : (
             <div className="subtle" style={{ fontSize: 12 }}>
-              Saldo do Vault: {balance === null ? "…" : `${sol(balance, 9)} SOL`}
-              {limit !== null && ` · limite por envio: ${sol(limit, 9)} SOL`}
+              {tr("Saldo do Vault", "Vault balance")}: {balance === null ? "…" : `${sol(balance, 9)} SOL`}
+              {limit !== null && tr(` · limite por envio: ${sol(limit, 9)} SOL`, ` · limit per transfer: ${sol(limit, 9)} SOL`)}
             </div>
           )}
         </div>
@@ -140,7 +145,7 @@ export function Send() {
       </div>
       <div className="actions">
         <button type="button" className="btn primary" disabled={!valid || busy} onClick={submit}>
-          {busy ? <span className="spinner" /> : null} Revisar
+          {busy ? <span className="spinner" /> : null} {tr("Revisar", "Review")}
         </button>
       </div>
     </>
@@ -152,9 +157,9 @@ export function Send() {
 /** O que a janela da biometria de teste mostra (no celular de verdade, o sistema mostra o nome do app). */
 function summaryOf(r: ApprovalRequest): string {
   const i = r.intent;
-  if (i.type === "TRANSFER_SOL") return `Confirmar: enviar ${sol(i.amountLamports, 9)} SOL para ${short(i.destination)}`;
-  if (i.type === "ROTATE_MEMBER") return i.role === "CLIENT" ? `Confirmar: trocar a carteira da conta por ${short(i.newKey)}` : "Confirmar: nova chave do serviço";
-  return "Confirmar transação";
+  if (i.type === "TRANSFER_SOL") return tr(`Confirmar: enviar ${sol(i.amountLamports, 9)} SOL para ${short(i.destination)}`, `Confirm: send ${sol(i.amountLamports, 9)} SOL to ${short(i.destination)}`);
+  if (i.type === "ROTATE_MEMBER") return i.role === "CLIENT" ? tr(`Confirmar: trocar a carteira da conta por ${short(i.newKey)}`, `Confirm: change the account wallet to ${short(i.newKey)}`) : tr("Confirmar: nova chave do serviço", "Confirm: new service key");
+  return tr("Confirmar transação", "Confirm transaction");
 }
 
 /**
@@ -179,7 +184,7 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
   const signer = async () => {
     if (!handoff) return ctx.accountWallet();
     const w = ctx.wallets.find((x) => x.name === "Mobile Wallet Adapter");
-    if (!w) throw new Error("Abra este link no Android, com o app de uma carteira Solana instalado (Phantom, Solflare…).");
+    if (!w) throw new Error(tr("Abra este link no Android, com o app de uma carteira Solana instalado (Phantom, Solflare…).", "Open this link on Android, with a Solana wallet app installed (Phantom, Solflare…)."));
     return ConnectedWallet.forAddress(w, handoff.wallet, ctx.config.cluster);
   };
   const [data, setData] = useState<Loaded | null>(null);
@@ -201,7 +206,7 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
   const prepare = useCallback(async () => {
     const path = ctx.dev.malicious && !handoff ? `/v1/dev/intents/${id}/prepare-tampered` : `${base}/prepare`;
     const k = await keys();
-    if (!k.length) throw new Error("Esta conta não tem a chave do webapp guardada.");
+    if (!k.length) throw new Error(tr("Esta conta não tem a chave do webapp guardada.", "This account has no webapp key stored."));
     const request = await api<ApprovalRequest>("POST", path, {}, opt);
     const inspection = await inspectPrepared(ctx.chain, request, { client: new PublicKey(myWallet), webapp: new PublicKey(k[0]!.publicKey) }, now());
     return { request, inspection };
@@ -268,12 +273,12 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
       const c = await signer();
       let review = check.review;
       let request = data.request;
-      setStepText("Confirme com a biometria…");
+      setStepText(tr("Confirme com a biometria…", "Confirm with biometrics…"));
       const key = await unlockAccountKey(ctx, await keys(), summaryOf(request));
       let webappSignature: string;
       try {
         if (Date.now() - data.preparedAt > PREPARED_FRESH_MS) {
-          setStepText("Conferindo de novo…");
+          setStepText(tr("Conferindo de novo…", "Checking again…"));
           const again = await prepare();
           setCheck(again.inspection);
           setData({ ...data, request: again.request, preparedAt: Date.now() });
@@ -286,12 +291,12 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
       } finally {
         key.wipe();
       }
-      setStepText("O serviço está assinando…");
+      setStepText(tr("O serviço está assinando…", "The service is signing…"));
       const auth = await api<{ transaction: string }>("POST", `${base}/authorize`, { message: Buffer.from(review.message).toString("base64"), webappSignature }, opt);
       const tx = verifyAuthorized(review, auth.transaction);
-      setStepText(`Confirme na ${c.name}…`);
+      setStepText(tr(`Confirme na ${c.name}…`, `Confirm in ${walletDisplay(c.name)}…`));
       const signed = await c.signTransaction(tx);
-      setStepText("Enviando para a Solana…");
+      setStepText(tr("Enviando para a Solana…", "Sending to Solana…"));
       const out = await api<IntentView>("POST", `${base}/submit`, { transaction: signed }, opt);
       const intent = request.intent;
       if (intent.type === "ROTATE_MEMBER" && intent.role === "CLIENT" && out.status === "EXECUTED") return setHandedOver(true);
@@ -309,7 +314,7 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
     setBusy("reject");
     try {
       await api("POST", `${base}/reject`, undefined, opt);
-      ctx.toast(data?.record.intent.type === "TRANSFER_SOL" ? "Envio cancelado. Nada foi para a Solana." : "Recusada. Nada foi para a Solana.");
+      ctx.toast(data?.record.intent.type === "TRANSFER_SOL" ? tr("Envio cancelado. Nada foi para a Solana.", "Transfer cancelled. Nothing went to Solana.") : tr("Recusada. Nada foi para a Solana.", "Rejected. Nothing went to Solana."));
       await load();
     } catch (e) {
       setErr(errorText(e));
@@ -327,7 +332,7 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
   const qrSheet = qrOpen && (
     <PhoneQrSheet
       create={() => api("POST", `/v1/intents/${id}/pay`, {})}
-      title={data?.request?.intent.type === "ROTATE_MEMBER" && data.request.intent.role === "CLIENT" ? "Continue no celular (com a carteira ATUAL)" : "Continue no celular"}
+      title={data?.request?.intent.type === "ROTATE_MEMBER" && data.request.intent.role === "CLIENT" ? tr("Continue no celular (com a carteira ATUAL)", "Continue on your phone (with the CURRENT wallet)") : tr("Continue no celular", "Continue on your phone")}
       steps={SCAN_STEPS}
       onDone={phoneDone}
       onClose={() => setQrOpen(false)}
@@ -339,10 +344,10 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
   const { record, request } = data;
   if (data.prepareErr) {
     const late = data.prepareCode === "INTENT_EXPIRED" || expired;
-    return <PrepareFailed message={data.prepareErr} busy={busy} onRetry={late ? again : load} retryLabel={late ? "Criar de novo" : "Tentar de novo"} onReject={late ? undefined : reject} />;
+    return <PrepareFailed message={data.prepareErr} busy={busy} onRetry={late ? again : load} retryLabel={late ? tr("Criar de novo", "Create again") : tr("Tentar de novo", "Try again")} onReject={late ? undefined : reject} />;
   }
   if (!request) return <Outcome record={record} onAgain={again} />;
-  if (!check) return <Loading err={err} label="Conferindo…" />;
+  if (!check) return <Loading err={err} label={tr("Conferindo…", "Checking…")} />;
   if (!check.ok) return <Blocked check={check} request={request} />;
 
   const intent = request.intent;
@@ -353,20 +358,20 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
       <div className="actions" style={{ flexWrap: "wrap" }}>
         <button type="button" className="btn" disabled={Boolean(busy)} onClick={reject}>
           {busy === "reject" ? <span className="spinner" /> : null}
-          {intent.type === "TRANSFER_SOL" ? "Cancelar" : "Recusar"}
+          {intent.type === "TRANSFER_SOL" ? tr("Cancelar", "Cancel") : tr("Recusar", "Reject")}
         </button>
         {expired ? (
           <button type="button" className={primaryClass} onClick={again}>
-            Criar de novo
+            {tr("Criar de novo", "Create again")}
           </button>
         ) : viaPhone ? (
           <button type="button" className={primaryClass} disabled={Boolean(busy)} onClick={() => setQrOpen(true)}>
-            <Icon name="phone" color="#0B0D10" sw={2} /> Continuar no celular
+            <Icon name="phone" color="#0B0D10" sw={2} /> {tr("Continuar no celular", "Continue on your phone")}
           </button>
         ) : (
           <button type="button" className={primaryClass} disabled={Boolean(busy)} onClick={sign}>
             {busy === "sign" ? <span className="spinner" /> : <Icon name="finger" color="#0B0D10" sw={2} />}
-            Assinar
+            {tr("Assinar", "Sign")}
           </button>
         )}
         {stepText && (
@@ -376,7 +381,7 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
         )}
         {!viaPhone && !busy && !handoff && !expired && (
           <button type="button" className="linkbtn" style={{ flexBasis: "100%", padding: "2px 0 0" }} onClick={() => setQrOpen(true)}>
-            Ou continuar no celular (QR)
+            {tr("Ou continuar no celular (QR)", "Or continue on your phone (QR)")}
           </button>
         )}
       </div>
@@ -387,7 +392,10 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
     <div className="banner ok">
       <Icon name="shieldcheck" size={18} color="var(--accent)" />
       <div className="grow">
-        Conferido: a transação faz exatamente isto. O serviço conferiu a política e assina depois da sua biometria.
+        {tr(
+          "Conferido: a transação faz exatamente isto. O serviço conferiu a política e assina depois da sua biometria.",
+          "Verified: the transaction does exactly this. The service checked the policy and signs after your biometrics.",
+        )}
       </div>
       <div className="mono" style={{ color: "#8fa36b" }}>
         #{intent.transactionIndex}
@@ -395,18 +403,18 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
     </div>
   );
   if (intent.type === "ROTATE_MEMBER") return <RotationApproval request={request} header={serverOk} actions={actions} err={err} />;
-  if (intent.type !== "TRANSFER_SOL") return <Loading err="tipo de intenção ainda não suportado no app" />;
+  if (intent.type !== "TRANSFER_SOL") return <Loading err={tr("tipo de intenção ainda não suportado no app", "This intent type is not supported in the app yet")} />;
 
   const flags = record.riskFlags;
   const external = intent.destination !== intent.vault;
   return (
     <>
-      <TopBar title="Confirmar transação" right={<Countdown until={intent.expiresAt} />} />
+      <TopBar title={tr("Confirmar transação", "Confirm transaction")} right={<Countdown until={intent.expiresAt} />} />
       <div className="page">
         {serverOk}
         <div className="center" style={{ gap: 6, padding: "10px 0 2px" }}>
           <div className="muted" style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: "0.12em" }}>
-            Enviar
+            {tr("Enviar", "Send")}
           </div>
           <div className="big" style={{ fontSize: 52, letterSpacing: "-0.04em" }}>
             {sol(intent.amountLamports, 9)} <span style={{ fontSize: 24, color: "var(--muted)" }}>SOL</span>
@@ -414,14 +422,14 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div className="muted" style={{ fontSize: 13 }}>
-            Para
+            {tr("Para", "To")}
           </div>
           <div className="card" style={{ borderRadius: 18, padding: "14px 16px", gap: 10 }}>
             <div className="row-between">
               <div className="mono" style={{ fontSize: 18, fontWeight: 600 }}>
-                {external ? short(intent.destination) : "Seu próprio Vault"}
+                {external ? short(intent.destination) : tr("Seu próprio Vault", "Your own Vault")}
               </div>
-              {firstTime ? <span className="pill warn">Endereço novo</span> : handoff && flags.includes("EXTERNAL_DESTINATION") ? <span className="pill warn">Endereço externo</span> : null}
+              {firstTime ? <span className="pill warn">{tr("Endereço novo", "New address")}</span> : handoff && flags.includes("EXTERNAL_DESTINATION") ? <span className="pill warn">{tr("Endereço externo", "External address")}</span> : null}
             </div>
             <div className="mono subtle" style={{ fontSize: 12, lineHeight: 1.5, wordBreak: "break-all" }}>
               {intent.destination}
@@ -429,31 +437,36 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
           </div>
         </div>
         <div>
-          <Detail label="De" value={`Seu Vault · ${short(intent.vault)}`} mono />
-          <Detail label="Programa" value={intent.programs.map((p: string) => KNOWN_PROGRAM_NAMES[p] ?? short(p)).join(", ")} />
-          <Detail label="Assinaturas" value={`Biometria (chave do webapp) · ${walletName} · o serviço executa`} />
-          <Detail label="Taxa de rede" value={`~0,000015 SOL · paga pela ${viaPhone ? "carteira" : walletName}`} />
+          <Detail label={tr("De", "From")} value={tr(`Seu Vault · ${short(intent.vault)}`, `Your Vault · ${short(intent.vault)}`)} mono />
+          <Detail label={tr("Programa", "Program")} value={intent.programs.map((p: string) => KNOWN_PROGRAM_NAMES[p] ?? short(p)).join(", ")} />
+          <Detail label={tr("Assinaturas", "Signatures")} value={tr(`Biometria (chave do webapp) · ${walletName} · o serviço executa`, `Biometrics (webapp key) · ${walletName} · the service executes`)} />
+          <Detail label={tr("Taxa de rede", "Network fee")} value={tr(`~0,000015 SOL · paga pela ${viaPhone ? "carteira" : walletName}`, `~0.000015 SOL · paid by ${viaPhone ? "the wallet" : walletName}`)} />
         </div>
         <div className="banner info">
           <Icon name="key" size={18} />
-          <div>Primeiro a sua biometria confirma exatamente esta transação; só então o serviço assina e {viaPhone ? "a carteira do celular" : `a ${walletName}`} abre para assinar uma vez. Se algo falhar, nada acontece na Solana.</div>
+          <div>
+            {tr(
+              `Primeiro a sua biometria confirma exatamente esta transação; só então o serviço assina e ${viaPhone ? "a carteira do celular" : `a ${walletName}`} abre para assinar uma vez. Se algo falhar, nada acontece na Solana.`,
+              `First your biometrics confirm exactly this transaction; only then does the service sign and ${viaPhone ? "the phone wallet" : walletName} open for you to sign once. If anything fails, nothing happens on Solana.`,
+            )}
+          </div>
         </div>
         {expired && (
           <div className="banner warn">
             <Icon name="clock" size={18} color="#F2B33D" />
-            <div>O prazo de 10 minutos para assinar acabou. Nada foi assinado nem saiu do Vault. Toque em "Criar de novo" para refazer o mesmo envio.</div>
+            <div>{tr('O prazo de 10 minutos para assinar acabou. Nada foi assinado nem saiu do Vault. Toque em "Criar de novo" para refazer o mesmo envio.', 'The 10-minute window to sign is over. Nothing was signed and nothing left the Vault. Tap "Create again" to redo the same transfer.')}</div>
           </div>
         )}
         {firstTime && (
           <div className="banner warn">
             <Icon name="shieldalert" size={18} color="#F2B33D" />
-            <div>Você nunca enviou para este endereço. Confira os primeiros e os últimos caracteres com quem vai receber.</div>
+            <div>{tr("Você nunca enviou para este endereço. Confira os primeiros e os últimos caracteres com quem vai receber.", "You have never sent to this address. Check the first and last characters with the recipient.")}</div>
           </div>
         )}
         {flags.includes("POSSIBLE_FULL_BALANCE") && (
           <div className="banner warn">
             <Icon name="shieldalert" size={18} color="#F2B33D" />
-            <div>Esta transação envia quase todo o saldo do Vault.</div>
+            <div>{tr("Esta transação envia quase todo o saldo do Vault.", "This transaction sends almost the entire Vault balance.")}</div>
           </div>
         )}
         {err && <div className="banner danger">{err}</div>}
@@ -468,17 +481,17 @@ function RotationApproval({ request, header, actions, err }: { request: Approval
   const intent = request.intent;
   if (intent.type !== "ROTATE_MEMBER") return null;
   const isClient = intent.role === "CLIENT";
-  const when = new Date(intent.createdAt * 1000).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+  const when = fmtWhen(intent.createdAt);
   return (
     <>
-      <TopBar title="Segurança" right={<Countdown until={intent.expiresAt} />} />
+      <TopBar title={tr("Segurança", "Security")} right={<Countdown until={intent.expiresAt} />} />
       <div className="page">
         <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingTop: 4 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 600, color: "var(--warn)", letterSpacing: "0.12em", textTransform: "uppercase" }}>
-            <Icon name="shieldalert" size={16} color="#F2B33D" /> Alteração de segurança
+            <Icon name="shieldalert" size={16} color="#F2B33D" /> {tr("Alteração de segurança", "Security change")}
           </div>
           <div style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.2 }}>
-            {isClient ? "Trocar a carteira da conta?" : "O serviço está pedindo para trocar a chave de segurança dele."}
+            {isClient ? tr("Trocar a carteira da conta?", "Change the account wallet?") : tr("O serviço está pedindo para trocar a chave de segurança dele.", "The service is asking to change its security key.")}
           </div>
         </div>
         <div className="card" style={{ borderRadius: 20, padding: 16, gap: 12 }}>
@@ -488,7 +501,7 @@ function RotationApproval({ request, header, actions, err }: { request: Approval
             </div>
             <div className="grow">
               <div className="muted" style={{ fontSize: 12 }}>
-                {isClient ? `Atual (${session?.walletName ?? "carteira da conta"})` : "Chave atual do serviço"}
+                {isClient ? tr(`Atual (${session?.walletName ?? "carteira da conta"})`, `Current (${session?.walletName ?? "account wallet"})`) : tr("Chave atual do serviço", "Current service key")}
               </div>
               <div className="mono" style={{ fontSize: 17, color: "var(--muted)", textDecoration: "line-through", textDecorationColor: "#5b6270" }}>
                 {short(intent.oldKey)}
@@ -504,7 +517,7 @@ function RotationApproval({ request, header, actions, err }: { request: Approval
             </div>
             <div className="grow">
               <div className="muted" style={{ fontSize: 12 }}>
-                {isClient ? "Carteira nova" : "Nova chave do serviço"}
+                {isClient ? tr("Carteira nova", "New wallet") : tr("Nova chave do serviço", "New service key")}
               </div>
               <div className="mono" style={{ fontSize: 17, fontWeight: 600 }}>
                 {short(intent.newKey)}
@@ -512,26 +525,34 @@ function RotationApproval({ request, header, actions, err }: { request: Approval
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--ok-text)" }}>
               <Icon name="check" size={14} color="#C8F169" sw={2.2} />
-              posse conferida
+              {tr("posse conferida", "ownership verified")}
             </div>
           </div>
         </div>
         {header}
         <div>
-          <Detail label="Solicitado" value={when} />
-          <Detail label="Quem aprova" value={isClient ? "Carteira atual + serviço" : "Você + chave atual do serviço"} />
+          <Detail label={tr("Solicitado", "Requested")} value={when} />
+          <Detail label={tr("Quem aprova", "Who approves")} value={isClient ? tr("Carteira atual + serviço", "Current wallet + service") : tr("Você + chave atual do serviço", "You + current service key")} />
         </div>
         {isClient ? (
           <div className="banner warn">
             <Icon name="shieldalert" size={18} color="#F2B33D" />
             <div>
-              Assine com a carteira <b>atual</b> (<span className="mono">{short(intent.oldKey)}</span>). Ela paga a taxa e, na mesma transação, perde o acesso; a nova passa a assinar.
+              {lang === "pt" ? (
+                <>
+                  Assine com a carteira <b>atual</b> (<span className="mono">{short(intent.oldKey)}</span>). Ela paga a taxa e, na mesma transação, perde o acesso; a nova passa a assinar.
+                </>
+              ) : (
+                <>
+                  Sign with the <b>current</b> wallet (<span className="mono">{short(intent.oldKey)}</span>). It pays the fee and, in the same transaction, loses access; the new one becomes the signer.
+                </>
+              )}
             </div>
           </div>
         ) : (
           <div className="banner danger" style={{ flexDirection: "column", gap: 6 }}>
-            <div style={{ fontSize: 16, fontWeight: 600 }}>Não reconhece este pedido? Recuse.</div>
-            <div style={{ color: "#d9a69e" }}>Sem a sua assinatura a chave do serviço não muda. Recusar não afeta seus fundos.</div>
+            <div style={{ fontSize: 16, fontWeight: 600 }}>{tr("Não reconhece este pedido? Recuse.", "Don't recognize this request? Reject it.")}</div>
+            <div style={{ color: "#d9a69e" }}>{tr("Sem a sua assinatura a chave do serviço não muda. Recusar não afeta seus fundos.", "Without your signature the service key doesn't change. Rejecting doesn't affect your funds.")}</div>
           </div>
         )}
         {err && <div className="banner danger">{err}</div>}
@@ -544,22 +565,26 @@ function RotationApproval({ request, header, actions, err }: { request: Approval
 function PrepareFailed({ message, busy, onRetry, retryLabel, onReject }: { message: string; busy: null | string; onRetry: () => void; retryLabel: string; onReject?: () => void }) {
   return (
     <>
-      <TopBar title="Confirmar transação" />
+      <TopBar title={tr("Confirmar transação", "Confirm transaction")} />
       <div className="page" style={{ gap: 18 }}>
         <div className="banner warn">
           <Icon name="shieldalert" size={18} color="#F2B33D" />
           <div>
-            <b>Não deu para preparar a transação.</b> {message}
+            <b>{tr("Não deu para preparar a transação.", "Couldn't prepare the transaction.")}</b> {message}
           </div>
         </div>
         <div className="muted" style={{ fontSize: 13, lineHeight: 1.5 }}>
-          Nada foi assinado nem enviado. Taxa e depósito saem da sua carteira: o depósito das contas volta na mesma transação.
+          {tr(
+            "Nada foi assinado nem enviado. Taxa e depósito saem da sua carteira: o depósito das contas volta na mesma transação.",
+            "Nothing was signed or sent. The fee and deposit come from your wallet: the account deposit comes back in the same transaction.",
+          )}
         </div>
       </div>
       <div className="actions">
         {onReject && (
           <button type="button" className="btn" disabled={Boolean(busy)} onClick={onReject}>
-            {busy === "reject" ? <span className="spinner" /> : null}Cancelar
+            {busy === "reject" ? <span className="spinner" /> : null}
+            {tr("Cancelar", "Cancel")}
           </button>
         )}
         <button type="button" className="btn primary" disabled={Boolean(busy)} onClick={onRetry}>
@@ -570,6 +595,22 @@ function PrepareFailed({ message, busy, onRetry, retryLabel, onReject }: { messa
   );
 }
 
+/** Motivos do bloqueio em inglês (mesmos códigos da tabela em português abaixo). */
+const REASON_EN: Record<string, string> = {
+  INTENT_MISMATCH: "What the server showed is not what the transaction does.",
+  STALE_INDEX: "Another transaction got in before this one. Go back and open it again.",
+  SERVER_NOT_SIGNED: "The service signature is missing from the transaction.",
+  TX_MALFORMED: "The received transaction is unreadable.",
+  INTENT_HASH_INVALID: "The received data doesn't match the intent signature.",
+  INTENT_EXPIRED: "The time to sign is over.",
+  PROPOSAL_NOT_ACTIVE: "The proposal is no longer open on Solana.",
+  NOT_A_VOTER: "This wallet is no longer the account's wallet.",
+  PROPOSAL_STALE: "The proposal became stale after a key change.",
+  ROTATION_NOT_REQUESTED_HERE: "You didn't request this wallet change in this app.",
+  ROTATION_PROOF_INVALID: "The proof that the new key belongs to who it claims doesn't check out.",
+  ROTATION_PROOF_MISSING: "The proof that the new key belongs to who it claims is missing.",
+};
+
 function Blocked({ check, request }: { check: Extract<Inspection, { ok: false }>; request: ApprovalRequest }) {
   const { go } = useApp();
   const intent = request.intent;
@@ -577,10 +618,10 @@ function Blocked({ check, request }: { check: Extract<Inspection, { ok: false }>
   const op = check.actual?.length === 1 && check.actual[0]!.kind === "SYSTEM_TRANSFER" ? check.actual[0]! : null;
   const rows: [string, string, string][] = [];
   if (intent.type === "TRANSFER_SOL" && op?.kind === "SYSTEM_TRANSFER") {
-    if (intent.amountLamports !== op.lamports.toString()) rows.push(["Valor", `${sol(intent.amountLamports, 9)} SOL`, `${sol(op.lamports, 9)} SOL`]);
-    if (intent.destination !== op.to) rows.push(["Destino", short(intent.destination), short(op.to)]);
+    if (intent.amountLamports !== op.lamports.toString()) rows.push([tr("Valor", "Amount"), `${sol(intent.amountLamports, 9)} SOL`, `${sol(op.lamports, 9)} SOL`]);
+    if (intent.destination !== op.to) rows.push([tr("Destino", "Destination"), short(intent.destination), short(op.to)]);
   }
-  const reason: Record<string, string> = {
+  const reason: Record<string, string> = lang === "en" ? REASON_EN : {
     INTENT_MISMATCH: "O que o servidor mostrou não é o que a transação faz.",
     STALE_INDEX: "Outra transação entrou antes desta. Volte e abra de novo.",
     SERVER_NOT_SIGNED: "Falta a assinatura do serviço na transação.",
@@ -601,15 +642,15 @@ function Blocked({ check, request }: { check: Extract<Inspection, { ok: false }>
           <div className="danger-ico">
             <Icon name="shieldalert" size={32} color="#FF8F80" />
           </div>
-          <div style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.15 }}>Transação bloqueada</div>
-          <div style={{ fontSize: 15, color: "#b4bac4", lineHeight: 1.5 }}>{reason[check.code] ?? check.message} Nada foi assinado e seus fundos não se moveram.</div>
+          <div style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.15 }}>{tr("Transação bloqueada", "Transaction blocked")}</div>
+          <div style={{ fontSize: 15, color: "#b4bac4", lineHeight: 1.5 }}>{reason[check.code] ?? (lang === "en" ? errorEn(check.code, check.message) : null) ?? check.message} {tr("Nada foi assinado e seus fundos não se moveram.", "Nothing was signed and your funds did not move.")}</div>
         </div>
         {rows.length > 0 && (
           <div className="diff-box">
             <div className="diff head">
-              <div>Campo</div>
-              <div>Mostrado</div>
-              <div>Na transação</div>
+              <div>{tr("Campo", "Field")}</div>
+              <div>{tr("Mostrado", "Shown")}</div>
+              <div>{tr("Na transação", "In the transaction")}</div>
             </div>
             {rows.map(([f, a, b]) => (
               <div className="diff" key={f}>
@@ -623,12 +664,12 @@ function Blocked({ check, request }: { check: Extract<Inspection, { ok: false }>
           </div>
         )}
         <div className="muted" style={{ fontSize: 13, lineHeight: 1.5 }}>
-          Código: <span className="mono">{check.code}</span>.
+          {tr("Código", "Code")}: <span className="mono">{check.code}</span>.
         </div>
       </div>
       <div className="actions">
         <button type="button" className="btn light" onClick={() => go("/")}>
-          Entendi
+          {tr("Entendi", "Got it")}
         </button>
       </div>
     </>
@@ -643,15 +684,25 @@ function Outcome({ record, onAgain }: { record: IntentView; onAgain: () => void 
   const explorer = (sig: string) => `https://explorer.solana.com/tx/${sig}?cluster=${config.cluster === "devnet" ? "devnet" : `custom&customUrl=${encodeURIComponent("http://127.0.0.1:8899")}`}`;
   // Uma transação só (criar, aprovar, executar, fechar): os passos não têm assinaturas separadas.
   const steps = rot
-    ? ["O serviço conferiu e assinou", `Você assinou e pagou na ${walletWord(session?.walletName)}`, "Chaves trocadas na Solana"]
-    : ["Sua biometria confirmou (chave do webapp)", "O serviço conferiu a política e assinou", `Você assinou e pagou na ${walletWord(session?.walletName)}`, "Executada na Solana"];
+    ? [tr("O serviço conferiu e assinou", "The service checked and signed"), tr(`Você assinou e pagou na ${walletWord(session?.walletName)}`, `You signed and paid in ${walletWord(session?.walletName)}`), tr("Chaves trocadas na Solana", "Keys changed on Solana")]
+    : [
+        tr("Sua biometria confirmou (chave do webapp)", "Your biometrics confirmed (webapp key)"),
+        tr("O serviço conferiu a política e assinou", "The service checked the policy and signed"),
+        tr(`Você assinou e pagou na ${walletWord(session?.walletName)}`, `You signed and paid in ${walletWord(session?.walletName)}`),
+        tr("Executada na Solana", "Executed on Solana"),
+      ];
   const sig = record.signatures.execute;
-  const title: Record<string, string> = { REJECTED: rot ? "Recusada" : "Envio cancelado", EXPIRED: "Prazo expirado", FAILED: "Falhou", CANCELLED: "Cancelada" };
+  const title: Record<string, string> = {
+    REJECTED: rot ? tr("Recusada", "Rejected") : tr("Envio cancelado", "Transfer cancelled"),
+    EXPIRED: tr("Prazo expirado", "Expired"),
+    FAILED: tr("Falhou", "Failed"),
+    CANCELLED: tr("Cancelada", "Cancelled"),
+  };
   const why: Record<string, string> = {
-    REJECTED: "Você cancelou antes de assinar.",
-    EXPIRED: "O prazo de 10 minutos acabou antes da assinatura.",
-    FAILED: "A transação não foi aceita pela Solana.",
-    CANCELLED: "O pedido foi cancelado.",
+    REJECTED: tr("Você cancelou antes de assinar.", "You cancelled before signing."),
+    EXPIRED: tr("O prazo de 10 minutos acabou antes da assinatura.", "The 10-minute window ran out before signing."),
+    FAILED: tr("A transação não foi aceita pela Solana.", "Solana did not accept the transaction."),
+    CANCELLED: tr("O pedido foi cancelado.", "The request was cancelled."),
   };
   const canRedo = !ok && !rot && (record.status === "EXPIRED" || record.status === "FAILED" || record.status === "REJECTED");
   return (
@@ -661,7 +712,7 @@ function Outcome({ record, onAgain }: { record: IntentView; onAgain: () => void 
           <div className="hero-ico" style={{ background: ok ? "var(--accent)" : "var(--surface-2)", border: ok ? 0 : "1px solid var(--line)" }}>
             <Icon name={ok ? "check" : "x"} size={44} color={ok ? "#0B0D10" : "var(--muted)"} sw={2.4} />
           </div>
-          <div style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em" }}>{ok ? (rot ? "Chave trocada" : "Envio executado") : title[record.status] ?? record.status}</div>
+          <div style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em" }}>{ok ? (rot ? tr("Chave trocada", "Key changed") : tr("Envio executado", "Transfer executed")) : title[record.status] ?? record.status}</div>
           <div className="muted" style={{ fontSize: 15 }}>
             {rot ? (
               <>
@@ -669,13 +720,13 @@ function Outcome({ record, onAgain }: { record: IntentView; onAgain: () => void 
               </>
             ) : (
               <>
-                <span className="mono" style={{ color: "var(--text)" }}>{sol(intent.amountLamports, 9)} SOL</span> para <span className="mono">{short(intent.destination)}</span>
+                <span className="mono" style={{ color: "var(--text)" }}>{sol(intent.amountLamports, 9)} SOL</span> {tr("para", "to")} <span className="mono">{short(intent.destination)}</span>
               </>
             )}
           </div>
           {!ok && (
             <div className="muted" style={{ fontSize: 14, lineHeight: 1.5, textAlign: "center" }}>
-              {why[record.status] ?? ""} {rot ? "Nada mudou na conta." : "Nada saiu do Vault."}
+              {why[record.status] ?? ""} {rot ? tr("Nada mudou na conta.", "Nothing changed in the account.") : tr("Nada saiu do Vault.", "Nothing left the Vault.")}
             </div>
           )}
           {record.status === "FAILED" && record.reasons.length > 0 && <div className="banner warn" style={{ textAlign: "left" }}>{record.reasons.join(" · ")}</div>}
@@ -694,7 +745,7 @@ function Outcome({ record, onAgain }: { record: IntentView; onAgain: () => void 
             ))}
             {sig && (
               <a href={explorer(sig)} target="_blank" rel="noreferrer" style={{ fontSize: 13, textDecoration: "none", display: "flex", gap: 6, alignItems: "center", justifyContent: "center", padding: "12px 0 8px", borderTop: "1px solid var(--line-soft)" }}>
-                Ver na Solana <span className="mono">{short(sig)}</span> <Icon name="ext" size={12} />
+                {tr("Ver na Solana", "View on Solana")} <span className="mono">{short(sig)}</span> <Icon name="ext" size={12} />
               </a>
             )}
           </div>
@@ -702,11 +753,11 @@ function Outcome({ record, onAgain }: { record: IntentView; onAgain: () => void 
       </div>
       <div className="actions">
         <button type="button" className="btn" onClick={() => go("/")}>
-          Voltar ao início
+          {tr("Voltar ao início", "Back to home")}
         </button>
         {canRedo && (
           <button type="button" className="btn primary" onClick={onAgain}>
-            Criar de novo
+            {tr("Criar de novo", "Create again")}
           </button>
         )}
       </div>
@@ -723,9 +774,12 @@ function HandedOver() {
           <div className="hero-ico" style={{ background: "var(--accent)" }}>
             <Icon name="check" size={44} color="#0B0D10" sw={2.4} />
           </div>
-          <div style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em" }}>Carteira trocada</div>
+          <div style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em" }}>{tr("Carteira trocada", "Wallet changed")}</div>
           <div className="muted" style={{ fontSize: 15, lineHeight: 1.5 }}>
-            A carteira nova agora assina pela conta. A antiga saiu da multisig na Solana e não volta a valer.
+            {tr(
+              "A carteira nova agora assina pela conta. A antiga saiu da multisig na Solana e não volta a valer.",
+              "The new wallet now signs for the account. The old one was removed from the multisig on Solana and won't work again.",
+            )}
           </div>
         </div>
       </div>
@@ -738,14 +792,14 @@ function HandedOver() {
             ctx.go("/");
           }}
         >
-          Entrar com a carteira nova
+          {tr("Entrar com a carteira nova", "Sign in with the new wallet")}
         </button>
       </div>
     </>
   );
 }
 
-function Loading({ err, label = "Carregando…" }: { err: string | null; label?: string }) {
+function Loading({ err, label = tr("Carregando…", "Loading…") }: { err: string | null; label?: string }) {
   return (
     <>
       <TopBar title="" />

@@ -2,15 +2,30 @@ import { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { ensureActivation } from "./activation";
 import { trace } from "./trace";
+import { tr } from "./i18n";
 
-/** Nome exibido: o Mobile Wallet Adapter abre o app de carteira do celular (Phantom, Solflare…). */
+/**
+ * Nome da carteira guardado na sessão e mandado ao serviço: o Mobile Wallet
+ * Adapter abre o app de carteira do celular (Phantom, Solflare…). Fica em
+ * português nas duas línguas (o serviço também usa "Carteira do celular");
+ * para mostrar, use walletDisplay.
+ */
 export const walletLabel = (name: string) => (name === "Mobile Wallet Adapter" ? "Carteira do celular" : name);
+
+/** Nome da carteira para mostrar, no idioma do app. */
+export const walletDisplay = (name: string) =>
+  name === "Mobile Wallet Adapter" || name === "Carteira do celular"
+    ? tr("Carteira do celular", "Phone wallet")
+    : name.startsWith("Carteira de teste ")
+      ? tr(name, `Test wallet ${name.slice("Carteira de teste ".length)}`)
+      : name;
 
 /**
  * A carteira da sessão no meio de uma frase ("na Backpack", "Sua carteira").
  * Quem entrou pela biometria não tem carteira conectada: vira "carteira".
  */
-export const walletWord = (name: string | null | undefined) => (!name || name === "sem carteira" ? "carteira" : name === "Carteira do celular" ? "carteira do celular" : name);
+export const walletWord = (name: string | null | undefined) =>
+  !name || name === "sem carteira" ? tr("carteira", "wallet") : name === "Carteira do celular" ? tr("carteira do celular", "phone wallet") : walletDisplay(name);
 
 /**
  * Carteiras pelo Wallet Standard (Phantom, Backpack, Solflare e outras se
@@ -81,7 +96,7 @@ export class ConnectedWallet {
     }
     trace("carteira:connect:ok", `${(out?.accounts ?? wallet.accounts).length} conta(s)`);
     const account = (out?.accounts ?? wallet.accounts)[0];
-    if (!account) throw new Error(`${wallet.name} não devolveu nenhuma conta`);
+    if (!account) throw new Error(tr(`${walletDisplay(wallet.name)} não devolveu nenhuma conta`, `${walletDisplay(wallet.name)} returned no account`));
     return new ConnectedWallet(wallet, account, cluster);
   }
 
@@ -125,7 +140,7 @@ export class ConnectedWallet {
   }
 
   async signMessage(text: string): Promise<string> {
-    await this.gate("Abrir a carteira para assinar o texto");
+    await this.gate(tr("Abrir a carteira para assinar o texto", "Open the wallet to sign the message"));
     trace("carteira:signMessage:inicio", `${this.wallet.name} ativacao=${(navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation?.isActive}`);
     try {
       const [out] = await this.wallet.features["solana:signMessage"].signMessage({ account: this.account, message: new TextEncoder().encode(text) });
@@ -142,7 +157,7 @@ export class ConnectedWallet {
    * é a pagadora; quem envia é o backend, depois de conferir os bytes.
    */
   async signTransaction(tx: VersionedTransaction): Promise<string> {
-    await this.gate("Abrir a carteira para assinar a transação");
+    await this.gate(tr("Abrir a carteira para assinar a transação", "Open the wallet to sign the transaction"));
     const chain = chainFor(this.cluster);
     trace("carteira:signTransaction:inicio", this.wallet.name);
     try {

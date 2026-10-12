@@ -1,5 +1,6 @@
 import { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { kvGet, kvSet } from "./storage";
+import { tr } from "./i18n";
 
 /**
  * Carteira de teste (só localnet): faz o papel da Phantom para testar sem
@@ -67,11 +68,14 @@ export function makeDevWallet(name: string, confirm: () => DevConfirm) {
           const tx = VersionedTransaction.deserialize(transaction);
           const me = new PublicKey((await key(name)).publicKey);
           const n = tx.message.staticAccountKeys.length;
-          const payer = tx.message.staticAccountKeys[0]!.equals(me) ? "Taxa paga por esta carteira" : "Taxa paga por outra conta";
+          const payer = tx.message.staticAccountKeys[0]!.equals(me) ? tr("Taxa paga por esta carteira", "Fee paid by this wallet") : tr("Taxa paga por outra conta", "Fee paid by another account");
           const ok = await confirm()({
             walletName: name,
             kind: "transaction",
-            text: `Assinar transação (${tx.message.compiledInstructions.length} instrução(ões), ${n} contas). ${payer} (${tx.message.header.numRequiredSignatures} assinatura(s) × 0,000005 SOL).`,
+            text: tr(
+              `Assinar transação (${tx.message.compiledInstructions.length} instrução(ões), ${n} contas). ${payer} (${tx.message.header.numRequiredSignatures} assinatura(s) × 0,000005 SOL).`,
+              `Sign transaction (${tx.message.compiledInstructions.length} instruction(s), ${n} accounts). ${payer} (${tx.message.header.numRequiredSignatures} signature(s) × 0.000005 SOL).`,
+            ),
           });
           if (!ok) throw new Error("assinatura recusada na carteira");
           tx.addSignature(me, await sign(tx.message.serialize()));

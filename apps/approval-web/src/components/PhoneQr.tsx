@@ -3,6 +3,7 @@ import QRCode from "qrcode";
 import { errorText, useApp } from "../app";
 import { api } from "../lib/api";
 import { Icon } from "../icons";
+import { tr } from "../lib/i18n";
 
 type Created = { token: string; url: string; link: string; expiresAt: number; https: boolean };
 type Status = { status: "WAITING" | "DONE" | "FAILED" | "EXPIRED"; error: string | null; result: any };
@@ -59,10 +60,10 @@ export function PhoneQr({ create, title, steps, onDone }: { create: () => Promis
   return (
     <div className="qr-box">
       <div style={{ fontSize: 17, fontWeight: 600, textAlign: "center" }}>{title}</div>
-      {qr && phase === "WAITING_SCAN" && <img className="qr" src={qr} alt="QR code para a carteira do celular" />}
+      {qr && phase === "WAITING_SCAN" && <img className="qr" src={qr} alt={tr("QR code para a carteira do celular", "QR code for the phone wallet")} />}
       {phase === "WAITING_SCAN" && qr && (
         <div className="status" style={{ justifyContent: "center", fontSize: 13 }}>
-          <span className="spinner" /> Esperando o celular terminar…
+          <span className="spinner" /> {tr("Esperando o celular terminar…", "Waiting for the phone to finish…")}
         </div>
       )}
       {phase === "DONE" && (
@@ -70,7 +71,7 @@ export function PhoneQr({ create, title, steps, onDone }: { create: () => Promis
           <div className="dot" style={{ background: "var(--accent)", width: 44, height: 44 }}>
             <Icon name="check" size={24} color="#0B0D10" sw={2.6} />
           </div>
-          <div style={{ fontWeight: 600 }}>Feito no celular</div>
+          <div style={{ fontWeight: 600 }}>{tr("Feito no celular", "Done on the phone")}</div>
         </div>
       )}
       {phase === "WAITING_SCAN" && (
@@ -84,20 +85,23 @@ export function PhoneQr({ create, title, steps, onDone }: { create: () => Promis
         <div className="banner warn" style={{ fontSize: 12 }}>
           <Icon name="shieldalert" size={16} color="#F2B33D" />
           <div>
-            Este QR aponta para <span className="mono">{new URL(req.url).host}</span> (sem HTTPS): só funciona como "celular de teste" (outra aba). Para o celular de verdade, rode <span className="mono">pnpm dev:devnet</span>.
+            {tr("Este QR aponta para ", "This QR points to ")}
+            <span className="mono">{new URL(req.url).host}</span>
+            {tr(' (sem HTTPS): só funciona como "celular de teste" (outra aba). Para o celular de verdade, rode ', ' (no HTTPS): it only works as a "test phone" (another tab). For a real phone, run ')}
+            <span className="mono">pnpm dev:devnet</span>.
           </div>
         </div>
       )}
       {ctx.config.devTools && req && phase === "WAITING_SCAN" && (
         <a className="btn small" href={req.url} target="_blank" rel="noreferrer">
-          <Icon name="phone" size={16} /> Abrir no celular de teste
+          <Icon name="phone" size={16} /> {tr("Abrir no celular de teste", "Open on test phone")}
         </a>
       )}
       {(phase === "FAILED" || phase === "EXPIRED" || err) && (
         <>
-          <div className="banner danger">{err ?? st?.error ?? "O QR expirou."}</div>
+          <div className="banner danger">{err ?? st?.error ?? tr("O QR expirou.", "The QR code expired.")}</div>
           <button type="button" className="btn small" onClick={() => void make()}>
-            Gerar outro QR
+            {tr("Gerar outro QR", "New QR code")}
           </button>
         </>
       )}
@@ -113,11 +117,15 @@ export function PhoneQrSheet(props: Parameters<typeof PhoneQr>[0] & { onClose: (
         <div className="grab" style={{ alignSelf: "center" }} />
         <PhoneQr {...props} />
         <button type="button" className="linkbtn" onClick={props.onClose}>
-          Fechar
+          {tr("Fechar", "Close")}
         </button>
       </div>
     </div>
   );
 }
 
-export const SCAN_STEPS = ["Aponte a câmera de um celular Android para o código e abra o link", "No celular: entre com a sua carteira e confira o que vai ser assinado", "Confirme com a biometria e assine na carteira"];
+export const SCAN_STEPS = [
+  tr("Aponte a câmera de um celular Android para o código e abra o link", "Point an Android phone's camera at the code and open the link"),
+  tr("No celular: entre com a sua carteira e confira o que vai ser assinado", "On the phone: sign in with your wallet and check what will be signed"),
+  tr("Confirme com a biometria e assine na carteira", "Confirm with fingerprint or face and sign in the wallet"),
+];
