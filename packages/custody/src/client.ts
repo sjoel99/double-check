@@ -78,7 +78,7 @@ export const emailInput = (raw: string) => raw.trim().toLowerCase();
 
 /** Texto que a chave do webapp assina para cadastrar um e-mail de alerta. */
 export function emailBindingMessage(multisig: string, email: string) {
-  return `Dupla Chave: enviar os alertas da conta ${multisig} para ${email}`;
+  return `Double Check: enviar os alertas da conta ${multisig} para ${email}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,7 +102,7 @@ export function securityChangeParties(role: SecurityChangeRole, roles: AccountRo
 /** Texto que a chave nova assina (memo): prova de posse ligada a esta troca e a esta conta. */
 export function securityChangeMemo(c: SecurityChangeDesc) {
   const what = c.role === "CLIENT" ? "nova carteira" : c.role === "WEBAPP" ? "nova chave do webapp" : "nova chave do serviço";
-  return `Dupla Chave: ${what} na conta ${c.multisig} (${c.cluster}). Pedido ${c.id}. Executa em ${Math.round(c.delaySeconds / 3600)} h, se ninguém vetar.`;
+  return `Double Check: ${what} na conta ${c.multisig} (${c.cluster}). Pedido ${c.id}. Executa em ${Math.round(c.delaySeconds / 3600)} h, se ninguém vetar.`;
 }
 
 export function securityRequestInstructionsFor(c: SecurityChangeDesc, roles: AccountRoles): TransactionInstruction[] {
@@ -124,7 +124,7 @@ export function securityRequestInstructionsFor(c: SecurityChangeDesc, roles: Acc
 
 /** Texto do "Não fui eu", assinado por um votante do usuário que não está sendo trocado. */
 export function vetoMessage(c: { id: string; multisig: string; role: SecurityChangeRole; newKey: string }) {
-  return ["Dupla Chave", "Não fui eu: cancelar esta troca de chave.", "", `Conta: ${c.multisig}`, `Troca: ${c.role} → ${c.newKey}`, `Pedido: ${c.id}`].join("\n");
+  return ["Double Check", "Não fui eu: cancelar esta troca de chave.", "", `Conta: ${c.multisig}`, `Troca: ${c.role} → ${c.newKey}`, `Pedido: ${c.id}`].join("\n");
 }
 
 // ---------------------------------------------------------------------------

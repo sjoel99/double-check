@@ -1,4 +1,4 @@
-# Dupla Chave (devnet) na VPS, atrás do mesmo Cloudflare Tunnel do resto.
+# Double Check (devnet) na VPS, atrás do mesmo Cloudflare Tunnel do resto.
 # Hostname público → http://duplachave:80
 #
 # - duplachave (nginx): app estático, /api → API, /rpc → RPC da devnet

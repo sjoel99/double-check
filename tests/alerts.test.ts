@@ -122,13 +122,13 @@ describe("ResendMailer", () => {
       calls.push({ url, init });
       return new Response(JSON.stringify({ id: "abc" }), { status: 200 });
     }) as unknown as typeof fetch;
-    const m = new ResendMailer({ apiKey: "re_test_123", from: "Dupla Chave <alertas@exemplo.com>", fetchImpl });
+    const m = new ResendMailer({ apiKey: "re_test_123", from: "Double Check <alertas@exemplo.com>", fetchImpl });
     expect(await m.send({ to: "a@b.com", subject: "s", text: "t", html: "<p>t</p>" }, "k1")).toEqual({ id: "abc" });
     expect(calls[0]!.url).toBe("https://api.resend.com/emails");
     const h = calls[0]!.init.headers as Record<string, string>;
     expect(h.authorization).toBe("Bearer re_test_123");
     expect(h["idempotency-key"]).toBe("k1");
-    expect(JSON.parse(calls[0]!.init.body as string)).toMatchObject({ from: "Dupla Chave <alertas@exemplo.com>", to: ["a@b.com"], subject: "s" });
+    expect(JSON.parse(calls[0]!.init.body as string)).toMatchObject({ from: "Double Check <alertas@exemplo.com>", to: ["a@b.com"], subject: "s" });
 
     const bad = new ResendMailer({ apiKey: "re_x_1234567", from: "x", fetchImpl: (async () => new Response("domínio não verificado", { status: 403 })) as unknown as typeof fetch });
     await expect(bad.send({ to: "a@b.com", subject: "s", text: "t", html: "t" })).rejects.toThrow(/Resend 403/);

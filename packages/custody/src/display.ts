@@ -74,8 +74,8 @@ export function renderIntent(
  * mensagem do POST — então o resumo do que vai ser assinado vai aqui.
  */
 export function qrLabel(intent: TransactionIntent): string {
-  if (intent.type === "TRANSFER_SOL") return `Dupla Chave · Enviar ${formatUnits(intent.amountLamports, 9)} SOL para ${intent.destination === intent.vault ? "o seu Vault" : short(intent.destination)}`;
+  if (intent.type === "TRANSFER_SOL") return `Double Check · Enviar ${formatUnits(intent.amountLamports, 9)} SOL para ${intent.destination === intent.vault ? "o seu Vault" : short(intent.destination)}`;
   if (intent.type === "ROTATE_MEMBER")
-    return intent.role === "CLIENT" ? `Dupla Chave · Trocar a carteira da conta por ${short(intent.newKey)}` : "Dupla Chave · Nova chave do serviço (recuse se não pediu)";
-  return "Dupla Chave · Confirmar transação";
+    return intent.role === "CLIENT" ? `Double Check · Trocar a carteira da conta por ${short(intent.newKey)}` : "Double Check · Nova chave do serviço (recuse se não pediu)";
+  return "Double Check · Confirmar transação";
 }

@@ -137,7 +137,7 @@ export function Home() {
       <div className="row-between" style={{ padding: "20px 20px 8px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <Logo />
-          <div style={{ fontSize: 16, fontWeight: 600, whiteSpace: "nowrap" }}>Dupla Chave</div>
+          <div style={{ fontSize: 16, fontWeight: 600, whiteSpace: "nowrap" }}>Double Check</div>
         </div>
         <button type="button" className="wallet-chip" onClick={() => ctx.go("/security")} aria-label="Carteira e segurança">
           <Icon name="key" size={14} />
@@ -348,7 +348,7 @@ export function Deposit() {
     // Celular: QR de transferência do Solana Pay — a carteira envia direto para o Vault.
     if (!viaPhone || !acc) return;
     const amt = amount.trim().replace(",", ".");
-    const params = new URLSearchParams({ label: "Dupla Chave", message: "Depósito no seu Vault" });
+    const params = new URLSearchParams({ label: "Double Check", message: "Depósito no seu Vault" });
     if (/^\d+(\.\d{1,9})?$/.test(amt)) params.set("amount", amt);
     void QRCode.toDataURL(`solana:${acc.account.vault}?${params.toString()}`, { margin: 1, width: 480 }).then(setQr);
   }, [viaPhone, acc, amount]);

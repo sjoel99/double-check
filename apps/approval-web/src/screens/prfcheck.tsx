@@ -22,7 +22,7 @@ export function PrfCheck() {
       const salt = new TextEncoder().encode("duplachave-prf-teste");
       const cred = (await navigator.credentials.create({
         publicKey: {
-          rp: { id: location.hostname, name: "Dupla Chave (teste PRF)" },
+          rp: { id: location.hostname, name: "Double Check (teste PRF)" },
           user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "teste-prf", displayName: "Teste PRF" },
           challenge: crypto.getRandomValues(new Uint8Array(32)),
           pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],

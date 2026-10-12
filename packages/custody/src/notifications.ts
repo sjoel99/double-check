@@ -54,7 +54,7 @@ export function renderEmail(e: AlertEvent | { kind: "CODE"; code: string }, appU
       return {
         subject: `Alerta: pedido para trocar a ${ROLE[e.role]} da sua conta`,
         lines: [
-          `Foi pedido trocar a ${ROLE[e.role]} da sua conta Dupla Chave pela chave ${short(e.newKey)}.`,
+          `Foi pedido trocar a ${ROLE[e.role]} da sua conta Double Check pela chave ${short(e.newKey)}.`,
           `Se ninguém vetar, a troca executa em ${when(e.executeAfter)}.`,
           `Não foi você? Abra ${security} e toque em "Não fui eu" antes disso.`,
           "Este pedido sozinho não move fundos.",
@@ -67,17 +67,17 @@ export function renderEmail(e: AlertEvent | { kind: "CODE"; code: string }, appU
     case "TRANSFER_EXECUTED":
       return { subject: `Envio executado: ${sol(e.amountLamports)} SOL`, lines: [`Saíram ${sol(e.amountLamports)} SOL do seu Vault para ${e.destination}.`, `Transação: ${e.signature}`] };
     case "EMAIL_CHANGED":
-      return { subject: "E-mail de alerta alterado", lines: [`Os alertas da sua conta Dupla Chave passam a ir para ${e.newEmail}.`, `Não foi você? Abra ${security}.`] };
+      return { subject: "E-mail de alerta alterado", lines: [`Os alertas da sua conta Double Check passam a ir para ${e.newEmail}.`, `Não foi você? Abra ${security}.`] };
     case "INVARIANT_VIOLATION":
       return { subject: "Alerta: configuração da conta diferente do esperado", lines: ["A conferência na Solana encontrou a sua conta diferente do modelo esperado. Não assine nada até conferir.", security] };
     case "CODE":
-      return { subject: `Código de confirmação: ${e.code}`, lines: [`Seu código para confirmar este e-mail no Dupla Chave é ${e.code}.`, "Vale por 10 minutos. Se não foi você, ignore."] };
+      return { subject: `Código de confirmação: ${e.code}`, lines: [`Seu código para confirmar este e-mail no Double Check é ${e.code}.`, "Vale por 10 minutos. Se não foi você, ignore."] };
   }
 }
 
 function toEmail(to: string, r: { subject: string; lines: string[] }): Email {
-  const text = [...r.lines, "", "— Dupla Chave"].join("\n");
-  const html = `<div style="font-family:system-ui,sans-serif;font-size:15px;line-height:1.5;color:#111">${r.lines.map((l) => `<p>${esc(l)}</p>`).join("")}<p style="color:#666;font-size:13px">— Dupla Chave</p></div>`;
+  const text = [...r.lines, "", "— Double Check"].join("\n");
+  const html = `<div style="font-family:system-ui,sans-serif;font-size:15px;line-height:1.5;color:#111">${r.lines.map((l) => `<p>${esc(l)}</p>`).join("")}<p style="color:#666;font-size:13px">— Double Check</p></div>`;
   return { to, subject: r.subject, text, html };
 }
 

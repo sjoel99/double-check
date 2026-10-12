@@ -310,7 +310,7 @@ export class CustodyService {
       rentCollector: wallet,
     });
     const id = randomUUID();
-    const memo = `Dupla Chave: criar sua conta 2 de 3 (sua carteira + a chave do webapp + o serviço). Ref ${id.slice(0, 8)}`;
+    const memo = `Double Check: criar sua conta 2 de 3 (sua carteira + a chave do webapp + o serviço). Ref ${id.slice(0, 8)}`;
     const instructions = [memoIx(memo, [wallet, webapp]), created.instruction];
     await this.simulateWalletPaid(wallet, instructions, "~0,003 SOL para criar a conta");
     const built = await this.walletPaid(wallet, instructions, [createKey]);
@@ -1117,7 +1117,7 @@ export function policyText(reasons: string[], maxLamportsPerTx: bigint): string 
 
 /** Texto que a chave do webapp assina para guardar mais uma cópia cifrada. */
 export function webappCopyMessage(multisig: string, credentialId: string) {
-  return `Dupla Chave: guardar a chave do webapp cifrada para outra biometria. Conta ${multisig}. Credencial ${credentialId}`;
+  return `Double Check: guardar a chave do webapp cifrada para outra biometria. Conta ${multisig}. Credencial ${credentialId}`;
 }
 
 const EMAIL_CODE_TTL = 600;

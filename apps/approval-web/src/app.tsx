@@ -81,7 +81,7 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
     // No Android, a Phantom do celular entra pelo Mobile Wallet Adapter (a página chama o app da carteira).
     if (/Android/i.test(navigator.userAgent) && config.cluster !== "localnet" && !mwaRegistered) {
       mwaRegistered = true;
-      registerWallet(makeMwaWallet({ chain: config.cluster === "devnet" ? "solana:devnet" : "solana:mainnet", identity: { name: "Dupla Chave", uri: location.origin, icon: "icon.svg" } }) as unknown as StandardWallet);
+      registerWallet(makeMwaWallet({ chain: config.cluster === "devnet" ? "solana:devnet" : "solana:mainnet", identity: { name: "Double Check", uri: location.origin, icon: "icon.svg" } }) as unknown as StandardWallet);
     }
     return stop;
   }, [config.devTools]);

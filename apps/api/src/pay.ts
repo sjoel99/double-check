@@ -84,7 +84,7 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
     const rec = await d.store.getIntent(id);
     if (!rec) throw new SecurityError("INTENT_NOT_FOUND", id);
     await d.ownAccount(req, rec.accountId);
-    return create("SIGN_INTENT", id, rec.accountId, qrLabel(rec.intent).replace(/^Dupla Chave · /, ""));
+    return create("SIGN_INTENT", id, rec.accountId, qrLabel(rec.intent).replace(/^Double Check · /, ""));
   });
 
   /** Quem criou o pedido acompanha. O token é segredo do QR que o computador mostra. */

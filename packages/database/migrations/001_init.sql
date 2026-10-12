@@ -1,4 +1,4 @@
--- Dupla Chave — esquema inicial.
+-- Double Check — esquema inicial.
 -- O banco é índice/cache. O estado de segurança (membros, threshold, propostas)
 -- é sempre relido da Solana antes de qualquer decisão. Nada aqui é segredo:
 -- só chaves públicas, assinaturas e dados de operação.

@@ -10,7 +10,7 @@ import { verifyEd25519 } from "./signer";
  *
  * O servidor nunca "interpreta" o texto recebido: ele remonta o texto esperado
  * a partir do desafio que emitiu e confere a assinatura sobre esses bytes.
- * Começam com "Dupla Chave\n" — as carteiras recusam assinar mensagem que seja
+ * Começam com "Double Check\n" — as carteiras recusam assinar mensagem que seja
  * uma transação válida, e um texto assim não é.
  */
 
@@ -36,7 +36,7 @@ const iso = (t: number) => new Date(t * 1000).toISOString().replace(".000Z", "Z"
 
 export function possessionMessage(f: PossessionFields): string {
   return [
-    "Dupla Chave",
+    "Double Check",
     OPERATION_TEXT[f.operation],
     "",
     `Carteira: ${f.publicKey}`,
@@ -50,7 +50,7 @@ export function possessionMessage(f: PossessionFields): string {
 
 export function loginMessage(f: { publicKey: string; cluster: string; challenge: string; expiresAt: number }): string {
   return [
-    "Dupla Chave",
+    "Double Check",
     "Entrar na sua conta. Isto não aprova nenhuma transação.",
     "",
     `Carteira: ${f.publicKey}`,
@@ -66,7 +66,7 @@ export function loginMessage(f: { publicKey: string; cluster: string; challenge:
  */
 export function passkeyBindingMessage(f: { publicKey: string; account: string; cluster: string; credential: string; device: string; challenge: string }): string {
   return [
-    "Dupla Chave",
+    "Double Check",
     "Ativar a confirmação por biometria neste aparelho.",
     "",
     `Carteira: ${f.publicKey}`,

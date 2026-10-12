@@ -51,8 +51,8 @@ async function passkeyCreate(): Promise<PrfResult> {
   if (isMobile()) await ensureActivation("Criar a biometria deste aparelho");
   const cred = (await navigator.credentials.create({
     publicKey: {
-      rp: { id: location.hostname, name: "Dupla Chave" },
-      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "Dupla Chave", displayName: "Chave do webapp" },
+      rp: { id: location.hostname, name: "Double Check" },
+      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "Double Check", displayName: "Chave do webapp" },
       challenge: crypto.getRandomValues(new Uint8Array(32)),
       pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
       authenticatorSelection: { residentKey: "required", userVerification: "required" },

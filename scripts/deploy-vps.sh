@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Atualiza o Dupla Chave (devnet) na VPS: build do app, envia código + build e
+# Atualiza o Double Check (devnet) na VPS: build do app, envia código + build e
 # reconstrói a API. Não mexe em banco, chaves nem .env (ficam só na VPS).
 # NÃO rodar perto da rotina do solbalance (00h05 e 13h UTC).
 set -euo pipefail

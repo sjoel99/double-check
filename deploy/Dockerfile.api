@@ -1,4 +1,4 @@
-# API do Dupla Chave (devnet). Contexto: a raiz do repositório.
+# API do Double Check (devnet). Contexto: a raiz do repositório.
 FROM node:24-slim
 RUN corepack enable
 WORKDIR /app

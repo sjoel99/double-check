@@ -1,6 +1,6 @@
 # Modelo de ameaças
 
-**Escopo:** a multisig Squads v4 **2 de 3** do Dupla Chave.
+**Escopo:** a multisig Squads v4 **2 de 3** do Double Check.
 - Votam a Phantom, a chave do webapp (cifrada pela biometria do aparelho) e o serviço; só o operador do serviço cria e executa.
 - Operações atômicas, pagas pela Phantom.
 - Trocas de chave com prazo de 72 h e veto.

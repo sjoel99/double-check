@@ -1,208 +1,224 @@
-# Dupla Chave
+# Double Check
 
-Custódia na Solana em que **nenhuma chave sozinha move fundos**. Os ativos ficam no Vault de uma multisig [Squads v4](https://github.com/Squads-Protocol/v4) **2 de 3**. Votam:
+Solana custody where **no single key can move funds**.
 
-- a **Phantom** do usuário (ou outra carteira do Wallet Standard);
-- a **chave do webapp**, gerada no aparelho e cifrada pela biometria dele (passkey com PRF); o serviço guarda só o texto cifrado;
-- a **chave do serviço**, que só vota em trocas de chave, nunca em envios.
+- Live app (devnet): https://dupla.sjoel99.com
+- Leia em português: [README.pt-BR.md](README.pt-BR.md)
 
-Só o **operador** do serviço executa, depois de conferir a política. Com os dois votos do usuário, nem a Phantom nem o webapp executam, o que está provado no programa real.
+## The problem
 
-Trocar qualquer chave leva **72 h** e pode ser vetado ("Não fui eu") por quem ainda tem a chave que seria trocada. Perdeu o aparelho? A Phantom + o serviço recuperam o webapp. Perdeu a Phantom? A biometria + o serviço trocam a Phantom.
+A normal Solana wallet is one key. Whoever holds it owns the funds, so every way of losing or leaking that key is a total loss:
 
-**O serviço não paga nada.** Taxas e rent saem da Phantom.
+- **Seed phrase loss:** the device breaks or the backup is gone, and the funds are gone with it.
+- **Phishing and drainers:** a fake site or a malicious dApp gets one signature, and that signature is enough.
+- **Blind signing:** the wallet shows instructions the user cannot read, so the user approves whatever the site built.
 
-| | Custo para a Phantom |
+## The solution
+
+Funds live in the Vault of a [Squads v4](https://github.com/Squads-Protocol/v4) **2-of-3** multisig. Moving funds or changing a key always takes two independent votes, and execution is a separate permission held by a policy-checking operator. The guarantee comes from the Squads program itself: the backend, the database and the webapp can fail without any single key being able to move funds.
+
+## How it works
+
+### Three voters, one executor
+
+| Member | Squads permission | Where it lives | What it can do alone |
+|---|---|---|---|
+| User's wallet | Vote | Phantom, Backpack, Solflare or any [Wallet Standard](https://github.com/wallet-standard/wallet-standard) wallet | nothing: 1 vote, cannot execute |
+| Webapp key | Vote | Ed25519 key generated on the device, encrypted (AES-256-GCM) with a key derived from the passkey's WebAuthn **PRF** output; the service stores only the ciphertext | nothing: 1 vote, cannot execute |
+| Service key | Vote | KMS/HSM (dev: encrypted file) | nothing: 1 vote. It only votes on **key changes, never on sends** |
+| Service operator | Initiate + Execute | server | creates and executes what **already** has 2 votes; does not vote |
+
+- Only the operator executes, and it does so only after checking the policy. Even with both of the user's votes, neither the wallet nor the webapp key can execute; this is proven against the real program.
+- The account configuration is fixed and checked on-chain before every decision and after every key change: threshold 2, exactly these 3 voters with Vote only, the operator as the only member with Execute, no config authority, `time_lock = 0`, and the user's wallet as `rent_collector`.
+- **The service holds no SOL.** Fees and rent are paid by the user's wallet.
+
+### Sends: one atomic transaction
+
+A send is a single Solana transaction:
+
+```
+[ vault_transaction_create(creator = operator, rent_payer = wallet, memo = dk1:<intent hash>)
+  proposal_create(creator = operator, rent_payer = wallet)
+  proposal_approve(wallet)
+  proposal_approve(webapp key)
+  vault_transaction_execute(member = operator)
+  vault_transaction_accounts_close(rent_collector = wallet) ]
+fee payer: wallet · signers: wallet, webapp key, operator
+```
+
+All or nothing: if execution fails, not even the proposal is left on-chain. The Squads account rent is charged and refunded within the same transaction.
+
+### Key changes: 72 h delay and veto
+
+Any of the three voters can be replaced. A change is one ConfigTransaction `[AddMember(new, Vote), RemoveMember(current)]` (plus `SetRentCollector(new)` when replacing the wallet), created by the operator and approved by two voters in the same transaction. A memo signed by the new key proves possession. Adding and removing in one transaction means the intermediate 4-voter state never exists on-chain.
+
+The change then waits **72 hours**. During that window, whoever still holds the key being replaced can tap **"It wasn't me"** and veto it with a signed message. Because only the operator executes, the veto takes effect immediately, and a vetoed approved proposal goes stale at the next executed change (proven on-chain).
+
+| Change | When | Votes on the request | Pays | Vetoes |
+|---|---|---|---|---|
+| Replace the wallet | wallet lost, seed leaked, or switching wallets | webapp key + service | the **new** wallet | the current wallet |
+| Recover the webapp | device lost or replaced | wallet + service | the wallet | the current webapp key |
+| Rotate the service key | scheduled rotation or compromise (admin) | wallet + service | the wallet | wallet or webapp key |
+
+Squads v4 has a single, global `time_lock` that would also delay every send, so the delay is enforced by the operator, the only member with Execute. If the service is fully compromised the delay disappears, but the attacker still needs a second vote from the user.
+
+### Recovery
+
+- **Lost device:** the wallet + the service recover the webapp key on a new device (72 h, vetoable).
+- **Lost wallet:** sign in with the passkey ("Lost your wallet? Sign in with biometrics"). The device discovers the passkey, fetches the encrypted copy from the service, opens the webapp key and signs in. The webapp key + the service then replace the wallet (72 h, vetoable).
+- Passkeys synced by the password manager also open the webapp key on other devices.
+
+### Email alerts
+
+The 72 h window only protects users who hear about the request in time. The service sends email alerts (via the Resend HTTP API) for key-change requests (with the execution date and the "It wasn't me" path), vetoes and completed changes, executed sends, account configuration that does not match the model, and email changes.
+
+- Registering or changing the alert address requires a signature from the **webapp key** plus a 6-digit code sent to the address (valid 10 min, one attempt, only its hash is stored). A leaked wallet seed can sign in but cannot redirect alerts. The old address is notified of a change.
+- Emails contain no authorizing link and no secret; they only point to the Security screen, where everything is checked again.
+- Without email, the pending change is still shown on the home screen.
+
+## The flows
+
+**Sign-up**
+1. The webapp generates the webapp key and encrypts it with this device's passkey (PRF).
+2. The service prepares the 2-of-3 account creation. The webapp verifies the transaction: only the creation, with the right members, nothing hidden.
+3. The webapp key and the wallet sign the binding memo (proof of possession of both keys inside the transaction itself), and the wallet pays (~0.003 SOL).
+
+**Send**
+1. The user requests a send. The service checks the policy and simulates; nothing goes on-chain.
+2. The webapp receives the atomic transaction, **rebuilds it on its own from what it displays, and compares byte-for-byte**. It reads the multisig through an RPC pinned at build time.
+3. **Biometrics:** the passkey opens the webapp key, which signs those exact bytes. The service operator signs the execution, and only for messages it prepared itself, within the validity window, carrying a valid webapp key signature.
+4. The wallet signs **once** and pays. If anything fails, nothing happens on Solana.
+
+**Key change:** request (two votes) → 72 h → complete. Before that, "It wasn't me" cancels. See [docs/KEY_ROTATION.md](docs/KEY_ROTATION.md).
+
+**Phone (QR + Mobile Wallet Adapter)**
+
+The QR code on the computer opens **our webapp** on the phone. There it verifies the transaction and opens the webapp key with the phone's biometrics. It then calls the wallet through the Mobile Wallet Adapter (Android), which connects and signs in a single round-trip. The phone does not even need to sign in: the QR token grants access to that one transaction and to the encrypted copy of the key, and signing still requires biometrics + wallet.
+
+**The "malicious server" demo**
+
+In the send form, enable "Simular servidor malicioso" (simulate a malicious server). The server then displays 1/10 of the real amount. The webapp rebuilds the transaction from what it shows, sees that the bytes do not match, and displays **Transação bloqueada** (transaction blocked) with the real amount. This is the defense against transaction substitution and blind signing: the webapp key only signs bytes the webapp has rebuilt and matched.
+
+## Costs
+
+| | Cost to the user's wallet |
 |---|---|
-| Criar a conta (uma vez) | ~0,003 SOL |
-| Cada envio | 0,000015 SOL. Na hora, a Phantom precisa *ter* ~0,0065 SOL: o depósito das contas da Squads volta na mesma transação |
-| Pedido de troca de chave | ~0,000015 SOL + ~0,006 SOL de depósito, que volta na conclusão |
-| Depósito no Vault | 0,000005 SOL |
-| Entrar | grátis (assinatura de texto) |
+| Create the account (once) | ~0.003 SOL |
+| Each send | 0.000015 SOL. At signing time the wallet must *hold* ~0.0065 SOL: the Squads account deposit is refunded in the same transaction |
+| Key-change request | ~0.000015 SOL + ~0.006 SOL deposit, refunded on completion |
+| Deposit into the Vault | 0.000005 SOL |
+| Sign in | free (message signature) |
 
-Quem garante isso é o programa da Squads. Backend, banco e webapp podem falhar sem que uma chave isolada mova fundos.
+## What the tests prove
 
-## Os fluxos
+`pnpm test` runs against the Squads v4 ELF downloaded from **mainnet** (sha256 in `fixtures/ORIGEM.md`), loaded into **LiteSVM** with signature verification on. The attacker talks to the program directly, bypassing the backend. 76 tests, about 4 seconds, no network.
 
-**Cadastro**
-1. O webapp gera a chave do webapp e a cifra com a biometria deste aparelho.
-2. O serviço prepara a criação da conta 2 de 3. O webapp confere a transação: só a criação, com os membros certos, sem nada escondido.
-3. A chave do webapp e a Phantom assinam o memo de vínculo, e a Phantom paga (~0,003 SOL).
+```
+wallet alone = impossible                      (Test 1)
+service alone = impossible                     (Test 2)
+wallet + webapp key, operator executes = works (Test 3)
+replacing the wallet needs two votes           (Tests 6, 8)
+replacing the service key needs two votes      (Tests 7, 9)
+create + approve + execute is atomic           (a failure leaves nothing on-chain)
+the service spends no SOL                      (the wallet pays fee and rent; rent is refunded)
+```
 
-**Envio**
-1. O usuário pede o envio. O serviço confere a política e simula; nada vai para a chain.
-2. O webapp recebe a transação atômica, remonta sozinho a partir do que mostra e compara byte a byte.
-3. **Biometria:** abre a chave do webapp, que assina esses bytes. O operador do serviço assina a execução.
-4. A Phantom assina **uma vez** e paga. Se algo falhar, nada acontece na Solana.
+Also covered:
+- the executor and the proposer cannot vote;
+- the wallet cannot create Vault transactions;
+- replay;
+- expiration;
+- proof of possession of the new key;
+- swapping the new key after approval;
+- a fully compromised backend;
+- the app showing A while the chain has B;
+- a tampered audit log.
 
-**Troca de chave:** pedido (dois votos) → 72 h → concluir. Antes disso, "Não fui eu" cancela. Ver [docs/KEY_ROTATION.md](docs/KEY_ROTATION.md).
+The full invariant-to-test map is in [docs/SECURITY_INVARIANTS.md](docs/SECURITY_INVARIANTS.md).
 
-## Pelo celular (QR)
+## Quick start
 
-O QR do computador abre **o nosso webapp** no celular. Ali ele confere a transação e abre a chave do webapp com a biometria do celular. Depois chama a Phantom pelo Mobile Wallet Adapter (Android), que conecta e assina na mesma abertura. Para assinar, o celular nem precisa entrar na conta: o token do QR dá acesso àquela transação.
+```bash
+pnpm install
+pnpm test     # 76 tests, ~4 s, no network: mainnet Squads v4 running in LiteSVM
+pnpm dev      # offline surfpool (Squads v4 from fixtures) + API :8787 + app :5173
+```
 
-### Testar com o seu celular (devnet)
+Open **http://127.0.0.1:5173**. The UI text is in Portuguese for now; the labels below are given as they appear on screen, with a translation.
+
+### 5-minute walkthrough
+
+1. **Pick a wallet.** On localnet there are two **Carteiras de teste** (test wallets A and B) that mimic the wallet popup, and a **biometria de teste** (test biometrics) that mimics a fingerprint. The webapp requests test SOL, creates the webapp key (confirm the biometrics), and the wallet signs the account creation (~0.003 SOL).
+2. **Deposit:** "10 SOL no Vault" (test tools) or **Depositar** (the wallet pays).
+3. **Send:** address and amount → **Revisar** (Review) → check the "Conferido…" (Verified) summary → **Assinar** (Sign). The biometrics open the webapp key, the operator signs, and the wallet signs once. Under "Ou continuar no celular (QR)" (or continue on the phone), **Abrir no celular de teste** opens another tab that plays the phone.
+4. **Malicious server:** tick "Simular servidor malicioso" and make another send. The server shows 1/10 of the amount; the webapp rebuilds the transaction, sees it does not match, and shows **Transação bloqueada** with the real amount.
+5. **Recover the webapp:** Segurança (Security) → **Recuperar o webapp neste aparelho** (recover the webapp on this device). The biometrics create the new key and the wallet votes and pays. On localnet the delay is **2 minutes** (72 h on the hosted app). The home screen shows the pending change; after the delay, **Concluir troca** (complete change).
+6. **It wasn't me:** request another recovery and tap **Não fui eu** ("It wasn't me"): the biometrics (current webapp key) veto it.
+7. **Lost wallet:** Sair (sign out) → **Perdeu a carteira? Entrar com a biometria** (lost your wallet? sign in with biometrics) → Segurança → **Trocar a carteira** (replace the wallet) with test wallet B (which needs SOL).
+
+### With a real wallet
+
+Phantom and other Wallet Standard wallets appear in the list automatically. On localnet, signing messages and transactions works, but the wallet simulates the transaction on its own network (mainnet/devnet), where this account does not exist, so it may warn that it could not simulate. To avoid that, run on devnet: `SOLANA_RPC_URL=https://api.devnet.solana.com SOLANA_CLUSTER=devnet pnpm dev`, with devnet SOL in the wallet and the wallet set to devnet (or use `pnpm dev:devnet`).
+
+When replacing the wallet with another account in the same wallet app, switch accounts between the steps: the new account signs the message and the current one signs the change. The app says which account must be active.
+
+### Testing with your phone (devnet)
 
 ```bash
 pnpm dev:devnet
 ```
 
-O script:
-- sobe um túnel HTTPS (cloudflared) para o app, porque o celular e a biometria exigem HTTPS;
-- sobe um Postgres em Docker e chaves persistentes;
-- aponta tudo para a devnet.
+This starts an HTTPS tunnel (cloudflared), because the phone and passkeys require HTTPS; a Postgres container with persistent keys; and points everything at devnet. Your wallet pays, so it needs devnet SOL (https://faucet.solana.com; 0.05 SOL covers many tests). In Phantom on the phone, enable devnet: Settings → Developer Settings → Testnet Mode → Solana Devnet. On the computer, open the tunnel URL the script prints (or http://localhost:5173; 127.0.0.1 does not work for passkeys).
 
-Quem paga é a sua Phantom: ela precisa de SOL de devnet (https://faucet.solana.com; 0,05 SOL dá para muitos testes).
+Passkeys are bound to the domain and the tunnel URL changes on every run, so accounts created on one tunnel cannot open the webapp key on the next one (only through "Recuperar o webapp"). For phone testing, the hosted app at https://dupla.sjoel99.com has a fixed domain.
 
-Na Phantom do celular, ative o modo devnet: Configurações → Configurações de desenvolvedor → Modo testnet → Solana Devnet. No computador, abra o endereço do túnel que o script imprime (ou http://localhost:5173). O 127.0.0.1 não serve para biometria.
-
-A biometria (passkey) fica presa ao domínio. O túnel muda a cada `pnpm dev:devnet`, então contas criadas num túnel não abrem a chave do webapp no túnel seguinte (só com "Recuperar o webapp"). Para testar com o celular, prefira o ambiente na VPS (`https://dupla.sjoel99.com`), com domínio fixo.
-
-Em localnet (`pnpm dev`), há a **biometria de teste** e o botão **Abrir no celular de teste**, que abre o link do QR em outra aba. Assim dá para testar o caminho do QR sem aparelho.
-
-## Testar agora
+### Other commands
 
 ```bash
-cd ~/Desenvolvimento/Pessoal/duplachave
-pnpm install
-pnpm test     # 67 testes, ~4 s, sem rede: o Squads v4 da mainnet rodando no LiteSVM
-pnpm dev      # surfpool offline (Squads v4 das fixtures) + API :8787 + app :5173
-```
-
-Abra **http://127.0.0.1:5173**.
-
-### Roteiro (5 minutos)
-
-1. **Escolha a carteira.** Em localnet há duas **Carteiras de teste** (A e B) que imitam a janela da Phantom, e a **biometria de teste**, que imita a digital. O webapp pede SOL de teste, cria a chave do webapp (confirme a biometria) e a carteira assina a criação da conta (~0,003 SOL).
-2. **Depositar:** "10 SOL no Vault" (ferramentas de teste) ou **Depositar** (a carteira paga).
-3. **Enviar:** endereço e valor → **Revisar** → "Conferido…" → **Confirmar e assinar**. A biometria abre a chave do webapp, o operador assina e a carteira assina uma vez. Em "Ou continuar no celular (QR)" → **Abrir no celular de teste**, outra aba faz o papel do celular.
-4. **Servidor malicioso:** marque a opção e faça outro envio. O servidor mostra 1/10 do valor; o webapp remonta a transação, vê que não bate e mostra **Transação bloqueada** com o valor real.
-5. **Recuperar o webapp:** Segurança → **Recuperar o webapp neste aparelho**. A biometria cria a chave nova e a carteira vota e paga. Em localnet o prazo é **2 min** (`pnpm dev`; na VPS, 72 h). A tela inicial avisa da troca pendente; depois do prazo, **Concluir troca**.
-6. **Não fui eu:** peça outra recuperação e toque em **Não fui eu**: a biometria (chave atual do webapp) veta.
-7. **Perdeu a Phantom:** Sair → **Perdeu a Phantom? Entrar com a biometria** → Segurança → **Trocar a Phantom** com a Carteira de teste B (que precisa de SOL).
-
-### Com a Phantom de verdade
-
-A Phantom aparece na lista sozinha, pelo Wallet Standard. Em localnet, assinar mensagens e transações funciona. Mas a Phantom simula a transação na rede dela (mainnet/devnet), onde esta conta não existe, então ela pode mostrar um aviso de que não conseguiu simular. Para testar sem esse aviso, rode em devnet: `SOLANA_RPC_URL=https://api.devnet.solana.com SOLANA_CLUSTER=devnet pnpm dev`, com SOL de devnet na Phantom e ela em devnet (ou use `pnpm dev:devnet`).
-
-A Phantom precisa de SOL na rede em que está: em localnet o app pede SOL de teste para ela no cadastro.
-
-Na troca de carteira com a mesma Phantom, troque de conta dentro dela entre os passos: a conta nova assina o texto e a atual assina a troca. O app avisa qual conta tem que estar ativa.
-
-### Ambiente
-
-O surfpool roda **offline**, com o ELF do Squads v4 carregado das fixtures. No modo fork (`SURFPOOL_FORK=1 pnpm dev`), cada conta nova vira uma consulta ao RPC público da mainnet, que limita por IP e fazia as aprovações falharem com "Internal error". Tudo fica em memória (API e surfpool): reiniciar `pnpm dev` zera as contas.
-
-## O que está provado
-
-`pnpm test` roda contra o ELF do Squads v4 baixado da mainnet (sha256 em `fixtures/ORIGEM.md`):
-
-```
-carteira sozinha = impossível                (Teste 1)
-serviço sozinho = impossível                 (Teste 2)
-carteira + serviço = possível                (Teste 3)
-trocar a carteira exige carteira + serviço   (Testes 6, 8)
-trocar a chave do serviço exige os dois      (Testes 7, 9)
-criar + aprovar + executar é atômico         (falha não deixa nada na chain)
-o serviço não gasta SOL                      (a carteira paga taxa e rent; o rent volta)
-```
-
-Também estão cobertos:
-- executor e proponente não votam;
-- a carteira não cria transações no Vault;
-- replay;
-- expiração;
-- prova de posse da carteira nova;
-- trocar a chave nova depois da aprovação;
-- backend inteiro comprometido;
-- app mostrando A enquanto a chain tem B;
-- auditoria adulterada.
-
-O mapa completo está em [docs/SECURITY_INVARIANTS.md](docs/SECURITY_INVARIANTS.md).
-
-## Documentos
-
-- [docs/RESEARCH.md](docs/RESEARCH.md): versões, APIs usadas e o comportamento do programa.
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): fluxo, membros e decisões de segurança.
-- [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md): ameaças com impacto, mitigação e risco residual.
-- [docs/KEY_ROTATION.md](docs/KEY_ROTATION.md): troca da carteira e da chave do serviço, e a máquina de estados.
-- [docs/RECOVERY.md](docs/RECOVERY.md): por que não há recuperação no v4 puro e os caminhos possíveis.
-- [docs/SECURITY_INVARIANTS.md](docs/SECURITY_INVARIANTS.md): invariantes ↔ testes.
-
-## Estrutura
-
-```
-apps/api               Fastify: cadastro/login por assinatura, intenções, transação da carteira, troca de carteira
-apps/approval-web      app (React; Wallet Standard; carteiras de teste em localnet)
-packages/shared        intenção canônica (hash), schemas, erros
-packages/crypto        Signer/ServerSigner, textos que a carteira assina (vínculo, login)
-packages/solana        Chain (RPC | LiteSVM), leitor de instruções
-packages/squads        estado on-chain, construtores, invariantes, derivação da intenção
-packages/policy-engine política padrão
-packages/custody       orquestração (servidor) e revisão + montagem da transação (app)
-packages/database      Postgres (PgStore) + migração
-tests/                 on-chain, protocolo, regressões, banco
-fixtures/              ELF do Squads v4 e ProgramConfig da mainnet
-```
-
-## Outros comandos
-
-```bash
-pnpm typecheck                     # pacotes, API e app
-pnpm smoke                         # fluxo completo via RPC (surfpool ou devnet) sem o app
-pnpm fixtures                      # baixa de novo o ELF da Squads da mainnet
+pnpm typecheck                     # packages, API and app
+pnpm smoke                         # full flow over RPC (surfpool or devnet) without the app
+pnpm fixtures                      # re-download the Squads ELF from mainnet
 docker run -d --rm --name dk-pg -e POSTGRES_PASSWORD=dk -e POSTGRES_DB=dk -p 55432:5432 postgres:17-alpine
-pnpm test:pg                       # protocolo inteiro num Postgres real
-DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
+pnpm test:pg                       # whole protocol against a real Postgres
+DATABASE_URL=postgres://... pnpm dev   # API persisting to Postgres
 ```
 
-## Limites desta versão
+surfpool runs **offline** with the Squads v4 ELF loaded from fixtures. Without `DATABASE_URL`, everything is in memory: restarting `pnpm dev` wipes the accounts.
 
-- **Webapp adulterado:** a chave do webapp fica aberta no navegador durante a assinatura. Quem controla o código que o navegador roda (serviço comprometido servindo o webapp) pode capturá-la; com o voto do serviço, são 2 votos. Endurecimento: hospedar o webapp separado do serviço. Ver THREAT_MODEL #31.
-- **PRF obrigatória:** o aparelho precisa entregar a PRF da passkey. Testado: Chrome no Android (digital) e Chrome no computador (PIN do gerenciador de senhas do Google). Teste em `/#/prf`.
-- **Perder a Phantom e todos os aparelhos** bloqueia a conta: são dois votos do usuário perdidos.
-- **Alertas por e-mail (Resend):** pedido, veto e conclusão de troca de chave, envios executados e configuração fora do modelo. O e-mail é cadastrado em Segurança com a biometria (chave do webapp) e um código enviado ao endereço; a troca avisa também o endereço antigo. Sem `RESEND_API_KEY` e `DK_EMAIL_FROM`, os alertas só vão para o log.
-- **Mainnet bloqueada:** as chaves do serviço são de desenvolvimento; é preciso KMS/HSM antes.
-- **Só transferência de SOL.** Swap fica para depois.
-- **Mobile Wallet Adapter só no Android.**
+## Repository structure
 
-## Estado e retomada (2026-10-04)
+```
+apps/api               Fastify: sign-up/sign-in by signature, intents, wallet transaction, key changes
+apps/approval-web      webapp (React; Wallet Standard; test wallets on localnet)
+packages/shared        canonical intent (hash), schemas, errors
+packages/crypto        Signer/ServerSigner, messages the wallet signs (binding, sign-in)
+packages/solana        Chain (RPC | LiteSVM), instruction reader
+packages/squads        on-chain state, builders, invariants, intent derivation
+packages/policy-engine default policy
+packages/custody       orchestration (server) and review + transaction rebuild (app)
+packages/database      Postgres (PgStore) + migration
+tests/                 on-chain, protocol, regressions, database
+fixtures/              Squads v4 ELF and mainnet ProgramConfig
+```
 
-**No ar:** https://dupla.sjoel99.com (devnet, VPS `contabo`).
-- Modelo 2 de 3, prazo de 72 h nas trocas.
-- Alertas pela Resend, remetente `alertas@sjoel99.com`. O domínio tem DKIM, SPF e DMARC (`p=none`).
-- **Atualizar:** `scripts/deploy-vps.sh`, fora da rotina do solbalance (00h05 e 13h UTC). Não mexe em banco, chaves nem `.env`.
-- **Resend:** a cópia local fica em `deploy/.env.resend`, fora do git e do rsync. Para mudar, copie as duas linhas para `/root/duplachave/deploy/.env` e rode `docker compose up -d duplachave-api`; o `restart` não relê o env.
-- **Contas antigas (2 de 2):** ficaram arquivadas no banco (`roles.client = "legado:…"`, `frozen_by = "legado-2de2"`). Os 3,5 SOL de devnet ficaram no Vault antigo `3idz…`.
+## Docs
 
-**Já testado em produção:**
-- PRF no Chrome do computador e do Android;
-- cadastro do e-mail de alerta (o primeiro e-mail caiu no spam, antes do DMARC);
-- testadores externos (2026-10-03/04): Backpack no Windows criou conta e enviou;
-  iPhone abriu o QR, mas não tem como conectar carteira (ver limites abaixo).
+The full text of these documents is in Portuguese.
 
-**Feito em 2026-10-04:**
-- Envio: a biometria vem antes de preparar a transação (o blockhash vale ~1 min;
-  um testador levou 79 s e deu `BlockhashNotFound`). Se vencer na carteira, o
-  erro é `TX_EXPIRED` com texto claro e dá para assinar de novo.
-- Textos dizem "carteira" (ou o nome da conectada), não "Phantom".
-- iPhone: aviso "No iPhone ainda não funciona" na entrada e na página do QR.
-- Revisão de UX: erros do serviço legíveis (política em português), formulário
-  de envio com saldo/limite/Máx/Colar, prazo vencido com "Criar de novo",
-  "Endereço novo" só no primeiro envio, resultado com os 4 passos reais, aviso
-  para cadastrar o e-mail de alerta, histórico em português, cabeçalho e
-  rodapés corrigidos no celular e no computador.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): members and permissions, the webapp key (passkey PRF → HKDF → AES-256-GCM), the atomic send step by step with its API endpoints, sign-up, key changes with delay and veto, the phone flow, and the security decisions (D1–D19).
+- [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md): threats (stolen device, malware, leaked seed, compromised service or database, malicious RPC, phishing, transaction substitution, supply chain, tampered webapp, and more), each with impact, mitigation and residual risk.
+- [docs/SECURITY_INVARIANTS.md](docs/SECURITY_INVARIANTS.md): the 8 security invariants, who enforces each one (program, operator, webapp, database) and which tests prove it, plus the 13 tests from the original specification mapped to the 2-of-3 model.
+- [docs/KEY_ROTATION.md](docs/KEY_ROTATION.md): the three key changes, why add and remove happen in one transaction, why the delay is not on-chain, the state machine (PREPARED → PENDING → EXECUTED / VETOED / FAILED), residual risks and tests.
+- [docs/RECOVERY.md](docs/RECOVERY.md): research note from the earlier 2-of-2 design on why pure Squads v4 cannot express a separate recovery rule (single threshold, global time lock), and the alternatives considered (Squads Smart Account policies, a custom `config_authority` program). The recovery shipped in this version is the 2-of-3 model with an operator-enforced delay described in ARCHITECTURE.md.
+- [docs/RESEARCH.md](docs/RESEARCH.md): versions, Squads SDK APIs used, and the program behaviors that shape the design (permission bitmask, staleness, no on-chain expiration, global time lock, spending limits bypassing quorum), each tied to the program source and a test.
 
-**Próximos passos:**
-1. Cadastro da conta nova com a Phantom e envio pelo QR no Android (digital + Phantom numa abertura só); conferir se a passkey criada no computador sincroniza com o celular.
-2. Conferir no Gmail ("Mostrar original") SPF/DKIM/DMARC PASS e se os alertas saem do spam.
-3. Testar "Recuperar o webapp" + "Não fui eu" de ponta a ponta com e-mail.
-4. Deixar um envio passar dos 10 min em produção e conferir a tela "Criar de novo" (não deu para ver no local).
-5. iPhone (decisão em aberto): (b) links da própria carteira (Phantom/Solflare
-   abrem o app, assinam e voltam ao Safari) ou (c) navegador dentro da carteira
-   (a passkey provavelmente falha lá; precisa testar).
-6. Textos do webapp: "biometria" → "biometria ou PIN" (pendente de decisão).
-7. Nome definitivo do produto/domínio (provisório: dupla.sjoel99.com).
+## Limitations of this version
 
-**Armadilha nos testes:** com o LiteSVM carregado, o resto de double (`x % 1e6` com x > 2^31) e o `randomInt` do Node dão NaN ou travam. Use só inteiros de 32 bits.
-
+- **Tampered webapp:** the webapp key is open in the browser while signing. Whoever controls the code the browser runs (a compromised service serving the webapp) can capture it; together with the service's vote, that is 2 votes. Hardening: host the webapp separately from the service. See THREAT_MODEL #31.
+- **PRF required:** the device must provide the passkey PRF extension. Tested: Chrome on Android (fingerprint) and Chrome on desktop (Google Password Manager PIN). Test page at `/#/prf`.
+- **Losing the wallet and every device** locks the account: that is both of the user's votes gone.
+- **Email alerts** need `RESEND_API_KEY` and `DK_EMAIL_FROM`; without them, alerts only go to the log.
+- **Mainnet is blocked:** the service keys are development keys; KMS/HSM is required first.
+- **SOL transfers only.** Swaps and SPL tokens come later.
+- **Mobile Wallet Adapter on Android only.**
+- **iPhone is not supported yet:** the QR page opens, but there is no way to connect a wallet; the app shows a notice on the welcome screen and on the QR page.
