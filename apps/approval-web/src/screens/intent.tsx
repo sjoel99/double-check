@@ -155,6 +155,8 @@ function summaryOf(r: ApprovalRequest): string {
  * depois da biometria, se passou disso, para o tempo que resta ficar para a carteira.
  */
 const PREPARED_FRESH_MS = 10_000;
+/** Opções estáveis para os pedidos sem sessão (pelo token do QR). */
+const NO_AUTH = { auth: false } as const;
 
 type Loaded = { record: IntentView; request: ApprovalRequest | null; preparedAt: number; prepareErr: string | null; prepareCode?: string };
 
@@ -166,7 +168,10 @@ type Loaded = { record: IntentView; request: ApprovalRequest | null; preparedAt:
 export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: string; wallet: string } }) {
   const ctx = useApp();
   const base = handoff ? `/v1/handoff/${handoff.token}` : `/v1/intents/${id}`;
-  const opt = handoff ? { auth: false } : undefined;
+  // Os hooks abaixo dependem só de valores estáveis (o objeto `handoff` vem novo a cada render do pai).
+  const isHandoff = Boolean(handoff);
+  const opt = isHandoff ? NO_AUTH : undefined;
+  const accountId = ctx.session?.accountId;
   const myWallet = handoff?.wallet ?? ctx.session!.publicKey;
   /** A carteira que assina: a da sessão, ou (pelo QR) a carteira do celular já sabendo qual conta esperar. */
   const signer = async () => {
@@ -186,35 +191,46 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
   const keysRef = useRef<{ publicKey: string; blob: WebappKeyBlob }[] | null>(null);
   /** As cópias cifradas da chave do webapp (a chave pública dela entra na conferência). */
   const keys = useCallback(async () => {
-    keysRef.current ??= await accountKeyBlobs(handoff ? `${base}/key` : `/v1/accounts/${ctx.session!.accountId}/webapp-keys`, !handoff);
+    keysRef.current ??= await accountKeyBlobs(isHandoff ? `${base}/key` : `/v1/accounts/${accountId}/webapp-keys`, !isHandoff);
     return keysRef.current;
-  }, [base]);
+  }, [base, isHandoff, accountId]);
 
   /** Pede a transação atômica (ainda sem assinaturas) e confere: o webapp remonta os bytes sozinho. */
+  const malicious = ctx.dev.malicious;
   const prepare = useCallback(async () => {
-    const path = ctx.dev.malicious && !handoff ? `/v1/dev/intents/${id}/prepare-tampered` : `${base}/prepare`;
+    const path = malicious && !isHandoff ? `/v1/dev/intents/${id}/prepare-tampered` : `${base}/prepare`;
     const k = await keys();
     if (!k.length) throw new Error(tr("Esta conta não tem a chave do webapp guardada.", "This account has no webapp key stored."));
     const request = await api<ApprovalRequest>("POST", path, {}, opt);
     const inspection = await inspectPrepared(ctx.chain, request, { client: new PublicKey(myWallet), webapp: new PublicKey(k[0]!.publicKey) }, now());
     return { request, inspection };
-  }, [id, ctx, base, myWallet, keys]);
+  }, [id, base, isHandoff, opt, malicious, myWallet, keys, ctx.chain]);
 
+  /**
+   * Cada `load` tem um número; só o mais recente escreve no estado. Assim um
+   * carregamento atrasado não sobrescreve o que a assinatura em andamento já conferiu.
+   */
+  const loadSeq = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
+    const fresh = () => seq === loadSeq.current;
     try {
-      const r = await api<{ record: IntentView }>("GET", handoff ? `${base}/intent` : base, undefined, opt);
+      const r = await api<{ record: IntentView }>("GET", isHandoff ? `${base}/intent` : base, undefined, opt);
+      if (!fresh()) return;
       if (r.record.status !== "AWAITING_CLIENT") return setData({ record: r.record, request: null, preparedAt: 0, prepareErr: null });
       try {
         const { request, inspection } = await prepare();
+        if (!fresh()) return;
         setData({ record: r.record, request, preparedAt: Date.now(), prepareErr: null });
         setCheck(inspection);
       } catch (e) {
+        if (!fresh()) return;
         setData({ record: r.record, request: null, preparedAt: 0, prepareErr: errorText(e), prepareCode: e instanceof ApiError ? e.code : undefined });
       }
     } catch (e) {
-      setErr(errorText(e));
+      if (fresh()) setErr(errorText(e));
     }
-  }, [id, prepare]);
+  }, [base, isHandoff, opt, prepare]);
 
   useEffect(() => {
     void load();
@@ -257,6 +273,8 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
     if (!data?.request || !check?.ok) return;
     setErr(null);
     setBusy("sign");
+    // Um `load` que ainda esteja no ar não deve mexer no estado durante a assinatura.
+    loadSeq.current++;
     try {
       const c = await signer();
       let review = check.review;

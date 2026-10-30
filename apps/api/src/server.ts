@@ -45,7 +45,10 @@ export function solToLamports(input: string): string {
 
 export async function buildServer(d: ApiDeps) {
   const now = d.now ?? (() => Math.floor(Date.now() / 1000));
-  const app = Fastify({ logger: d.log ? { level: "info", redact: ["req.headers.authorization", "req.headers['x-admin-token']"] } : false, bodyLimit: 64 * 1024 });
+  // A API só é alcançada pelo nginx (Docker) ou pelo proxy do Vite: o IP real vem
+  // em X-Forwarded-For. Sem trustProxy, todo pedido chega com o IP do proxy e os
+  // limites por IP viram um balde único para todos os usuários.
+  const app = Fastify({ logger: d.log ? { level: "info", redact: ["req.headers.authorization", "req.headers['x-admin-token']"] } : false, bodyLimit: 64 * 1024, trustProxy: true });
   await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
 
   app.setErrorHandler((err, _req, reply) => {

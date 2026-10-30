@@ -1,4 +1,21 @@
 # App estático + /api → API + /rpc → RPC da devnet.
+#
+# Cabeçalhos: no nginx, um `add_header` dentro de um `location` descarta TODOS os
+# herdados do `server`. Por isso os cabeçalhos ficam só aqui no `server`, e o que
+# varia por caminho (Cache-Control) vem de um `map`, não de um location próprio.
+map $uri $dk_cache_control {
+    default              "no-cache";
+    # Arquivos com hash no nome: imutáveis. Um deploy novo gera nomes novos.
+    ~^/assets/           "public, max-age=31536000, immutable";
+}
+
+# IP real do cliente para os limites por IP da API (que confia no X-Forwarded-For):
+# atrás da Cloudflare é o CF-Connecting-IP; sem ela, o próprio remetente.
+map $http_cf_connecting_ip $dk_client_ip {
+    default    $http_cf_connecting_ip;
+    ""         $remote_addr;
+}
+
 server {
     listen 80;
     server_name _;
@@ -14,6 +31,8 @@ server {
     add_header Referrer-Policy "no-referrer" always;
     add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), usb=(), payment=(), publickey-credentials-get=(self), publickey-credentials-create=(self)" always;
     add_header X-Robots-Tag "noindex, nofollow" always;
+    # Sem `always`: só em respostas de sucesso. Um 404 em /assets/ não pode ficar um ano em cache.
+    add_header Cache-Control $dk_cache_control;
 
     resolver 127.0.0.11 ipv6=off valid=30s;
 
@@ -26,7 +45,7 @@ server {
         proxy_set_header Host $host;
         # A API confere a origem na biometria (WebAuthn): o Origin do navegador passa intacto.
         proxy_set_header Origin $http_origin;
-        proxy_set_header X-Forwarded-For $http_cf_connecting_ip;
+        proxy_set_header X-Forwarded-For $dk_client_ip;
     }
 
     location = /rpc {
@@ -49,14 +68,18 @@ server {
         proxy_set_header Content-Type "application/json";
     }
 
+    # Arquivos do build: existem ou 404. Um chunk de um deploy antigo não pode virar o
+    # index.html com status 200 (o navegador tentaria rodar HTML como JavaScript).
+    location /assets/ {
+        try_files $uri =404;
+    }
+    # Qualquer outro arquivo pedido pelo nome (favicon.ico, .txt, .json…): também 404 em vez de HTML.
+    location ~* \.(js|mjs|css|map|svg|png|jpg|ico|woff2?|json|txt|webmanifest|xml)$ {
+        try_files $uri =404;
+    }
+
+    # As rotas do app são por hash (/#/…); só a raiz e caminhos sem extensão caem no index.html.
     location / {
         try_files $uri /index.html;
-    }
-    location = /index.html {
-        add_header Cache-Control "no-cache";
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' http://localhost http://localhost:* http://127.0.0.1:* ws://localhost:* ws://127.0.0.1:*; frame-ancestors 'none'; base-uri 'none'; form-action 'none'; object-src 'none'" always;
-        add_header X-Frame-Options "DENY" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header Referrer-Policy "no-referrer" always;
     }
 }

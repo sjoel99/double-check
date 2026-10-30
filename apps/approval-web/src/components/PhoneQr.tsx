@@ -20,18 +20,25 @@ export function PhoneQr({ create, title, steps, onDone }: { create: () => Promis
   const [st, setSt] = useState<Status | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const done = useRef(false);
+  // `create` e `onDone` chegam como funções novas a cada render do pai. Por ref,
+  // o pedido é feito uma vez só por abertura: um QR novo faria o computador
+  // vigiar outro token enquanto o celular termina o anterior.
+  const createRef = useRef(create);
+  const onDoneRef = useRef(onDone);
+  createRef.current = create;
+  onDoneRef.current = onDone;
 
   const make = useCallback(async () => {
     setErr(null);
     setSt(null);
     try {
-      const r = await create();
+      const r = await createRef.current();
       setReq(r);
       setQr(await QRCode.toDataURL(r.link, { margin: 1, width: 480, errorCorrectionLevel: "M" }));
     } catch (e) {
       setErr(errorText(e));
     }
-  }, [create]);
+  }, []);
 
   useEffect(() => {
     void make();
@@ -46,7 +53,7 @@ export function PhoneQr({ create, title, steps, onDone }: { create: () => Promis
         if (s.status === "DONE" && !done.current) {
           done.current = true;
           clearInterval(i);
-          onDone(s.result);
+          onDoneRef.current(s.result);
         }
         if (s.status === "FAILED" || s.status === "EXPIRED") clearInterval(i);
       } catch {
@@ -54,7 +61,7 @@ export function PhoneQr({ create, title, steps, onDone }: { create: () => Promis
       }
     }, 1500);
     return () => clearInterval(i);
-  }, [req, onDone]);
+  }, [req]);
 
   const phase = st?.status === "WAITING" || !st ? "WAITING_SCAN" : st.status;
   return (

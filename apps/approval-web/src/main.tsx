@@ -47,6 +47,10 @@ function Boot() {
       try {
         const [config, session] = await Promise.all([api<Config>("GET", "/v1/config", undefined, { auth: false }), loadSession()]);
         if (config.cluster !== PINNED_CLUSTER) return setState({ error: tr(`A API está em ${config.cluster}, mas este app foi feito para ${PINNED_CLUSTER}. Não continue.`, `The API is on ${config.cluster}, but this app was built for ${PINNED_CLUSTER}. Do not continue.`) });
+        // As ferramentas de teste (biometria em software, carteiras de teste) só existem em
+        // localnet, e isso é decidido pelo build, não pela API: uma API que anuncie devTools
+        // fora de localnet está errada ou comprometida, e o app não pode rebaixar a biometria.
+        if (config.devTools && PINNED_CLUSTER !== "localnet") return setState({ error: tr("A API anuncia ferramentas de teste fora de localnet. Não continue.", "The API advertises test tools outside localnet. Do not continue.") });
         if (config.devTools && !(await ed25519Supported())) return setState({ error: tr("As carteiras de teste precisam de Ed25519 no WebCrypto (Chrome 137+, Firefox 129+, Safari 17+).", "Test wallets need Ed25519 in WebCrypto (Chrome 137+, Firefox 129+, Safari 17+).") });
         setState({ config, session });
       } catch (e) {

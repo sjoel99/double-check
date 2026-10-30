@@ -8,6 +8,14 @@ import { solToLamports } from "../src/server";
 import { blob, enroll, fromB64, setup, signIntent, signText, SOL } from "./helpers";
 
 describe("API (modelo 2 de 3)", () => {
+  it("limite por IP usa o X-Forwarded-For do proxy: um usuário esgotando o cadastro não bloqueia outro", async () => {
+    const t = await setup();
+    const hit = (ip: string) => t.call("POST", "/v1/enrollment/prepare", {}, undefined, { "x-forwarded-for": ip });
+    for (let i = 0; i < 5; i++) expect((await hit("203.0.113.1")).status).toBe(400);
+    expect((await hit("203.0.113.1")).status).toBe(429);
+    expect((await hit("203.0.113.2")).status).toBe(400);
+  });
+
   it("solToLamports não usa float e recusa milhar", () => {
     expect(solToLamports("1,5")).toBe("1500000000");
     expect(solToLamports("0.000000001")).toBe("1");

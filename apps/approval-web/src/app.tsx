@@ -97,45 +97,47 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
     [config.cluster],
   );
 
-  const ctx: Ctx = {
-    config,
-    chain,
-    session,
-    setSession: async (s) => {
-      await saveSession(s);
-      setSessionState(s);
-    },
-    wallets,
-    wallet,
-    connect,
-    accountWallet: async () => {
-      if (!session) throw new Error(tr("sem sessão", "not signed in"));
-      let c = wallet;
-      if (!c || c.name !== session.walletName) {
-        const w = wallets.find((x) => walletLabel(x.name) === session.walletName);
-        if (!w) throw new Error(
-            session.via === "webapp"
-              ? tr(`Conecte a carteira da conta (${short(session.publicKey)}) para assinar: entre de novo com ela.`, `Connect the account's wallet (${short(session.publicKey)}) to sign: sign in again with it.`)
-              : tr(`Abra ou instale a carteira ${session.walletName} para assinar.`, `Open or install the ${walletDisplay(session.walletName)} wallet to sign.`),
-          );
-        c = await connect(w);
-      }
-      if (c.refresh() !== session.publicKey)
-        throw new Error(tr(`A ${c.name} está na conta ${short(c.publicKey)}, mas esta conta é da ${short(session.publicKey)}. Troque de conta na carteira e tente de novo.`, `${walletDisplay(c.name)} is on account ${short(c.publicKey)}, but this account belongs to ${short(session.publicKey)}. Switch accounts in the wallet and try again.`));
-      return c;
-    },
-    route,
-    go: (p) => {
-      location.hash = p;
-    },
-    toast: (m) => {
-      setToast(m);
-      clearTimeout(toastTimer.current);
-      toastTimer.current = window.setTimeout(() => setToast(null), 4200);
-    },
-    biometric: (text) => devConfirm.current({ walletName: tr("Biometria de teste", "Test biometrics"), kind: "biometric", text }),
-    dev: { malicious, setMalicious },
-  };
+  // Tudo o que entra no contexto tem identidade estável: as telas dependem dele
+  // em hooks, e um objeto novo a cada render refazia o "preparar" e reiniciava o polling.
+  const setSession = useCallback(async (s: Session | null) => {
+    await saveSession(s);
+    setSessionState(s);
+  }, []);
+  // Lê o estado mais recente por ref, para não mudar de identidade a cada render.
+  const latest = useRef({ session, wallet, wallets });
+  latest.current = { session, wallet, wallets };
+  const accountWallet = useCallback(async () => {
+    const { session, wallet, wallets } = latest.current;
+    if (!session) throw new Error(tr("sem sessão", "not signed in"));
+    let c = wallet;
+    if (!c || c.name !== session.walletName) {
+      const w = wallets.find((x) => walletLabel(x.name) === session.walletName);
+      if (!w) throw new Error(
+          session.via === "webapp"
+            ? tr(`Conecte a carteira da conta (${short(session.publicKey)}) para assinar: entre de novo com ela.`, `Connect the account's wallet (${short(session.publicKey)}) to sign: sign in again with it.`)
+            : tr(`Abra ou instale a carteira ${session.walletName} para assinar.`, `Open or install the ${walletDisplay(session.walletName)} wallet to sign.`),
+        );
+      c = await connect(w);
+    }
+    if (c.refresh() !== session.publicKey)
+      throw new Error(tr(`A ${c.name} está na conta ${short(c.publicKey)}, mas esta conta é da ${short(session.publicKey)}. Troque de conta na carteira e tente de novo.`, `${walletDisplay(c.name)} is on account ${short(c.publicKey)}, but this account belongs to ${short(session.publicKey)}. Switch accounts in the wallet and try again.`));
+    return c;
+  }, [connect]);
+  const go = useCallback((p: string) => {
+    location.hash = p;
+  }, []);
+  const toast = useCallback((m: string) => {
+    setToast(m);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 4200);
+  }, []);
+  const biometric = useCallback((text: string) => devConfirm.current({ walletName: tr("Biometria de teste", "Test biometrics"), kind: "biometric", text }), []);
+  const dev = useMemo(() => ({ malicious, setMalicious }), [malicious]);
+
+  const ctx = useMemo<Ctx>(
+    () => ({ config, chain, session, setSession, wallets, wallet, connect, accountWallet, route, go, toast, biometric, dev }),
+    [config, chain, session, setSession, wallets, wallet, connect, accountWallet, route, go, toast, biometric, dev],
+  );
 
   return (
     <AppCtx.Provider value={ctx}>

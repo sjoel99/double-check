@@ -72,7 +72,7 @@ export function useAccount(pollMs = 5000) {
       if (e instanceof ApiError && e.status === 401) return void (await ctx.setSession(null));
       setErr(errorText(e));
     }
-  }, [accountId, ctx]);
+  }, [accountId, ctx.chain, ctx.setSession]);
 
   useEffect(() => {
     void load();
