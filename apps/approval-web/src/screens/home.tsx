@@ -1,15 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { errorText, useApp } from "../app";
-import { api, ApiError } from "../lib/api";
+import { qrDataUrl } from "../lib/qr";
+import { api, ApiError, setUnauthorizedHandler } from "../lib/api";
 import { now, parseSol, sendSigned, short, sol } from "../lib/chain";
 import { verifyAccountOnChain } from "@duplachave/custody/src/client";
 import { Icon, Logo } from "../icons";
 import { walletWord } from "../lib/wallets";
-import QRCode from "qrcode";
 import type { VersionedTransaction as VTx } from "@solana/web3.js";
 import { reviewSecurityRequest, verifyAuthorized } from "@duplachave/custody/src/client";
-import { useChanges } from "./security";
+import { useChanges } from "../hooks/useChanges";
 import { TopBar } from "../components/TopBar";
 import { fmtWhen, lang, tr } from "../lib/i18n";
 import type { TransactionIntent } from "@duplachave/shared";
@@ -54,7 +54,18 @@ export function useAccount(pollMs = 5000) {
   const [balance, setBalance] = useState<bigint | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const accountId = ctx.session?.accountId;
-  const { chain, setSession } = ctx;
+  const { chain, setSession, toast } = ctx;
+
+  // Qualquer 401 do serviço (sessão de 12 h vencida, carteira trocada) derruba a sessão,
+  // em qualquer tela: sem isso a pessoa ficava presa numa tela que nunca mais funcionaria.
+  useEffect(
+    () =>
+      setUnauthorizedHandler(() => {
+        toast(tr("Sua sessão venceu; entre de novo.", "Your session expired; sign in again."));
+        void setSession(null);
+      }),
+    [setSession, toast],
+  );
 
   const load = useCallback(async () => {
     if (!accountId) return;
@@ -71,10 +82,11 @@ export function useAccount(pollMs = 5000) {
       if (l.status === "rejected") throw l.reason;
       setErr(null);
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) return void (await setSession(null));
+      // 401: o tratador central já derrubou a sessão e avisou.
+      if (e instanceof ApiError && e.status === 401) return;
       setErr(errorText(e));
     }
-  }, [accountId, chain, setSession]);
+  }, [accountId, chain]);
 
   useEffect(() => {
     void load();
@@ -173,8 +185,12 @@ export function Home() {
               className="mono subtle copy"
               onClick={async () => {
                 if (!acc) return;
-                await navigator.clipboard.writeText(acc.account.vault);
-                ctx.toast(tr("Endereço do Vault copiado", "Vault address copied"));
+                try {
+                  await navigator.clipboard.writeText(acc.account.vault);
+                  ctx.toast(tr("Endereço do Vault copiado", "Vault address copied"));
+                } catch {
+                  ctx.toast(tr("Não deu para copiar; abra Depositar e selecione o endereço.", "Couldn't copy; open Deposit and select the address."));
+                }
               }}
             >
               {acc ? short(acc.account.vault) : "…"} <Icon name="copy" size={12} />
@@ -383,9 +399,18 @@ export function Deposit() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [walletBalance, setWalletBalance] = useState<bigint | null>(null);
-  useEffect(() => {
-    void ctx.chain.getBalance(new PublicKey(ctx.session!.publicKey)).then(setWalletBalance).catch(() => {});
-  }, [ctx.chain, ctx.session]);
+  const [walletBalanceErr, setWalletBalanceErr] = useState(false);
+  const { chain } = ctx;
+  const walletKey = ctx.session?.publicKey;
+  const loadWalletBalance = useCallback(() => {
+    if (!walletKey) return;
+    setWalletBalanceErr(false);
+    chain
+      .getBalance(new PublicKey(walletKey))
+      .then(setWalletBalance)
+      .catch(() => setWalletBalanceErr(true));
+  }, [chain, walletKey]);
+  useEffect(loadWalletBalance, [loadWalletBalance]);
 
   const viaPhone = ctx.session?.via === "phone";
   const [qr, setQr] = useState<string | null>(null);
@@ -395,7 +420,7 @@ export function Deposit() {
     const amt = amount.trim().replace(",", ".");
     const params = new URLSearchParams({ label: "Double Check", message: tr("Depósito no seu Vault", "Deposit to your Vault") });
     if (/^\d+(\.\d{1,9})?$/.test(amt)) params.set("amount", amt);
-    void QRCode.toDataURL(`solana:${acc.account.vault}?${params.toString()}`, { margin: 1, width: 480 }).then(setQr);
+    void qrDataUrl(`solana:${acc.account.vault}?${params.toString()}`).then(setQr);
   }, [viaPhone, acc, amount]);
 
   const submit = async () => {
@@ -409,9 +434,12 @@ export function Deposit() {
       // O Vault de destino é conferido na chain: esta carteira vota na multisig, não um endereço que o servidor disse.
       const vault = await verifyAccountOnChain(ctx.chain, acc.account.multisig, new PublicKey(c.publicKey));
       if (vault !== acc.account.vault) throw new Error(tr("o Vault informado não é o desta conta", "the Vault given is not this account's Vault"));
+      // O blockhash vale ~1 minuto: só é pedido depois de a carteira já estar conectada,
+      // para que o tempo que a pessoa leva para abrir a carteira não conte contra ele.
+      const recentBlockhash = await ctx.chain.getLatestBlockhash();
       const msg = new TransactionMessage({
         payerKey: new PublicKey(c.publicKey),
-        recentBlockhash: await ctx.chain.getLatestBlockhash(),
+        recentBlockhash,
         instructions: [SystemProgram.transfer({ fromPubkey: new PublicKey(c.publicKey), toPubkey: new PublicKey(acc.account.vault), lamports })],
       }).compileToV0Message();
       const signed = await c.signTransaction(new VersionedTransaction(msg));
@@ -419,7 +447,11 @@ export function Deposit() {
       ctx.toast(tr(`${sol(lamports, 9)} SOL depositados no Vault`, `${sol(lamports, 9)} SOL deposited to the Vault`));
       ctx.go("/");
     } catch (e) {
-      setErr(errorText(e));
+      // A pessoa demorou na carteira e o blockhash venceu: a RPC responde com texto cru.
+      const raw = (e as Error)?.message ?? String(e);
+      if (/Blockhash ?not ?found|block height exceeded/i.test(raw))
+        setErr(tr("A transação venceu enquanto esperava a assinatura na carteira (ela vale cerca de 1 minuto). Nada saiu da sua carteira; assine de novo.", "The transaction expired while waiting for the wallet signature (it lasts about 1 minute). Nothing left your wallet; sign again."));
+      else setErr(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -442,6 +474,14 @@ export function Deposit() {
           <div className="big" style={{ fontSize: 24 }}>
             {walletBalance === null ? "—" : sol(walletBalance)} SOL
           </div>
+          {walletBalance === null && walletBalanceErr && (
+            <div className="subtle" style={{ fontSize: 13 }}>
+              {tr("Não deu para ler o saldo.", "Couldn't read the balance.")}{" "}
+              <button type="button" className="linkbtn small" onClick={loadWalletBalance}>
+                {tr("Tentar de novo", "Try again")}
+              </button>
+            </div>
+          )}
         </div>
         <div className="field">
           <label htmlFor="amt">{tr("Quantidade (SOL)", "Amount (SOL)")}</label>

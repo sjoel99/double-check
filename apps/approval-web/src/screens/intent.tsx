@@ -187,6 +187,8 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
   const [err, setErr] = useState<string | null>(null);
   const [handedOver, setHandedOver] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
+  /** O blockhash venceu na carteira: nada entrou na chain, e dá para assinar de novo (a biometria vem antes de preparar outra). */
+  const [resign, setResign] = useState(false);
   const viaPhone = !handoff && ctx.session?.via === "phone";
   const keysRef = useRef<{ publicKey: string; blob: WebappKeyBlob }[] | null>(null);
   /** As cópias cifradas da chave do webapp (a chave pública dela entra na conferência). */
@@ -273,6 +275,7 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
   const sign = async () => {
     if (!data?.request || !check?.ok) return;
     setErr(null);
+    setResign(false);
     setBusy("sign");
     // Um `load` que ainda esteja no ar não deve mexer no estado durante a assinatura.
     loadSeq.current++;
@@ -310,6 +313,9 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
       await load();
     } catch (e) {
       setErr(errorText(e));
+      // A pessoa demorou na carteira: a transação preparada venceu, nada saiu. "Assinar de novo"
+      // refaz biometria → preparar → serviço → carteira (sign() prepara de novo quando passou da janela).
+      if (e instanceof ApiError && (e.code === "TX_EXPIRED" || e.code === "PREPARED_EXPIRED")) setResign(true);
     } finally {
       setBusy(null);
       setStepText(null);
@@ -378,7 +384,7 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
         ) : (
           <button type="button" className={primaryClass} disabled={Boolean(busy)} onClick={sign}>
             {busy === "sign" ? <span className="spinner" /> : <Icon name="finger" color="#0B0D10" sw={2} />}
-            {tr("Assinar", "Sign")}
+            {resign ? tr("Assinar de novo", "Sign again") : tr("Assinar", "Sign")}
           </button>
         )}
         {stepText && (

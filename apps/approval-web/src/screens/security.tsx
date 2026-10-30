@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { type ChangeView, useChanges } from "../hooks/useChanges";
 import { PublicKey, VersionedTransaction } from "@solana/web3.js";
 import { readMultisig, type MultisigState } from "@duplachave/squads";
 import { emailBindingMessage, emailInput, reviewSecurityRequest, verifyAuthorized, vetoMessage, type SecurityChangeDesc } from "@duplachave/custody/src/client";
@@ -13,58 +14,39 @@ import { WalletList } from "./welcome";
 import { TopBar } from "../components/TopBar";
 import { fmtWhen, lang, tr } from "../lib/i18n";
 
-type ChangeView = {
-  id: string;
-  role: "CLIENT" | "WEBAPP" | "SERVER";
-  oldKey: string;
-  newKey: string;
-  status: "PREPARED" | "PENDING" | "EXECUTED" | "VETOED" | "FAILED";
-  index: string | null;
-  createdAt: number;
-  executeAfter: number | null;
-};
-
 const ROLE_NAME: Record<ChangeView["role"], string> = { CLIENT: tr("carteira", "wallet"), WEBAPP: tr("chave do webapp", "webapp key"), SERVER: tr("chave do serviço", "service key") };
 const fromB64 = (b: string) => VersionedTransaction.deserialize(Uint8Array.from(atob(b), (c) => c.charCodeAt(0)));
-
-/** Trocas de chave da conta. */
-export function useChanges(pollMs = 8000) {
-  const ctx = useApp();
-  const [changes, setChanges] = useState<ChangeView[]>([]);
-  const load = useCallback(async () => {
-    if (!ctx.session) return;
-    try {
-      setChanges((await api<{ changes: ChangeView[] }>("GET", `/v1/accounts/${ctx.session.accountId}/security-changes`)).changes);
-    } catch {
-      /* tenta de novo */
-    }
-  }, [ctx.session]);
-  useEffect(() => {
-    void load();
-    const i = setInterval(load, pollMs);
-    return () => clearInterval(i);
-  }, [load, pollMs]);
-  return { changes, pending: changes.filter((c) => c.status === "PENDING"), reload: load };
-}
 
 /** Conferência local: o webapp lê a multisig pela RPC dele e checa o modelo 2 de 3. */
 function useOnchainCheck(multisig: string | undefined) {
   const ctx = useApp();
   const [state, setState] = useState<MultisigState | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  // Muda para forçar uma leitura nova ("Tentar de novo").
+  const [attempt, setAttempt] = useState(0);
+  const { chain } = ctx;
   useEffect(() => {
     if (!multisig) return;
     let on = true;
-    const run = () => readMultisig(ctx.chain, new PublicKey(multisig)).then((s) => on && setState(s)).catch(() => {});
+    const run = () =>
+      readMultisig(chain, new PublicKey(multisig))
+        .then((s) => {
+          if (!on) return;
+          setState(s);
+          setErr(null);
+        })
+        .catch((e) => on && setErr(errorText(e)));
     void run();
     const i = setInterval(run, 10_000);
     return () => {
       on = false;
       clearInterval(i);
     };
-  }, [multisig, ctx.chain]);
+  }, [multisig, chain, attempt]);
   const voters = state?.members.filter((m) => m.vote) ?? [];
   const ok = Boolean(state && state.threshold === 2 && voters.length === 3 && voters.every((v) => v.mask === 2) && state.members.filter((m) => m.mask & 4).length === 1 && state.configAuthority === PublicKey.default.toBase58());
-  return { state, ok };
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  return { state, ok, err, retry };
 }
 
 function Countdown({ until }: { until: number }) {
@@ -212,9 +194,14 @@ function AlertEmail() {
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [loadErr, setLoadErr] = useState(false);
   const accountId = ctx.session?.accountId;
   const load = useCallback(() => {
-    if (accountId) void api("GET", `/v1/accounts/${accountId}/security`).then((r) => setCurrent(r.alertEmail ?? null)).catch(() => {});
+    if (!accountId) return;
+    setLoadErr(false);
+    void api("GET", `/v1/accounts/${accountId}/security`)
+      .then((r) => setCurrent(r.alertEmail ?? null))
+      .catch(() => setLoadErr(true));
   }, [accountId]);
   useEffect(load, [load]);
 
@@ -268,12 +255,20 @@ function AlertEmail() {
         <div className="muted" style={{ fontSize: 13 }}>
           {tr("E-mail de alerta", "Alert email")}
         </div>
-        {current === undefined ? <span className="spinner" /> : current ? <span className="pill">{tr("Confirmado", "Confirmed")}</span> : <span className="pill danger">{tr("Sem alerta", "No alerts")}</span>}
+        {current === undefined ? loadErr ? null : <span className="spinner" /> : current ? <span className="pill">{tr("Confirmado", "Confirmed")}</span> : <span className="pill danger">{tr("Sem alerta", "No alerts")}</span>}
       </div>
+      {current === undefined && loadErr && (
+        <div className="subtle" style={{ fontSize: 13 }}>
+          {tr("Não deu para carregar.", "Couldn't load.")}{" "}
+          <button type="button" className="linkbtn small" onClick={load}>
+            {tr("Tentar de novo", "Try again")}
+          </button>
+        </div>
+      )}
       {!editing && (
         <>
           <div className="mono" style={{ fontSize: 15 }}>
-            {current ?? tr("Nenhum", "None")}
+            {current === undefined ? "—" : (current ?? tr("Nenhum", "None"))}
           </div>
           <div style={{ fontSize: 13, color: "#b4bac4", lineHeight: 1.45 }}>{tr('Avisa pedidos de troca de chave (a tempo do "Não fui eu"), trocas concluídas e envios.', 'Warns you about key change requests (in time for "It wasn\'t me"), completed changes and sends.')}</div>
           <button type="button" className="btn" style={{ height: 44 }} onClick={() => setEditing(true)}>
@@ -315,8 +310,8 @@ function AlertEmail() {
 export function Security() {
   const ctx = useApp();
   const { acc } = useAccount(8000);
-  const { state, ok } = useOnchainCheck(acc?.account.multisig);
-  const { pending, reload } = useChanges();
+  const { state, ok, err: onchainErr, retry: retryOnchain } = useOnchainCheck(acc?.account.multisig);
+  const { changes, pending, err: changesErr, reload } = useChanges();
   const devices = acc?.webappDevices ?? [];
   const roles = acc?.account.roles;
   const label = (k: string) =>
@@ -339,12 +334,32 @@ export function Security() {
         {pending.map((c) => (
           <PendingChange key={c.id} c={c} onDone={reload} />
         ))}
+        {changesErr && changes.length === 0 && (
+          <div className="subtle" style={{ fontSize: 13 }}>
+            {tr("Não deu para carregar as trocas de chave.", "Couldn't load the key changes.")}{" "}
+            <button type="button" className="linkbtn small" onClick={() => void reload()}>
+              {tr("Tentar de novo", "Try again")}
+            </button>
+          </div>
+        )}
         <div className="card">
           <div className="row-between">
             <div className="muted" style={{ fontSize: 13 }}>
               {tr("Modo", "Mode")}
             </div>
-            {state ? ok ? <span className="pill">{tr("Conferido na Solana", "Verified on Solana")}</span> : <span className="pill danger">{tr("Diferente do esperado", "Not as expected")}</span> : <span className="spinner" />}
+            {state ? (
+              ok ? (
+                <span className="pill">{tr("Conferido na Solana", "Verified on Solana")}</span>
+              ) : (
+                <span className="pill danger">{tr("Diferente do esperado", "Not as expected")}</span>
+              )
+            ) : onchainErr ? (
+              <button type="button" className="linkbtn small" onClick={retryOnchain}>
+                {tr("Não deu para ler a Solana. Tentar de novo", "Couldn't read Solana. Try again")}
+              </button>
+            ) : (
+              <span className="spinner" />
+            )}
           </div>
           <div className="big" style={{ fontSize: 34 }}>
             {tr("2 de 3", "2 of 3")}
@@ -625,11 +640,19 @@ const AUDIT_ALERT = new Set(["INVARIANT_VIOLATION", "SECURITY_CHANGE_REQUESTED",
 export function Activity() {
   const ctx = useApp();
   const { intents, intentsLoaded, err } = useAccount(6000);
-  const [audit, setAudit] = useState<{ seq: number; type: string; at: number; hash: string }[]>([]);
-  useEffect(() => {
-    const id = ctx.session?.accountId;
-    if (id) void api("GET", `/v1/accounts/${id}/audit`).then((r) => setAudit(r.events.slice().reverse())).catch(() => {});
-  }, [ctx.session, intents.length]);
+  const [audit, setAudit] = useState<{ seq: number; type: string; at: number; hash: string }[] | null>(null);
+  const [auditErr, setAuditErr] = useState(false);
+  const accountId = ctx.session?.accountId;
+  const intentCount = intents.length;
+  const loadAudit = useCallback(() => {
+    if (!accountId) return;
+    setAuditErr(false);
+    void api("GET", `/v1/accounts/${accountId}/audit`)
+      .then((r) => setAudit(r.events.slice().reverse()))
+      .catch(() => setAuditErr(true));
+  }, [accountId]);
+  // Recarrega também quando a lista de transações muda.
+  useEffect(loadAudit, [loadAudit, intentCount]);
   return (
     <>
       <TopBar title={tr("Atividade", "Activity")} back={null} />
@@ -651,7 +674,16 @@ export function Activity() {
               "Everything that happened on the account, in order. The log is append-only and chained: deleting or editing an event breaks the chain.",
             )}
           </div>
-          {audit.slice(0, 30).map((e) => (
+          {audit === null && !auditErr && <span className="spinner" />}
+          {audit === null && auditErr && (
+            <div className="subtle" style={{ fontSize: 13 }}>
+              {tr("Não deu para carregar o histórico.", "Couldn't load the history.")}{" "}
+              <button type="button" className="linkbtn small" onClick={loadAudit}>
+                {tr("Tentar de novo", "Try again")}
+              </button>
+            </div>
+          )}
+          {(audit ?? []).slice(0, 30).map((e) => (
             <div className="list-row" key={e.seq} style={{ padding: "9px 0" }}>
               <div className="grow">
                 <div className="t" style={{ fontSize: 14, color: AUDIT_ALERT.has(e.type) ? "var(--warn)" : undefined }} title={e.type}>
