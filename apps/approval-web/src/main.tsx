@@ -1,5 +1,5 @@
 import "./polyfills";
-import { StrictMode, useEffect, useState } from "react";
+import { lazy, StrictMode, Suspense, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { AppProvider, type Config, useApp } from "./app";
@@ -11,10 +11,17 @@ import { isMobile } from "./lib/activation";
 import { ed25519Supported, loadSession, type Session } from "./lib/storage";
 import { Deposit, Home } from "./screens/home";
 import { IntentScreen, Send } from "./screens/intent";
-import { Activity, ChangeClient, ChangeWebapp, Security } from "./screens/security";
 import { Welcome } from "./screens/welcome";
-import { MobileHandoff } from "./screens/handoff";
-import { PrfCheck } from "./screens/prfcheck";
+
+// Telas fora do caminho principal (entrar → enviar) vêm sob demanda: ficam fora do chunk inicial.
+const Security = lazy(() => import("./screens/security").then((m) => ({ default: m.Security })));
+const ChangeClient = lazy(() => import("./screens/security").then((m) => ({ default: m.ChangeClient })));
+const ChangeWebapp = lazy(() => import("./screens/security").then((m) => ({ default: m.ChangeWebapp })));
+const Activity = lazy(() => import("./screens/security").then((m) => ({ default: m.Activity })));
+const MobileHandoff = lazy(() => import("./screens/handoff").then((m) => ({ default: m.MobileHandoff })));
+const PrfCheck = lazy(() => import("./screens/prfcheck").then((m) => ({ default: m.PrfCheck })));
+
+const Spinner = () => <div className="page" style={{ alignItems: "center", justifyContent: "center" }}><span className="spinner" /></div>;
 
 // Diagnóstico no celular: erros soltos e quando a página sai/volta (troca para o app da carteira).
 if (isMobile()) {
@@ -27,6 +34,10 @@ if (isMobile()) {
 function Router() {
   const { route, session } = useApp();
   const [path] = route.split("?");
+  return <Suspense fallback={<Spinner />}><Routes path={path} session={session} /></Suspense>;
+}
+
+function Routes({ path, session }: { path: string | undefined; session: Session | null }) {
   if (path === "/prf") return <PrfCheck />;
   if (path?.startsWith("/m/")) return <MobileHandoff key={path} token={path.slice(3)} />;
   if (!session) return <Welcome />;
@@ -41,7 +52,12 @@ function Router() {
 }
 
 function Boot() {
-  const [state, setState] = useState<{ config: Config; session: Session | null } | { error: string } | null>(null);
+  const [state, setState] = useState<{ config: Config; session: Session | null } | { error: string; retry?: boolean } | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const retry = useCallback(() => {
+    setState(null);
+    setAttempt((n) => n + 1);
+  }, []);
   useEffect(() => {
     (async () => {
       try {
@@ -53,13 +69,27 @@ function Boot() {
         if (config.devTools && PINNED_CLUSTER !== "localnet") return setState({ error: tr("A API anuncia ferramentas de teste fora de localnet. Não continue.", "The API advertises test tools outside localnet. Do not continue.") });
         if (config.devTools && !(await ed25519Supported())) return setState({ error: tr("As carteiras de teste precisam de Ed25519 no WebCrypto (Chrome 137+, Firefox 129+, Safari 17+).", "Test wallets need Ed25519 in WebCrypto (Chrome 137+, Firefox 129+, Safari 17+).") });
         setState({ config, session });
-      } catch (e) {
-        setState({ error: tr(`API indisponível: ${(e as Error).message}. Rode \`pnpm dev\` na raiz do projeto.`, `API unavailable: ${(e as Error).message}. Run \`pnpm dev\` at the project root.`) });
+      } catch {
+        // Para quem usa: sem detalhe técnico. A dica do `pnpm dev` só faz sentido em localnet.
+        const hint = PINNED_CLUSTER === "localnet" ? tr(" Em localnet, rode `pnpm dev` na raiz do projeto.", " On localnet, run `pnpm dev` at the project root.") : "";
+        setState({ error: tr(`O serviço não respondeu. Confira sua conexão e tente de novo.${hint}`, `The service did not respond. Check your connection and try again.${hint}`), retry: true });
       }
     })();
-  }, []);
-  if (!state) return <div className="app"><div className="page" style={{ alignItems: "center", justifyContent: "center" }}><span className="spinner" /></div></div>;
-  if ("error" in state) return <div className="app"><div className="page" style={{ justifyContent: "center" }}><div className="banner danger">{state.error}</div></div></div>;
+  }, [attempt]);
+  if (!state) return <div className="app"><Spinner /></div>;
+  if ("error" in state)
+    return (
+      <div className="app">
+        <div className="page" style={{ justifyContent: "center" }}>
+          <div className="banner danger">{state.error}</div>
+          {state.retry && (
+            <div className="actions">
+              <button className="btn primary" onClick={retry}>{tr("Tentar de novo", "Try again")}</button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
   return (
     <AppProvider config={state.config} initialSession={state.session}>
       <div className="app">

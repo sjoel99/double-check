@@ -27,6 +27,16 @@ export default defineConfig(({ mode }) => {
     // O túnel (pnpm dev:devnet) chega com o host *.trycloudflare.com.
     server: { port: 5173, host: env.DK_WEB_HOST ?? "127.0.0.1", proxy, allowedHosts: [".trycloudflare.com", "localhost"] },
     preview: { port: 4173, proxy },
-    build: { sourcemap: false, chunkSizeWarningLimit: 4000 },
+    build: {
+      sourcemap: false,
+      rolldownOptions: {
+        output: {
+          // Bibliotecas da Solana num chunk próprio: mudam pouco e ficam em cache entre deploys do app.
+          codeSplitting: {
+            groups: [{ name: "solana", test: /node_modules[\\/](@solana|@sqds|@noble|@metaplex-foundation|@coral-xyz|bn\.js|borsh|buffer-layout|bigint-buffer|jayson|rpc-websockets|superstruct)[\\/]/ }],
+          },
+        },
+      },
+    },
   };
 });

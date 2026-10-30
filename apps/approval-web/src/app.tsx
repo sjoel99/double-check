@@ -1,6 +1,6 @@
 import { PublicKey } from "@solana/web3.js";
 import { verifyEnrollmentTransaction } from "@duplachave/custody/src/client";
-import { makeMwaWallet } from "./lib/mwa";
+import bs58 from "bs58";
 import { type BiometricConfirm, createWebappKey, deviceName, unlockWebappKey, type UnlockedKey, type WebappKeyBlob } from "./lib/webappKey";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Chain } from "@duplachave/solana";
@@ -80,9 +80,12 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
       registerWallet(makeDevWallet("Carteira de teste B", () => devConfirm.current) as unknown as StandardWallet);
     }
     // No Android, a carteira do celular entra pelo Mobile Wallet Adapter (a página chama o app da carteira).
+    // O protocolo do MWA só é baixado no Android: fora dele não entra no bundle carregado.
     if (/Android/i.test(navigator.userAgent) && config.cluster !== "localnet" && !mwaRegistered) {
       mwaRegistered = true;
-      registerWallet(makeMwaWallet({ chain: config.cluster === "devnet" ? "solana:devnet" : "solana:mainnet", identity: { name: "Double Check", uri: location.origin, icon: "icon.svg" } }) as unknown as StandardWallet);
+      void import("./lib/mwa").then(({ makeMwaWallet }) =>
+        registerWallet(makeMwaWallet({ chain: config.cluster === "devnet" ? "solana:devnet" : "solana:mainnet", identity: { name: "Double Check", uri: location.origin, icon: "icon.svg" } }) as unknown as StandardWallet),
+      );
     }
     return stop;
   }, [config.devTools, config.cluster]);
@@ -292,7 +295,7 @@ export async function loginWithBiometrics(ctx: Ctx, onStep: (s: string) => void)
   try {
     const pub = key.publicKey.toBase58();
     const ch = await api("POST", "/v1/auth/challenge", { publicKey: pub }, { auth: false });
-    const signature = (await import("bs58")).default.encode(key.sign(new TextEncoder().encode(ch.message)));
+    const signature = bs58.encode(key.sign(new TextEncoder().encode(ch.message)));
     const r = await api("POST", "/v1/auth/webapp", { challengeId: ch.challengeId, publicKey: pub, signature }, { auth: false });
     const s: Session = { token: r.token, accountId: r.account.id, walletName: "sem carteira", publicKey: r.account.roles.client, via: "webapp" };
     await ctx.setSession(s);

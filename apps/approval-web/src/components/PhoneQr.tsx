@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import QRCode from "qrcode";
 import { errorText, useApp } from "../app";
 import { api } from "../lib/api";
 import { Icon } from "../icons";
 import { tr } from "../lib/i18n";
+import { qrDataUrl } from "../lib/qr";
 
 type Created = { token: string; url: string; link: string; expiresAt: number; https: boolean };
 type Status = { status: "WAITING" | "DONE" | "FAILED" | "EXPIRED"; error: string | null; result: unknown };
@@ -36,7 +36,7 @@ export function PhoneQr<T>({ create, title, steps, onDone }: PhoneQrProps<T>) {
     try {
       const r = await createRef.current();
       setReq(r);
-      setQr(await QRCode.toDataURL(r.link, { margin: 1, width: 480, errorCorrectionLevel: "M" }));
+      setQr(await qrDataUrl(r.link));
     } catch (e) {
       setErr(errorText(e));
     }
