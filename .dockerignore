@@ -1,0 +1,19 @@
+# Contexto do build da API (deploy/Dockerfile.api). Nada de segredo nem de lixo local.
+.git
+node_modules
+**/node_modules
+**/dist
+.data
+**/.data
+.surfpool
+coverage
+.env
+.env.*
+!.env.example
+deploy/.env*
+colosseum
+docs
+fixtures
+tests
+*.png
+*.md

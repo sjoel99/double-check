@@ -14,13 +14,23 @@ const cfg = loadConfig();
 const chain = new RpcChain(cfg.SOLANA_RPC_URL, cfg.SOLANA_CLUSTER);
 const log = (m: string) => console.log(`[duplachave] ${m}`);
 
-const store = cfg.DATABASE_URL
-  ? await (async () => {
-      const db = await openPostgres(cfg.DATABASE_URL!);
+/** O Postgres pode subir depois da API (Docker): tenta por até ~60 s antes de desistir. */
+async function openDatabase(url: string) {
+  const db = await openPostgres(url);
+  for (let attempt = 1; ; attempt++) {
+    try {
       await migrate(db);
-      return new PgStore(db);
-    })()
-  : new MemoryStore();
+      return db;
+    } catch (e) {
+      if (attempt >= 30) throw e;
+      if (attempt === 1) log(`banco ainda não responde (${String((e as Error).message).slice(0, 80)}); tentando de novo…`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  }
+}
+
+const db = cfg.DATABASE_URL ? await openDatabase(cfg.DATABASE_URL) : null;
+const store = db ? new PgStore(db) : new MemoryStore();
 log(cfg.DATABASE_URL ? "banco: Postgres" : "banco: memória (some ao reiniciar — combina com o surfpool, que também é efêmero)");
 
 const keyStore = cfg.DK_KEY_ENCRYPTION_KEY ? new DevFileKeyStore(cfg.DK_KEYS_DIR, Buffer.from(cfg.DK_KEY_ENCRYPTION_KEY, "hex"), cfg.SOLANA_CLUSTER) : null;
@@ -81,7 +91,7 @@ const app = await buildServer({
 });
 
 // Concilia com a chain e vence rascunhos a cada 30 s.
-setInterval(async () => {
+const sweeper = setInterval(async () => {
   for (const id of await store.listAccountIds()) {
     try {
       await custody.expireDue(id);
@@ -89,7 +99,29 @@ setInterval(async () => {
       log(`expireDue ${id}: ${String(e)}`);
     }
   }
-}, 30_000).unref();
+}, 30_000);
+sweeper.unref();
+
+// Encerramento gracioso (docker stop / restart): para de aceitar conexões, termina as
+// respostas em andamento e fecha o banco. Se travar, sai à força depois de 10 s.
+let stopping = false;
+const shutdown = async (signal: string) => {
+  if (stopping) return;
+  stopping = true;
+  log(`${signal}: encerrando`);
+  const hard = setTimeout(() => process.exit(1), 10_000);
+  hard.unref();
+  clearInterval(sweeper);
+  try {
+    await app.close();
+    await db?.close?.();
+    process.exit(0);
+  } catch (e) {
+    log(`erro ao encerrar: ${String(e)}`);
+    process.exit(1);
+  }
+};
+for (const s of ["SIGTERM", "SIGINT"] as const) process.on(s, () => void shutdown(s));
 
 await app.listen({ port: cfg.PORT, host: cfg.HOST });
 if (cfg.DK_PUBLIC_URL) log(`QR do celular abre o app em ${cfg.DK_PUBLIC_URL}/#/m/…`);

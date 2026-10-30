@@ -213,11 +213,26 @@ DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
 - Fim do cadastro numa transação só (`Store.transaction`; Postgres faz
   BEGIN/ROLLBACK, memória volta à foto): sem conta pela metade no banco se
   cair no meio. A conferência da chain vem antes de qualquer escrita.
-- Ainda no mapa: bundle de 1 MB (carregar MWA, QR e telas de segurança sob
-  demanda), fontes do Google → locais, textos de tela gerados no servidor só
-  em pt, divisão de `intent.tsx`/`security.tsx`, spinners sem fim quando
-  uma chamada falha, timeout no `fetch`, 401 central, Dockerfile com build
-  e HEALTHCHECK, busca da chave por passkey com índice.
+- Webapp, bloco 3: chunk inicial de 1.068 kB → 424 kB (+ `solana` 572 kB com
+  cache próprio entre deploys); MWA, QR, telas de segurança, handoff e PRF
+  carregam sob demanda. Fontes Geist servidas de `public/fonts` (OFL), nada
+  sai para o Google; CSP com `font-src 'self'`. `fetch` com timeout de 15 s,
+  erros de rede/5xx traduzidos, 401 derruba a sessão num lugar só
+  (`setUnauthorizedHandler`), spinners sem fim viraram "Tentar de novo",
+  "Assinar de novo" quando o blockhash vence na carteira, depósito pede o
+  blockhash depois de a carteira conectar. `hooks/useChanges.ts` saiu de
+  `security.tsx` para a Home não puxar a tela inteira.
+- API/Docker: trata SIGTERM (fecha HTTP e o pool; testado: 200 ms, saída 0),
+  espera o Postgres por até 60 s ao subir, imagem fixada por digest,
+  `NODE_ENV=production`, só dependências de produção, HEALTHCHECK em
+  `/healthz`; compose com healthcheck do Postgres e `depends_on` por saúde;
+  `.dockerignore` deixa segredos e lixo fora do contexto.
+- Ainda no mapa: textos de tela gerados no servidor só em pt (hoje o webapp
+  traduz pelo código em `errors-en.ts`), divisão de `intent.tsx`/
+  `security.tsx` em uma tela por arquivo, busca da chave por passkey com
+  índice, `@noble/curves` em duas versões (1.9 via web3.js 1.x), chunk
+  `solana` acima de 500 kB (tirar `@sqds/multisig` do caminho inicial),
+  manifest/ícones para "adicionar à tela inicial".
 
 **Próximos passos:**
 1. Cadastro da conta nova com a Phantom e envio pelo QR no Android (digital + Phantom numa abertura só); conferir se a passkey criada no computador sincroniza com o celular.

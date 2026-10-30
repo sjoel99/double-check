@@ -19,9 +19,7 @@
     "@sqds/multisig": "2.1.4",
     "bs58": "^6.0.0",
     "fastify": "^5.12.7",
-    "zod": "^4.6.7"
-  },
-  "devDependencies": {
+    "zod": "^4.6.7",
     "tsx": "^4.23.15"
   }
 }

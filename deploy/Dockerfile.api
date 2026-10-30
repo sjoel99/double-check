@@ -1,13 +1,19 @@
-# API do Double Check (devnet). Contexto: a raiz do repositório.
-FROM node:24-slim
+# API do Double Check (devnet). Contexto: a raiz do repositório (ver .dockerignore).
+# Imagem fixada por digest (node:24-slim em 2026-10-30): o build não muda sozinho.
+FROM node:24-slim@sha256:c86ecead9e55a5210ac1727de38a4ca840bf03dcaf34dc9749addbf383b1920c
+ENV NODE_ENV=production
 RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY packages ./packages
 COPY apps/api ./apps/api
 COPY apps/approval-web/package.json ./apps/approval-web/package.json
-RUN pnpm install --frozen-lockfile --filter "@duplachave/api..."
+# Só dependências de produção da API e dos pacotes dela (o tsx roda o TypeScript direto).
+RUN pnpm install --frozen-lockfile --prod --filter "@duplachave/api..."
 USER node
 WORKDIR /app/apps/api
 ENV HOST=0.0.0.0 PORT=8787
+# Vivo = responde /healthz. O compose só sobe o nginx depois disso.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD ["node", "-e", "fetch('http://127.0.0.1:8787/healthz').then(r => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
 CMD ["node", "--import", "tsx", "src/main.ts"]

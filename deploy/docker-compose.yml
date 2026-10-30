@@ -3,7 +3,8 @@
 #
 # - duplachave (nginx): app estático, /api → API, /rpc → RPC da devnet
 # - duplachave-api: a API (chaves do serviço cifradas em /root/duplachave/data/keys)
-# - duplachave-db: Postgres, só na rede interna (fora da vps_default)
+# - duplachave-db: Postgres, só na rede `interno` (fora da vps_default; a rede não é `internal`
+#   porque a API precisa sair para a RPC da devnet e para a Resend)
 #
 # Segredos em /root/duplachave/deploy/.env (600). Uso:
 #   docker compose -f /root/duplachave/src/deploy/docker-compose.yml --env-file /root/duplachave/deploy/.env up -d --build
@@ -18,6 +19,8 @@ services:
     volumes:
       - /root/duplachave/dist:/usr/share/nginx/html:ro
       - /root/duplachave/src/deploy/nginx.conf.template:/etc/nginx/templates/default.conf.template:ro
+    depends_on:
+      duplachave-api: { condition: service_healthy }
     environment:
       RPC_UPSTREAM: ${RPC_UPSTREAM:-https://api.devnet.solana.com/}
       RPC_HOST: ${RPC_HOST:-api.devnet.solana.com}
@@ -48,7 +51,11 @@ services:
       DK_EMAIL_FROM: ${DK_EMAIL_FROM:-}
     volumes:
       - /root/duplachave/data/keys:/data/keys
-    depends_on: [duplachave-db]
+    # Só sobe depois do Postgres aceitar conexões (e a API ainda tenta de novo por 60 s).
+    depends_on:
+      duplachave-db: { condition: service_healthy }
+    # Tempo para terminar respostas em andamento e fechar o banco (a API trata SIGTERM).
+    stop_grace_period: 15s
     networks: [interno]
     logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
 
@@ -61,6 +68,12 @@ services:
       POSTGRES_DB: dk
     volumes:
       - duplachave-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dk"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
     networks: [interno]
     logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
 

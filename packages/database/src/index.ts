@@ -27,6 +27,8 @@ export interface Queryable {
 export interface Db extends Queryable {
   transaction<T>(fn: (tx: Queryable) => Promise<T>): Promise<T>;
   exec(sql: string): Promise<void>;
+  /** Fecha conexões (encerramento gracioso). Ausente no `Db` de uma transação aberta. */
+  close?(): Promise<void>;
 }
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations/", import.meta.url));
@@ -46,6 +48,7 @@ export async function openPglite(dataDir?: string): Promise<Db> {
       await pg.exec(sql);
     },
     transaction: (fn) => pg.transaction((tx) => fn({ query: (t, p) => tx.query(t, p) as never })),
+    close: () => pg.close(),
   };
 }
 
@@ -77,6 +80,7 @@ export async function openPostgres(connectionString: string): Promise<Db> {
         client.release();
       }
     },
+    close: () => pool.end(),
   };
 }
 
