@@ -33,12 +33,20 @@ export const walletWord = (name: string | null | undefined) =>
  * menos na cadeia de suprimentos de um app que move fundos.
  */
 type WalletAccount = { address: string; publicKey: Uint8Array };
+/** Só as features do Wallet Standard que o app chama; as outras ficam `unknown`. */
+type WalletFeatures = {
+  "standard:connect": { connect(): Promise<{ accounts: readonly WalletAccount[] }> };
+  "standard:events"?: { on(event: "change", cb: (props: unknown) => void): () => void };
+  "standard:disconnect"?: { disconnect(): Promise<void> };
+  "solana:signMessage": { signMessage(...inputs: { account: WalletAccount; message: Uint8Array }[]): Promise<readonly { signature: Uint8Array }[]> };
+  "solana:signTransaction": { signTransaction(...inputs: { account: WalletAccount; transaction: Uint8Array; chain?: string }[]): Promise<readonly { signedTransaction: Uint8Array }[]> };
+} & Record<string, unknown>;
 export type StandardWallet = {
   name: string;
   icon: string;
   chains: readonly string[];
   accounts: readonly WalletAccount[];
-  features: Record<string, any>;
+  features: WalletFeatures;
 };
 
 const REQUIRED = ["standard:connect", "solana:signTransaction", "solana:signMessage"];
@@ -142,7 +150,7 @@ export class ConnectedWallet {
     try {
       const [out] = await this.wallet.features["solana:signMessage"].signMessage({ account: this.account, message: new TextEncoder().encode(text) });
       trace("carteira:signMessage:ok", `${out?.signature?.length ?? "?"} bytes`);
-      return bs58.encode(out.signature);
+      return bs58.encode(out!.signature);
     } catch (e) {
       trace("carteira:signMessage:erro", e);
       throw e;
@@ -160,7 +168,7 @@ export class ConnectedWallet {
     try {
       const [out] = await this.wallet.features["solana:signTransaction"].signTransaction({ account: this.account, transaction: tx.serialize(), ...(chain ? { chain } : {}) });
       trace("carteira:signTransaction:ok");
-      return Buffer.from(out.signedTransaction).toString("base64");
+      return Buffer.from(out!.signedTransaction).toString("base64");
     } catch (e) {
       trace("carteira:signTransaction:erro", e);
       throw e;

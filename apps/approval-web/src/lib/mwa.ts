@@ -1,4 +1,4 @@
-import { transact } from "@solana-mobile/mobile-wallet-adapter-protocol";
+import { type MobileWallet, transact } from "@solana-mobile/mobile-wallet-adapter-protocol";
 import { VersionedTransaction } from "@solana/web3.js";
 import { trace } from "./trace";
 import { tr } from "./i18n";
@@ -83,7 +83,7 @@ export function makeMwaWallet(opts: { chain: string; identity: { name: string; u
   const toAccount = (addressB64: string): MwaAccount => ({ address: addressB64, publicKey: fromB64(addressB64), chains: [opts.chain], features: [] });
 
   /** Uma sessão: autoriza (a carteira mostra quem pede) e roda `fn` na mesma conexão. */
-  const session = async <T>(what: string, fn: (wallet: any, acc: MwaAccount) => Promise<T>, expected?: Uint8Array): Promise<T> => {
+  const session = async <T>(what: string, fn: (wallet: MobileWallet, acc: MwaAccount) => Promise<T>, expected?: Uint8Array): Promise<T> => {
     await ensureLocalNetwork();
     trace(`mwa:${what}:inicio`);
     try {
@@ -115,7 +115,7 @@ export function makeMwaWallet(opts: { chain: string; identity: { name: string; u
     } catch (e) {
       trace(`mwa:${what}:erro`, e);
       if ((e as { code?: string })?.code === "ERROR_WALLET_NOT_FOUND")
-        throw new Error(tr("Nenhum app de carteira Solana neste celular. Instale a Phantom ou a Solflare pela Play Store e tente de novo.", "No Solana wallet app on this phone. Install Phantom or Solflare from the Play Store and try again."));
+        throw new Error(tr("Nenhum app de carteira Solana neste celular. Instale a Phantom ou a Solflare pela Play Store e tente de novo.", "No Solana wallet app on this phone. Install Phantom or Solflare from the Play Store and try again."), { cause: e });
       throw e;
     }
   };
@@ -151,7 +151,7 @@ export function makeMwaWallet(opts: { chain: string; identity: { name: string; u
             "signMessage",
             async (wallet, acc) => {
               const r = await wallet.signMessages({ addresses: [acc.address], payloads: [b64(message)] });
-              const signed = fromB64(r.signed_payloads[0]);
+              const signed = fromB64(r.signed_payloads[0]!);
               return [{ signedMessage: message, signature: signed.slice(-64) }];
             },
             input?.publicKey,
@@ -165,7 +165,7 @@ export function makeMwaWallet(opts: { chain: string; identity: { name: string; u
             "signTransaction",
             async (wallet) => {
               const r = await wallet.signTransactions({ payloads: [b64(transaction)] });
-              const signed = fromB64(r.signed_payloads[0]);
+              const signed = fromB64(r.signed_payloads[0]!);
               VersionedTransaction.deserialize(signed); // legível, senão erro aqui
               return [{ signedTransaction: signed }];
             },

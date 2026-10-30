@@ -6,14 +6,16 @@ import { Icon } from "../icons";
 import { tr } from "../lib/i18n";
 
 type Created = { token: string; url: string; link: string; expiresAt: number; https: boolean };
-type Status = { status: "WAITING" | "DONE" | "FAILED" | "EXPIRED"; error: string | null; result: any };
+type Status = { status: "WAITING" | "DONE" | "FAILED" | "EXPIRED"; error: string | null; result: unknown };
+/** `T` é o que o celular devolve quando termina (sessão ao entrar; status da intenção ao assinar). */
+export type PhoneQrProps<T> = { create: () => Promise<Created>; title: string; steps: string[]; onDone: (result: T) => void };
 
 /**
  * QR "continuar no celular": a câmera abre o NOSSO app no celular, que confere
  * a transação, pede a biometria e só então chama a carteira. Este componente
  * acompanha até o celular terminar.
  */
-export function PhoneQr({ create, title, steps, onDone }: { create: () => Promise<Created>; title: string; steps: string[]; onDone: (result: any) => void }) {
+export function PhoneQr<T>({ create, title, steps, onDone }: PhoneQrProps<T>) {
   const ctx = useApp();
   const [req, setReq] = useState<Created | null>(null);
   const [qr, setQr] = useState<string | null>(null);
@@ -53,7 +55,7 @@ export function PhoneQr({ create, title, steps, onDone }: { create: () => Promis
         if (s.status === "DONE" && !done.current) {
           done.current = true;
           clearInterval(i);
-          onDoneRef.current(s.result);
+          onDoneRef.current(s.result as T);
         }
         if (s.status === "FAILED" || s.status === "EXPIRED") clearInterval(i);
       } catch {
@@ -117,7 +119,7 @@ export function PhoneQr({ create, title, steps, onDone }: { create: () => Promis
 }
 
 /** Janela com o QR por cima da tela atual. */
-export function PhoneQrSheet(props: Parameters<typeof PhoneQr>[0] & { onClose: () => void }) {
+export function PhoneQrSheet<T>(props: PhoneQrProps<T> & { onClose: () => void }) {
   return (
     <div className="sheet-wrap" role="dialog" aria-modal="true" aria-label={props.title}>
       <div className="sheet" style={{ alignItems: "stretch" }}>

@@ -249,18 +249,19 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
   /** O mesmo envio, para criar de novo depois que expirou. */
   const again = () => {
     const i = data!.record.intent;
+    if (i.type !== "TRANSFER_SOL") return;
     ctx.go(`/send?${new URLSearchParams({ to: i.destination, amount: solInput(BigInt(i.amountLamports)) })}`);
   };
 
   // Primeiro envio para este endereço? (Endereço já usado não precisa de alerta.)
   const [firstTime, setFirstTime] = useState<boolean | null>(null);
+  const destination = data?.record.intent.kind === "OPERATION" ? data.record.intent.destination : undefined;
   useEffect(() => {
-    const destination = data?.record.intent.destination;
-    if (handoff || !destination) return;
-    void api<{ intents: IntentView[] }>("GET", `/v1/accounts/${ctx.session!.accountId}/intents`)
-      .then((r) => setFirstTime(!r.intents.some((x) => x.intent.id !== id && x.status === "EXECUTED" && x.intent.destination === destination)))
+    if (isHandoff || !destination || !accountId) return;
+    void api<{ intents: IntentView[] }>("GET", `/v1/accounts/${accountId}/intents`)
+      .then((r) => setFirstTime(!r.intents.some((x) => x.intent.id !== id && x.status === "EXECUTED" && x.intent.kind === "OPERATION" && x.intent.destination === destination)))
       .catch(() => {});
-  }, [data?.record.intent.destination]);
+  }, [destination, isHandoff, accountId, id]);
 
   /**
    * 1. biometria: abre a chave do webapp (antes de preparar de novo: a pessoa
@@ -726,7 +727,7 @@ function Outcome({ record, onAgain }: { record: IntentView; onAgain: () => void 
               </>
             ) : (
               <>
-                <span className="mono" style={{ color: "var(--text)" }}>{sol(intent.amountLamports, 9)} SOL</span> {tr("para", "to")} <span className="mono">{short(intent.destination)}</span>
+                <span className="mono" style={{ color: "var(--text)" }}>{sol(intent.type === "TRANSFER_SOL" ? intent.amountLamports : "0", 9)} SOL</span> {tr("para", "to")} <span className="mono">{short(intent.destination)}</span>
               </>
             )}
           </div>

@@ -11,7 +11,8 @@
     "dev": "tsx scripts/dev.ts",
     "test:pg": "DK_TEST_STORE=postgres vitest run tests/protocol.test.ts",
     "smoke": "tsx scripts/smoke-rpc.ts",
-    "dev:devnet": "tsx scripts/dev-devnet.ts"
+    "dev:devnet": "tsx scripts/dev-devnet.ts",
+    "lint": "eslint ."
   },
   "devDependencies": {
     "@duplachave/crypto": "workspace:*",
@@ -21,13 +22,18 @@
     "@duplachave/shared": "workspace:*",
     "@duplachave/solana": "workspace:*",
     "@duplachave/squads": "workspace:*",
+    "@eslint/js": "^10.0.1",
     "@solana/web3.js": "^1.99.0",
     "@sqds/multisig": "2.1.4",
     "@types/node": "^24.0.0",
     "bs58": "^6.0.0",
+    "eslint": "^10.14.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.13.0",
     "litesvm": "0.8.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1",
     "vitest": "^4.0.0"
   }
 }

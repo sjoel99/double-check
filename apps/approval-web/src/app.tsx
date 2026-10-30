@@ -85,7 +85,7 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
       registerWallet(makeMwaWallet({ chain: config.cluster === "devnet" ? "solana:devnet" : "solana:mainnet", identity: { name: "Double Check", uri: location.origin, icon: "icon.svg" } }) as unknown as StandardWallet);
     }
     return stop;
-  }, [config.devTools]);
+  }, [config.devTools, config.cluster]);
 
   const connect = useCallback(
     async (w: StandardWallet) => {

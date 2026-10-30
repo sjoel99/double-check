@@ -14,6 +14,8 @@ export const sentence = (m: string) => {
   return t.charAt(0).toUpperCase() + t.slice(1);
 };
 
+// O default `any` é deliberado: a maioria das chamadas tipa com api<T>; as poucas sem tipo são dev/one-shot.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function api<T = any>(method: "GET" | "POST", path: string, body?: unknown, opts: { auth?: boolean } = { auth: true }): Promise<T> {
   const headers: Record<string, string> = {};
   if (body !== undefined) headers["content-type"] = "application/json";

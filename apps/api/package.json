@@ -14,12 +14,12 @@
     "@duplachave/policy-engine": "workspace:*",
     "@duplachave/shared": "workspace:*",
     "@duplachave/solana": "workspace:*",
-    "@fastify/rate-limit": "^11.2.0",
+    "@fastify/rate-limit": "^11.2.1",
     "@solana/web3.js": "^1.99.0",
     "@sqds/multisig": "2.1.4",
     "bs58": "^6.0.0",
-    "fastify": "^5.12.5",
-    "zod": "^4.6.5"
+    "fastify": "^5.12.7",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "tsx": "^4.23.15"

@@ -12,6 +12,7 @@ import { reviewSecurityRequest, verifyAuthorized } from "@duplachave/custody/src
 import { useChanges } from "./security";
 import { TopBar } from "../components/TopBar";
 import { fmtWhen, lang, tr } from "../lib/i18n";
+import type { TransactionIntent } from "@duplachave/shared";
 
 type AccountView = {
   account: { id: string; multisig: string; vault: string; roles: { client: string; webapp: string; server: string; operator: string }; frozenBy: string | null };
@@ -29,7 +30,7 @@ type AccountView = {
 const WALLET_NEEDS = 7_000_000n;
 
 export type IntentView = {
-  intent: any;
+  intent: TransactionIntent;
   status: string;
   riskFlags: string[];
   reasons: string[];
@@ -53,6 +54,7 @@ export function useAccount(pollMs = 5000) {
   const [balance, setBalance] = useState<bigint | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const accountId = ctx.session?.accountId;
+  const { chain, setSession } = ctx;
 
   const load = useCallback(async () => {
     if (!accountId) return;
@@ -65,14 +67,14 @@ export function useAccount(pollMs = 5000) {
       if (a.status === "rejected") throw a.reason;
       setAcc(a.value);
       // Saldo lido pela RPC do app, não pela API.
-      setBalance(await ctx.chain.getBalance(new PublicKey(a.value.account.vault)));
+      setBalance(await chain.getBalance(new PublicKey(a.value.account.vault)));
       if (l.status === "rejected") throw l.reason;
       setErr(null);
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) return void (await ctx.setSession(null));
+      if (e instanceof ApiError && e.status === 401) return void (await setSession(null));
       setErr(errorText(e));
     }
-  }, [accountId, ctx.chain, ctx.setSession]);
+  }, [accountId, chain, setSession]);
 
   useEffect(() => {
     void load();
@@ -113,7 +115,9 @@ const STATUS: Record<string, string> = {
 
 function intentTitle(i: IntentView) {
   if (i.intent.type === "ROTATE_MEMBER") return i.intent.role === "CLIENT" ? tr("Troca da sua carteira", "Wallet change") : tr("Troca da chave do serviço", "Service key change");
-  return tr(`Enviar ${sol(i.intent.amountLamports)} SOL`, `Send ${sol(i.intent.amountLamports)} SOL`);
+  // Só TRANSFER_SOL existe hoje (o serviço não cria TRANSFER_TOKEN).
+  const amount = i.intent.type === "TRANSFER_SOL" ? sol(i.intent.amountLamports) : "?";
+  return tr(`Enviar ${amount} SOL`, `Send ${amount} SOL`);
 }
 
 export function IntentRow({ i }: { i: IntentView }) {
@@ -128,7 +132,7 @@ export function IntentRow({ i }: { i: IntentView }) {
       <div className="grow">
         <div className="t">{intentTitle(i)}</div>
         <div className="s">
-          {rot ? short(i.intent.newKey) : tr(`Para ${short(i.intent.destination)}`, `To ${short(i.intent.destination)}`)} · {fmtWhen(i.updatedAt)}
+          {i.intent.type === "ROTATE_MEMBER" ? short(i.intent.newKey) : tr(`Para ${short(i.intent.destination)}`, `To ${short(i.intent.destination)}`)} · {fmtWhen(i.updatedAt)}
         </div>
       </div>
       <div className="subtle" style={{ fontSize: 12 }}>
@@ -289,7 +293,7 @@ export function Home() {
                   <div className="grow">
                     <div className="t">{rot ? tr("Alteração de segurança", "Security change") : intentTitle(i)}</div>
                     <div className="s">
-                      {rot ? intentTitle(i) : tr(`Para ${short(i.intent.destination)}`, `To ${short(i.intent.destination)}`)} · {i.status === "APPROVED_PENDING_EXECUTION" ? tr("aguardando execução", "waiting to execute") : tr(`expira em ${mins} min`, `expires in ${mins} min`)}
+                      {i.intent.type === "ROTATE_MEMBER" ? intentTitle(i) : tr(`Para ${short(i.intent.destination)}`, `To ${short(i.intent.destination)}`)} · {i.status === "APPROVED_PENDING_EXECUTION" ? tr("aguardando execução", "waiting to execute") : tr(`expira em ${mins} min`, `expires in ${mins} min`)}
                     </div>
                   </div>
                   <Icon name="chev" size={18} color="var(--muted)" />

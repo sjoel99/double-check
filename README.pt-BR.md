@@ -204,9 +204,20 @@ DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
   **O nginx só lê o template ao subir: `deploy-vps.sh` agora reinicia o container.**
 - Webapp: `devTools` da API só valem com build localnet; QR criado uma vez por
   abertura; contexto memoizado (um render do provider refazia o "preparar").
-- Mapa completo do que falta (licença, CI/ESLint, transação no cadastro,
-  bundle, i18n no servidor, divisão de `intent.tsx`/`security.tsx`) está na
-  conversa de 2026-10-30; os seis itens urgentes foram os acima.
+- Repositório: licença MIT, `SECURITY.md` (relato privado pelo GitHub,
+  ativado), CI no GitHub Actions (`.github/workflows/ci.yml`: typecheck, lint,
+  testes, build), ESLint (`pnpm lint`; a regra `react-hooks/exhaustive-deps`
+  é o motivo, pegaria os dois bugs de hooks acima). zod ≥ 4.6.7 (fecha uma
+  vulnerabilidade alta); sobra `bigint-buffer` via `@sqds/multisig`, sem versão
+  corrigida.
+- Fim do cadastro numa transação só (`Store.transaction`; Postgres faz
+  BEGIN/ROLLBACK, memória volta à foto): sem conta pela metade no banco se
+  cair no meio. A conferência da chain vem antes de qualquer escrita.
+- Ainda no mapa: bundle de 1 MB (carregar MWA, QR e telas de segurança sob
+  demanda), fontes do Google → locais, textos de tela gerados no servidor só
+  em pt, divisão de `intent.tsx`/`security.tsx`, spinners sem fim quando
+  uma chamada falha, timeout no `fetch`, 401 central, Dockerfile com build
+  e HEALTHCHECK, busca da chave por passkey com índice.
 
 **Próximos passos:**
 1. Cadastro da conta nova com a Phantom e envio pelo QR no Android (digital + Phantom numa abertura só); conferir se a passkey criada no computador sincroniza com o celular.

@@ -89,7 +89,7 @@ export async function buildServer(d: ApiDeps) {
   // Diagnóstico do celular: só eventos e mensagens de erro do app (nada de assinatura ou chave).
   app.post("/v1/client-log", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (req) => {
     const b = z.object({ event: z.string().max(60), detail: z.string().max(500).optional(), t: z.number().optional() }).parse(req.body);
-    const clean = (s: string) => s.replace(/[\u0000-\u001f]/g, " ");
+    const clean = (s: string) => s.replace(/\p{Cc}/gu, " ");
     app.log.warn({ cliente: clean(b.event), detalhe: clean(b.detail ?? ""), t: b.t }, "cliente");
     return { ok: true };
   });

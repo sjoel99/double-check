@@ -142,7 +142,7 @@ export async function unlockWebappKey(
     if (publicKey.toBase58() !== found.publicKey) throw new Error(tr("chave aberta não confere", "unlocked key doesn't match"));
     return unlocked(seed, publicKey);
   } catch (e) {
-    throw new Error(tr(`Não deu para abrir a chave do webapp: ${(e as Error).message}`, `Couldn't unlock the webapp key: ${(e as Error).message}`));
+    throw new Error(tr(`Não deu para abrir a chave do webapp: ${(e as Error).message}`, `Couldn't unlock the webapp key: ${(e as Error).message}`), { cause: e });
   } finally {
     r.prf.fill(0);
   }
