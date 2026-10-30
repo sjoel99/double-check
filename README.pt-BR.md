@@ -193,6 +193,21 @@ DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
   para cadastrar o e-mail de alerta, histórico em português, cabeçalho e
   rodapés corrigidos no celular e no computador.
 
+**Feito em 2026-10-30 (revisão de acabamento, commit f8b2033):**
+- API com `trustProxy`: o limite por IP usava o IP do nginx, um balde só para
+  todos os usuários (5 cadastros/min no mundo inteiro). O nginx manda o
+  CF-Connecting-IP no X-Forwarded-For.
+- nginx: cabeçalhos de segurança só no `server` (um `add_header` dentro de
+  `location` descarta os herdados; o HTML saía sem Permissions-Policy e
+  X-Robots-Tag). Cache por `map`: assets imutáveis, HTML no-cache; asset
+  inexistente e arquivos por extensão dão 404 em vez do index.html.
+  **O nginx só lê o template ao subir: `deploy-vps.sh` agora reinicia o container.**
+- Webapp: `devTools` da API só valem com build localnet; QR criado uma vez por
+  abertura; contexto memoizado (um render do provider refazia o "preparar").
+- Mapa completo do que falta (licença, CI/ESLint, transação no cadastro,
+  bundle, i18n no servidor, divisão de `intent.tsx`/`security.tsx`) está na
+  conversa de 2026-10-30; os seis itens urgentes foram os acima.
+
 **Próximos passos:**
 1. Cadastro da conta nova com a Phantom e envio pelo QR no Android (digital + Phantom numa abertura só); conferir se a passkey criada no computador sincroniza com o celular.
 2. Conferir no Gmail ("Mostrar original") SPF/DKIM/DMARC PASS e se os alertas saem do spam.
