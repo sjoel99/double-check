@@ -338,23 +338,28 @@ export class CustodyService {
     this.enrollments.delete(p.id);
     const { userId, roles } = p.plan;
     const now = this.now();
-    await this.store.saveUser({ id: userId, name: p.walletName, policy: DEFAULT_POLICY, createdAt: now });
     const deviceId = randomUUID();
-    await this.store.saveDevice({ id: deviceId, userId, name: p.walletName, publicKey: roles.client, createdAt: now, revokedAt: null });
     const acc: SmartAccountRecord = { id: randomUUID(), userId, cluster: this.cfg.cluster, multisig: p.plan.multisig, vault: p.plan.vault, roles, frozenBy: null, createdAt: now };
-    await this.store.saveAccount(acc);
+    // A chain primeiro: se a conta criada não está no modelo 2 de 3, nada é gravado.
     await this.verifiedState(acc);
-    const member = (publicKey: string, role: "CLIENT" | "WEBAPP" | "SERVER" | "OPERATOR", permissions: number, dev: string | null = null) =>
-      this.store.saveMember({ accountId: acc.id, publicKey, role, permissions, status: "ACTIVE", deviceId: dev, createdAt: now, revokedAt: null });
-    await member(roles.client, "CLIENT", VOTER_MASK, deviceId);
-    await member(roles.webapp, "WEBAPP", VOTER_MASK);
-    await member(roles.server, "SERVER", VOTER_MASK);
-    await member(roles.operator, "OPERATOR", OPERATOR_MASK);
-    if (keyBlob) {
-      const { deviceName, ...blob } = keyBlob;
-      await this.store.saveWebappKey({ accountId: acc.id, publicKey: roles.webapp, blob, deviceName, createdAt: now, revokedAt: null });
-    }
-    await this.audit({ type: "SMART_ACCOUNT_CREATED", accountId: acc.id, userId, deviceId, multisig: acc.multisig, txSignature: sig, publicKey: roles.client, details: { wallet: p.walletName, webapp: roles.webapp, paidBy: "wallet", model: "2-de-3" } });
+    // Usuário, aparelho, conta, membros, chave cifrada e auditoria valem juntos:
+    // uma queda no meio não deixa uma conta pela metade no banco.
+    await this.store.transaction(async (s) => {
+      await s.saveUser({ id: userId, name: p.walletName, policy: DEFAULT_POLICY, createdAt: now });
+      await s.saveDevice({ id: deviceId, userId, name: p.walletName, publicKey: roles.client, createdAt: now, revokedAt: null });
+      await s.saveAccount(acc);
+      const member = (publicKey: string, role: "CLIENT" | "WEBAPP" | "SERVER" | "OPERATOR", permissions: number, dev: string | null = null) =>
+        s.saveMember({ accountId: acc.id, publicKey, role, permissions, status: "ACTIVE", deviceId: dev, createdAt: now, revokedAt: null });
+      await member(roles.client, "CLIENT", VOTER_MASK, deviceId);
+      await member(roles.webapp, "WEBAPP", VOTER_MASK);
+      await member(roles.server, "SERVER", VOTER_MASK);
+      await member(roles.operator, "OPERATOR", OPERATOR_MASK);
+      if (keyBlob) {
+        const { deviceName, ...blob } = keyBlob;
+        await s.saveWebappKey({ accountId: acc.id, publicKey: roles.webapp, blob, deviceName, createdAt: now, revokedAt: null });
+      }
+      await s.appendAudit({ type: "SMART_ACCOUNT_CREATED", accountId: acc.id, userId, deviceId, multisig: acc.multisig, txSignature: sig, publicKey: roles.client, details: { wallet: p.walletName, webapp: roles.webapp, paidBy: "wallet", model: "2-de-3" } }, now);
+    });
     return { account: acc, deviceId, created: true as const };
   }
 

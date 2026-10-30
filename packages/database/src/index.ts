@@ -49,6 +49,11 @@ export async function openPglite(dataDir?: string): Promise<Db> {
   };
 }
 
+// `Db.transaction` só abre transação nova no nível de fora; o PgStore de uma
+// transação aberta (ver PgStore.transaction) entrega um `Db` cujo `transaction`
+// reaproveita a conexão, o que faz `LOCK TABLE` e os INSERTs do audit entrarem
+// na mesma transação do chamador.
+
 /** Postgres de verdade (produção). */
 export async function openPostgres(connectionString: string): Promise<Db> {
   const { default: pg } = await import("pg");
@@ -79,6 +84,18 @@ const n = (v: unknown) => (v === null || v === undefined ? null : Number(v));
 
 export class PgStore implements Store, ChallengeStore {
   constructor(private readonly db: Db) {}
+
+  /**
+   * BEGIN … COMMIT/ROLLBACK de verdade: `fn` recebe um PgStore preso à mesma
+   * conexão. Dentro dela, `transaction` e o `appendAudit` (que abre uma) só
+   * reaproveitam a transação aberta — Postgres não aninha.
+   */
+  async transaction<T>(fn: (s: Store) => Promise<T>): Promise<T> {
+    return this.db.transaction((tx) => {
+      const inner: Db = { query: (t, p) => tx.query(t, p), exec: async (sql) => void (await tx.query(sql)), transaction: (f) => f(tx) };
+      return fn(new PgStore(inner));
+    });
+  }
 
   // users / devices -----------------------------------------------------------
   async saveUser(u: UserRecord) {

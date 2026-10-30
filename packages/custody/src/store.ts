@@ -249,6 +249,14 @@ export interface Store {
 
   appendAudit(e: AuditInput, at: number): Promise<AuditEvent>;
   listAudit(accountId?: string): Promise<AuditEvent[]>;
+
+  /**
+   * Várias escritas que valem juntas ou não valem (ex.: usuário + conta +
+   * membros + chave cifrada no fim do cadastro). `fn` escreve pelo store que
+   * recebe; se lançar, nada fica. Dentro dela, chamar `transaction` de novo
+   * só reaproveita a mesma.
+   */
+  transaction<T>(fn: (s: Store) => Promise<T>): Promise<T>;
 }
 
 export const AUDIT_GENESIS = "0".repeat(64);
@@ -358,6 +366,20 @@ export class MemoryStore implements Store, ChallengeStore {
   }
   async listAudit(accountId?: string) {
     return this.audit.filter((e) => !accountId || e.accountId === accountId).map(clone);
+  }
+
+  /** Em memória: tira uma foto de tudo e, se `fn` falhar, volta para ela. */
+  async transaction<T>(fn: (s: Store) => Promise<T>): Promise<T> {
+    const snapshot = clone({
+      challenges: this.challenges, approvals: this.approvals, squadsTxs: this.squadsTxs, secEvents: this.secEvents, users: this.users, devices: this.devices,
+      accounts: this.accounts, members: this.members, intents: this.intents, nonces: this.nonces, audit: this.audit, webappKeys: this.webappKeys, changes: this.changes,
+    });
+    try {
+      return await fn(this);
+    } catch (e) {
+      Object.assign(this, snapshot);
+      throw e;
+    }
   }
 }
 
