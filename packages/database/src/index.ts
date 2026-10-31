@@ -1,10 +1,12 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type {
   ApprovalRecord,
   AuditEvent,
   AuditInput,
   ChallengeRecord,
+  HandoffRecord,
+  PendingEnrollmentRecord,
   SecurityChangeRecord,
   WebappKeyRecord,
   ChallengeStore,
@@ -33,8 +35,28 @@ export interface Db extends Queryable {
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../migrations/", import.meta.url));
 
+/**
+ * Aplica, em ordem, os `.sql` da pasta de migrações que ainda não constam em
+ * `schema_migrations`. A 001 é idempotente (CREATE IF NOT EXISTS, ALTER IF NOT
+ * EXISTS): um banco criado antes desta tabela existir a reaplica sem efeito e a
+ * registra. Os arquivos são idempotentes (IF NOT EXISTS): uma queda no meio se resolve rodando de novo.
+ */
 export async function migrate(db: Db) {
-  await db.exec(readFileSync(`${MIGRATIONS_DIR}001_init.sql`, "utf8"));
+  await db.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (name text PRIMARY KEY, applied_at bigint NOT NULL)`);
+  const { rows } = await db.query<{ name: string }>(`SELECT name FROM schema_migrations`);
+  const applied = new Set(rows.map((r) => r.name));
+  for (const name of migrationFiles()) {
+    if (applied.has(name)) continue;
+    // `exec` (protocolo simples): o arquivo tem várias instruções e corpos `$$`, que o protocolo com parâmetros recusa.
+    await db.exec(readFileSync(`${MIGRATIONS_DIR}${name}`, "utf8"));
+    await db.query(`INSERT INTO schema_migrations (name, applied_at) VALUES ($1, $2)`, [name, Math.floor(Date.now() / 1000)]);
+  }
+}
+
+export function migrationFiles(): string[] {
+  return readdirSync(MIGRATIONS_DIR)
+    .filter((f) => /^\d{3}_.*\.sql$/.test(f))
+    .sort();
 }
 
 /** PGlite: Postgres em processo (dev e testes). `dataDir` vazio = memória. */
@@ -266,6 +288,85 @@ export class PgStore implements Store, ChallengeStore {
       revokedAt: r.revoked_at === null ? null : Number(r.revoked_at),
     }));
   }
+  async findWebappKeyByCredential(credentialId: string) {
+    const { rows } = await this.db.query<Record<string, unknown>>(
+      `SELECT k.account_id, k.public_key, k.blob, k.device_name, k.created_at, k.revoked_at,
+              a.id AS a_id, a.user_id AS a_user_id, a.cluster AS a_cluster, a.multisig AS a_multisig, a.vault AS a_vault, a.roles AS a_roles, a.frozen_by AS a_frozen_by, a.created_at AS a_created_at
+         FROM webapp_keys k JOIN smart_accounts a ON a.id = k.account_id
+        WHERE k.credential_id = $1 AND k.revoked_at IS NULL AND k.public_key = a.roles->>'webapp'
+        ORDER BY k.created_at DESC LIMIT 1`,
+      [credentialId],
+    );
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      account: this.account({ id: r.a_id, user_id: r.a_user_id, cluster: r.a_cluster, multisig: r.a_multisig, vault: r.a_vault, roles: r.a_roles, frozen_by: r.a_frozen_by, created_at: r.a_created_at }),
+      key: { accountId: r.account_id as string, publicKey: r.public_key as string, blob: r.blob as WebappKeyRecord["blob"], deviceName: r.device_name as string, createdAt: Number(r.created_at), revokedAt: n(r.revoked_at) },
+    };
+  }
+
+  // "continuar no celular" e cadastros preparados --------------------------------
+  async saveHandoff(h: HandoffRecord) {
+    await this.db.query(
+      `INSERT INTO handoffs (token, poll, kind, label, subject, account_id, created_at, expires_at, status, error, result) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       ON CONFLICT (token) DO UPDATE SET status = EXCLUDED.status, error = EXCLUDED.error, result = EXCLUDED.result`,
+      [h.token, h.poll, h.kind, h.label, h.subject, h.accountId, h.createdAt, h.expiresAt, h.status, h.error, h.result ? JSON.stringify(h.result) : null],
+    );
+  }
+  private handoff(r: Record<string, unknown>): HandoffRecord {
+    return {
+      token: r.token as string,
+      poll: r.poll as string,
+      kind: r.kind as HandoffRecord["kind"],
+      label: r.label as string,
+      subject: (r.subject as string | null) ?? null,
+      accountId: (r.account_id as string | null) ?? null,
+      createdAt: Number(r.created_at),
+      expiresAt: Number(r.expires_at),
+      status: r.status as HandoffRecord["status"],
+      error: (r.error as string | null) ?? null,
+      result: (r.result as Record<string, unknown> | null) ?? null,
+    };
+  }
+  async getHandoff(token: string) {
+    const { rows } = await this.db.query<Record<string, unknown>>(`SELECT * FROM handoffs WHERE token = $1`, [token]);
+    return rows[0] ? this.handoff(rows[0]) : null;
+  }
+  async getHandoffByPoll(poll: string) {
+    const { rows } = await this.db.query<Record<string, unknown>>(`SELECT * FROM handoffs WHERE poll = $1`, [poll]);
+    return rows[0] ? this.handoff(rows[0]) : null;
+  }
+  async purgeHandoffs(before: number) {
+    await this.db.query(`DELETE FROM handoffs WHERE expires_at < $1`, [before]);
+  }
+  async savePendingEnrollment(p: PendingEnrollmentRecord) {
+    await this.db.query(`INSERT INTO pending_enrollments (id, record, created_at) VALUES ($1,$2,$3) ON CONFLICT (id) DO UPDATE SET record = EXCLUDED.record`, [p.id, JSON.stringify(p), p.createdAt]);
+  }
+  async getPendingEnrollment(id: string) {
+    const { rows } = await this.db.query<{ record: PendingEnrollmentRecord }>(`SELECT record FROM pending_enrollments WHERE id = $1`, [id]);
+    return rows[0]?.record ?? null;
+  }
+  async deletePendingEnrollment(id: string) {
+    await this.db.query(`DELETE FROM pending_enrollments WHERE id = $1`, [id]);
+  }
+  async listPendingEnrollments() {
+    const { rows } = await this.db.query<{ record: PendingEnrollmentRecord }>(`SELECT record FROM pending_enrollments ORDER BY created_at`);
+    return rows.map((r) => r.record);
+  }
+  async listAccountIdsWithOpenWork() {
+    const { rows } = await this.db.query<{ id: string }>(
+      `SELECT DISTINCT account_id AS id FROM transaction_intents WHERE status = 'AWAITING_CLIENT'
+       UNION SELECT DISTINCT account_id AS id FROM security_changes WHERE status IN ('PREPARED','PENDING')`,
+    );
+    return rows.map((r) => r.id);
+  }
+  async purgeExpired(now: number) {
+    await this.db.query(`DELETE FROM challenges WHERE expires_at < $1`, [now]);
+    await this.db.query(`DELETE FROM consumed_nonces WHERE expires_at < $1`, [now]);
+    await this.purgeHandoffs(now - 600);
+    await this.db.query(`DELETE FROM pending_enrollments WHERE created_at < $1`, [now - 3600]);
+  }
+
   async saveSecurityChange(c: SecurityChangeRecord) {
     await this.db.query(
       `INSERT INTO security_changes (id, account_id, record, status, created_at) VALUES ($1,$2,$3,$4,$5)

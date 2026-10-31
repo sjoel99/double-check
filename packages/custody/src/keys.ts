@@ -10,13 +10,22 @@ export interface ServerKeyProvider {
   create(label: string): Promise<ServerSigner>;
   /** Signer de uma chave pública conhecida. */
   get(publicKey: string): Promise<ServerSigner | null>;
-  /** Apaga/agenda destruição da chave (depois de removida on-chain). */
-  retire(publicKey: string): Promise<void>;
+  /**
+   * Descarta a chave. `UNUSED`: nunca entrou na chain (cadastro abandonado,
+   * troca vetada antes de votar) — pode ser apagada de vez. `ROTATED`: saiu da
+   * multisig numa troca — fica guardada para auditoria (produção agendaria a
+   * destruição no KMS).
+   */
+  retire(publicKey: string, reason: RetireReason): Promise<void>;
 }
+
+export type RetireReason = "UNUSED" | "ROTATED";
 
 export class DevServerKeyProvider implements ServerKeyProvider {
   private keys = new Map<string, DevMemorySigner>();
   readonly retired = new Set<string>();
+  /** Motivo de cada descarte (para os testes conferirem). */
+  readonly retiredWhy = new Map<string, RetireReason>();
   constructor(private readonly cluster: Cluster) {}
   async create(label: string) {
     const s = DevMemorySigner.generate(label, this.cluster);
@@ -27,8 +36,9 @@ export class DevServerKeyProvider implements ServerKeyProvider {
     if (this.retired.has(publicKey)) return null;
     return this.keys.get(publicKey) ?? null;
   }
-  async retire(publicKey: string) {
+  async retire(publicKey: string, reason: RetireReason) {
     this.retired.add(publicKey);
+    this.retiredWhy.set(publicKey, reason);
     this.keys.delete(publicKey);
   }
 }

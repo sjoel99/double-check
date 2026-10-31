@@ -10,11 +10,16 @@ import { tr } from "./i18n";
  * português nas duas línguas (o serviço também usa "Carteira do celular");
  * para mostrar, use walletDisplay.
  */
-export const walletLabel = (name: string) => (name === "Mobile Wallet Adapter" ? "Carteira do celular" : name);
+/** Nome interno do Mobile Wallet Adapter (Wallet Standard). */
+export const MWA_NAME = "Mobile Wallet Adapter";
+/** Sentinelas de `walletName` na sessão: valores fixos (sessões já salvas dependem deles), nunca mostrados sem passar por walletDisplay/walletWord. */
+export const PHONE_WALLET = "Carteira do celular";
+export const NO_WALLET = "sem carteira";
+export const walletLabel = (name: string) => (name === MWA_NAME ? PHONE_WALLET : name);
 
 /** Nome da carteira para mostrar, no idioma do app. */
 export const walletDisplay = (name: string) =>
-  name === "Mobile Wallet Adapter" || name === "Carteira do celular"
+  name === MWA_NAME || name === PHONE_WALLET
     ? tr("Carteira do celular", "Phone wallet")
     : name.startsWith("Carteira de teste ")
       ? tr(name, `Test wallet ${name.slice("Carteira de teste ".length)}`)
@@ -25,7 +30,7 @@ export const walletDisplay = (name: string) =>
  * Quem entrou pela biometria não tem carteira conectada: vira "carteira".
  */
 export const walletWord = (name: string | null | undefined) =>
-  !name || name === "sem carteira" ? tr("carteira", "wallet") : name === "Carteira do celular" ? tr("carteira do celular", "phone wallet") : walletDisplay(name);
+  !name || name === NO_WALLET ? tr("carteira", "wallet") : name === PHONE_WALLET ? tr("carteira do celular", "phone wallet") : walletDisplay(name);
 
 /**
  * Carteiras pelo Wallet Standard (Phantom, Backpack, Solflare e outras se
@@ -150,7 +155,7 @@ export class ConnectedWallet {
 
   /** Abre outro app (Mobile Wallet Adapter): precisa de um toque recente. */
   private async gate(what: string) {
-    if (this.wallet.name === "Mobile Wallet Adapter") await ensureActivation(what);
+    if (this.wallet.name === MWA_NAME) await ensureActivation(what);
   }
   get publicKey(): string {
     return new PublicKey(this.account.publicKey).toBase58();

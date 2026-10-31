@@ -90,14 +90,21 @@ const app = await buildServer({
   log: true,
 });
 
-// Concilia com a chain e vence rascunhos a cada 30 s.
+// Concilia com a chain e vence rascunhos a cada 30 s — só nas contas com algo em
+// aberto. A cada ~10 min, apaga o que venceu (desafios, nonces, pedidos do QR, cadastros).
+let sweeps = 0;
 const sweeper = setInterval(async () => {
-  for (const id of await store.listAccountIds()) {
-    try {
-      await custody.expireDue(id);
-    } catch (e) {
-      log(`expireDue ${id}: ${String(e)}`);
+  try {
+    for (const id of await store.listAccountIdsWithOpenWork()) {
+      try {
+        await custody.expireDue(id);
+      } catch (e) {
+        log(`expireDue ${id}: ${String(e)}`);
+      }
     }
+    if (++sweeps % 20 === 0) await store.purgeExpired(Math.floor(Date.now() / 1000));
+  } catch (e) {
+    log(`varredura: ${String(e)}`);
   }
 }, 30_000);
 sweeper.unref();

@@ -6,6 +6,7 @@ import { kvGet, kvSet } from "./storage";
 import { ensureActivation, isMobile } from "./activation";
 import { trace } from "./trace";
 import { tr } from "./i18n";
+import { SecurityError } from "@duplachave/shared";
 
 /**
  * Chave do webapp: um dos três votos da multisig. É uma chave Ed25519 gerada
@@ -22,7 +23,12 @@ export type UnlockedKey = { publicKey: PublicKey; sign: (msg: Uint8Array) => Uin
 type Opts = { devTools: boolean; confirm: BiometricConfirm; what: string };
 
 const enc = new TextEncoder();
-/** Sal fixo da PRF: deixa a passkey ser descoberta sem saber antes qual é (perdeu a carteira, aparelho novo…). */
+/**
+ * Sal da PRF. É FIXO de propósito: a passkey precisa ser descoberta sem saber antes qual é
+ * (perdeu a carteira, aparelho novo…), e a PRF só pode ser avaliada com um sal conhecido
+ * antes da biometria. O blob guarda o sal usado (`blob.salt`); hoje é sempre este, e a
+ * abertura confere que bate: um blob com outro sal seria de outra versão do app.
+ */
 const PRF_SALT = Uint8Array.from("00a51f9e00616db284f6a595e239644760e218a6ae1daa15b01de5284b21fd7f".match(/../g)!, (x) => parseInt(x, 16)); // sha256("duplachave/webapp-key/prf/v1")
 
 async function aesKey(prf: Uint8Array) {
@@ -134,6 +140,11 @@ export async function unlockWebappKey(
   } else r = await passkeyGet(blobs ? blobs.map((b) => b.blob.credentialId) : null);
   found ??= blobs?.find((b) => b.blob.credentialId === r.credentialId) ?? (opts.lookup ? await opts.lookup(r.credentialId) : null);
   if (!found) throw new Error(tr("Esta biometria não abre a chave desta conta.", "These biometrics don't unlock this account's key."));
+  // A PRF já foi avaliada com PRF_SALT; se o blob diz outro sal, a chave AES não seria a mesma.
+  if (found.blob.salt && found.blob.salt !== b64url(PRF_SALT)) {
+    r.prf.fill(0);
+    throw new Error(tr("Esta cópia da chave do webapp foi feita com outra versão do app e não abre aqui.", "This copy of the webapp key was made by another version of the app and can't be opened here."));
+  }
   try {
     const seed = new Uint8Array(
       await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromB64url(found.blob.iv) as BufferSource, additionalData: enc.encode(found.publicKey) }, await aesKey(r.prf), fromB64url(found.blob.ciphertext) as BufferSource),
@@ -149,10 +160,18 @@ export async function unlockWebappKey(
 }
 
 function unlocked(seed: Uint8Array, publicKey: PublicKey): UnlockedKey {
+  let wiped = false;
   return {
     publicKey,
-    sign: (msg) => ed25519.sign(msg, seed),
-    wipe: () => seed.fill(0),
+    sign: (msg) => {
+      // Depois de apagada, a seed é só zeros: assinar com ela produziria uma assinatura de outra chave, em silêncio.
+      if (wiped) throw new SecurityError("KEY_WIPED", "a chave do webapp já foi apagada da memória");
+      return ed25519.sign(msg, seed);
+    },
+    wipe: () => {
+      seed.fill(0);
+      wiped = true;
+    },
   };
 }
 

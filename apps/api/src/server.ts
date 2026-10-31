@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import rateLimit from "@fastify/rate-limit";
 import { LAMPORTS_PER_SOL, PublicKey } from "@solana/web3.js";
@@ -8,6 +9,7 @@ import { renderIntent } from "@duplachave/custody";
 import type { Chain } from "@duplachave/solana";
 import { issueSession, readSession, type Session } from "./session";
 import { registerPay } from "./pay";
+import { HttpError } from "./errors";
 
 export type ApiDeps = {
   custody: CustodyService;
@@ -23,6 +25,22 @@ export type ApiDeps = {
   now?: () => number;
   log?: boolean;
 };
+
+/**
+ * Tokens do QR (`/v1/pay/:poll`, `/v1/handoff/:token`) são segredos: não podem
+ * ir para o log. O segmento depois de `/pay/` ou `/handoff/` vira `***`.
+ */
+export function redactUrl(url: string): string {
+  return url.replace(/(\/v1\/(?:pay|handoff)\/)[^/?#]+/g, "$1***");
+}
+
+/** Comparação em tempo constante; tamanhos diferentes recusam sem revelar nada. */
+export function tokenEquals(given: unknown, expected: string | null): boolean {
+  if (!expected || typeof given !== "string") return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 const pubkey = z.string().refine((s) => {
   try {
@@ -48,35 +66,46 @@ export async function buildServer(d: ApiDeps) {
   // A API só é alcançada pelo nginx (Docker) ou pelo proxy do Vite: o IP real vem
   // em X-Forwarded-For. Sem trustProxy, todo pedido chega com o IP do proxy e os
   // limites por IP viram um balde único para todos os usuários.
-  const app = Fastify({ logger: d.log ? { level: "info", redact: ["req.headers.authorization", "req.headers['x-admin-token']"] } : false, bodyLimit: 64 * 1024, trustProxy: true });
+  const app = Fastify({
+    logger: d.log
+      ? {
+          level: "info",
+          redact: ["req.headers.authorization", "req.headers['x-admin-token']"],
+          serializers: { req: (req) => ({ method: req.method, url: redactUrl(req.url), remoteAddress: req.ip }) },
+        }
+      : false,
+    bodyLimit: 64 * 1024,
+    trustProxy: true,
+  });
   await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
 
   app.setErrorHandler((err, _req, reply) => {
-    // O código vai em `error`; a mensagem é para a tela (sem o "[CÓDIGO]" do começo).
-    if (err instanceof SecurityError) return reply.status(err.code.endsWith("NOT_FOUND") ? 404 : 422).send({ error: err.code, message: err.message.replace(/^\[[A-Z0-9_]+\]\s*/, "") });
-    if (err instanceof z.ZodError) return reply.status(400).send({ error: "BAD_REQUEST", message: err.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ") });
+    // O código vai em `error`; a mensagem (pt, sem o "[CÓDIGO]") é o fallback da tela; `params` deixa a tela montar a frase no idioma dela.
+    if (err instanceof SecurityError) return reply.status(err.code.endsWith("NOT_FOUND") ? 404 : 422).send({ error: err.code, message: err.message.replace(/^\[[A-Z0-9_]+\]\s*/, ""), params: err.params ?? {} });
+    if (err instanceof z.ZodError) return reply.status(400).send({ error: "BAD_REQUEST", message: err.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "), params: {} });
+    if (err instanceof HttpError) return reply.status(err.statusCode).send({ error: err.code, message: err.message, params: {} });
     const status = (err as { statusCode?: number }).statusCode ?? 500;
     if (status >= 500) app.log.error(err);
-    return reply.status(status).send({ error: status >= 500 ? "INTERNAL" : "ERROR", message: status >= 500 ? "erro interno" : (err as Error).message });
+    return reply.status(status).send({ error: status >= 500 ? "INTERNAL" : ((err as { code?: string }).code ?? "ERROR"), message: status >= 500 ? "erro interno" : (err as Error).message, params: {} });
   });
 
   const session = async (req: FastifyRequest): Promise<Session> => {
     const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
     const s = readSession(d.sessionSecret, token, now());
-    if (!s) throw Object.assign(new Error("sessão inválida"), { statusCode: 401 });
+    if (!s) throw new HttpError(401, "SESSION_INVALID", "sessão inválida");
     // Sessão de carteira substituída morre junto com ela.
     const acc = await d.store.getAccount(s.acc);
-    if (!acc || acc.roles.client !== s.key) throw Object.assign(new Error("sessão de uma carteira que não é mais a da conta"), { statusCode: 401 });
+    if (!acc || acc.roles.client !== s.key) throw new HttpError(401, "SESSION_STALE_WALLET", "sessão de uma carteira que não é mais a da conta");
     return s;
   };
   const ownAccount = async (req: FastifyRequest, accountId: string) => {
     const s = await session(req);
-    if (s.acc !== accountId) throw Object.assign(new Error("conta de outro usuário"), { statusCode: 403 });
+    if (s.acc !== accountId) throw new HttpError(403, "FORBIDDEN_ACCOUNT", "conta de outro usuário");
     return s;
   };
   const ownIntent = async (req: FastifyRequest, id: string) => {
     const rec = await d.store.getIntent(id);
-    if (!rec) throw new SecurityError("INTENT_NOT_FOUND", id);
+    if (!rec) throw new SecurityError("INTENT_NOT_FOUND", id, { id });
     await ownAccount(req, rec.accountId);
     return rec;
   };
@@ -117,8 +146,8 @@ export async function buildServer(d: ApiDeps) {
     return { account, token: tokenFor(account) };
   });
 
-  /** Esta carteira já tem conta? (o app decide entre entrar e criar sem pedir duas assinaturas) */
-  app.get("/v1/wallets/:publicKey", async (req) => {
+  /** Esta carteira já tem conta? (o app decide entre entrar e criar sem pedir duas assinaturas). Limite por IP: evita enumerar endereços. */
+  app.get("/v1/wallets/:publicKey", { config: { rateLimit: { max: 30, timeWindow: "1 minute" } } }, async (req) => {
     const { publicKey } = z.object({ publicKey: pubkey }).parse(req.params);
     return { enrolled: Boolean(await d.store.findAccountByClientKey(publicKey)), revoked: await d.store.isRevokedKey(publicKey) };
   });
@@ -259,7 +288,7 @@ export async function buildServer(d: ApiDeps) {
   };
   const ownChange = async (req: FastifyRequest, id: string) => {
     const c = await d.custody.listSecurityChangesById(id);
-    if (!c) throw new SecurityError("CHANGE_NOT_FOUND", id);
+    if (!c) throw new SecurityError("CHANGE_NOT_FOUND", id, { id });
     await ownAccount(req, c.accountId);
     return c;
   };
@@ -315,8 +344,7 @@ export async function buildServer(d: ApiDeps) {
 
   app.post("/v1/admin/accounts/:id/security-changes/server", async (req, reply: FastifyReply) => {
     const { id } = req.params as { id: string };
-    const tok = req.headers["x-admin-token"];
-    if (!d.adminToken || tok !== d.adminToken) return reply.status(401).send({ error: "UNAUTHORIZED" });
+    if (!tokenEquals(req.headers["x-admin-token"], d.adminToken)) return reply.status(401).send({ error: "UNAUTHORIZED", message: "token de admin inválido", params: {} });
     const r = await d.custody.requestSecurityChange(id, { role: "SERVER" });
     return { change: changeView(r.change), desc: r.desc, transaction: r.transaction };
   });
@@ -350,7 +378,7 @@ export async function buildServer(d: ApiDeps) {
   }
 
   // Continuar no celular: o QR abre o nosso app no celular.
-  const pay = registerPay(app, { custody: d.custody, store: d.store, appUrl: d.publicUrl ?? "http://127.0.0.1:5173", issueToken: tokenFor, now, ownAccount });
+  registerPay(app, { custody: d.custody, store: d.store, appUrl: d.publicUrl ?? "http://127.0.0.1:5173", issueToken: tokenFor, now, ownAccount });
 
-  return Object.assign(app, { pay });
+  return app;
 }

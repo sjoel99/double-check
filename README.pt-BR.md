@@ -251,13 +251,52 @@ DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
   `lib/mwa.ts`). Criar conta nova continua em duas aberturas por natureza
   (a biometria cria a chave do webapp entre a conexão e a assinatura da
   transação). "Concluir troca" com outra carteira também virou uma abertura.
-- Ainda no mapa: textos de tela gerados no servidor só em pt (hoje o webapp
-  traduz pelo código em `errors-en.ts`), divisão de `intent.tsx`/
-  `security.tsx` em uma tela por arquivo, busca da chave por passkey com
-  índice, `@noble/curves` em duas versões (1.9 via web3.js 1.x), chunk
-  `solana` acima de 500 kB (tirar `@sqds/multisig` do caminho inicial),
-  16 ramos JSX `lang === "pt" ? … : …` que poderiam virar um `tr` rico,
-  modo claro (hoje só escuro, por decisão).
+- Carteira do celular numa abertura só para entrar (2026-10-31): a sessão do
+  MWA autoriza, pergunta ao serviço se há conta, pede o desafio e assina sem
+  fechar (`ConnectedWallet.connectAndSign`). Criar conta continua em duas.
+- Bloco 5 (2026-10-31, "o resto do mapa"):
+  - **Erros por código e parâmetros.** `SecurityError(code, message, params)`;
+    a API devolve `{ error, message, params }` e o webapp monta a frase em
+    pt/en em `lib/errors.ts` (`errors-en.ts`, que interpretava o português,
+    saiu). Erros de sessão têm código (`SESSION_INVALID`, `SESSION_STALE_WALLET`,
+    `FORBIDDEN_ACCOUNT`, `PHONE_NOT_SIGNED_IN`). Textos do servidor seguem em
+    pt para logs e e-mails.
+  - **Estado em memória → banco.** Pedidos do QR (`handoffs`) e cadastros
+    preparados (`pending_enrollments`) vivem no Postgres: um restart não perde
+    um QR aberto nem um cadastro a meio. Locks por conta continuam em processo:
+    a API roda em UMA instância (compose); multi-instância exigiria lock no banco.
+  - **QR com segredo separado.** O link do QR leva `token`; o computador
+    acompanha por `poll` (`GET /v1/pay/:poll`). Quem só viu o QR não lê o
+    resultado (que no CONNECT traz o token de sessão). `GET /v1/handoff/:token`
+    devolve `summary` estruturado; o celular monta o título no idioma dele.
+  - **Índices, varredura e purga.** Chave do webapp por `credential_id` numa
+    query indexada; a varredura de 30 s só visita contas com algo em aberto
+    (`listAccountIdsWithOpenWork`); `purgeExpired` a cada ~10 min apaga
+    challenges, nonces, handoffs e cadastros vencidos.
+  - **Migrações versionadas.** `schema_migrations` + arquivos `NNN_*.sql` em
+    ordem; `001_init.sql` fica (idempotente; produção já o tinha) e
+    `002_estado_e_indices.sql` cria as tabelas/índices novos e apaga
+    `key_rotations`/`passkeys` (modelo 2 de 2, sem uso).
+  - **Higiene.** Admin token em tempo constante; tokens de `/pay` e `/handoff`
+    redigidos no log; `/v1/wallets/:publicKey` com 30/min; chaves de serviço de
+    cadastro abandonado são apagadas (`retire(key, "UNUSED")`) e só as que
+    saíram da multisig ficam `.retired`; `RpcChain` confirma pelo
+    `lastValidBlockHeight` do blockhash da própria transação.
+  - **Webapp.** Uma tela por arquivo (`send`, `intent` + `intent/*`,
+    `change-client`, `change-webapp`, `activity`, `deposit`, `devtools`);
+    `trn()` no lugar dos ramos `lang === "pt"`; sentinelas `PHONE_WALLET`/
+    `NO_WALLET`; `UnlockedKey.sign` após `wipe()` lança `KEY_WIPED`; sal do
+    blob conferido (sempre foi o `PRF_SALT` fixo; os 3 blobs em produção batem).
+    MWA 3.0.1. Chunks: `polyfills` 27 kB (tem que avaliar antes do web3.js),
+    `index` 239 kB, `solana` 331 kB, `squads` 217 kB só nas telas que assinam.
+    **Armadilha:** `require("buffer")` em dependências CommonJS (safe-buffer)
+    caía no builtin vazio do Vite e a página morria com `Buffer.from`
+    undefined; `resolve.alias.buffer` aponta para o pacote npm.
+- Ainda no mapa (aceito por ora): `@noble/curves` em duas versões (web3.js 1.x
+  pinna 1.9; trocar lib criptográfica por alias para poupar ~20 kB não vale);
+  `bigint-buffer` via `@sqds/multisig` sem correção; modo claro (só escuro,
+  por decisão); `Chain.now()` sem uso fora dos testes; `/v1/wallets/:publicKey`
+  ainda diz se um endereço é cliente (mitigado pelo limite por IP).
 
 **Próximos passos:**
 1. Cadastro da conta nova com a Phantom e envio pelo QR no Android (digital + Phantom numa abertura só); conferir se a passkey criada no computador sincroniza com o celular.

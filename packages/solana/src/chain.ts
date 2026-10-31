@@ -109,6 +109,13 @@ export async function sendInstructions(
 
 export class RpcChain implements Chain {
   readonly connection: Connection;
+  /**
+   * `lastValidBlockHeight` de cada blockhash que este objeto entregou. Ao
+   * confirmar, o blockhash da própria transação decide até quando esperar; um
+   * blockhash novo (como antes) deixava a espera longa demais para uma tx que
+   * já tinha vencido.
+   */
+  private readonly validUntil = new Map<string, number>();
 
   constructor(
     rpcUrl: string,
@@ -122,7 +129,11 @@ export class RpcChain implements Chain {
   }
 
   async getLatestBlockhash() {
-    return (await this.connection.getLatestBlockhash("confirmed")).blockhash;
+    const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash("confirmed");
+    this.validUntil.set(blockhash, lastValidBlockHeight);
+    // Só os últimos ~50 blockhashes interessam (cada um vale ~1 minuto).
+    while (this.validUntil.size > 50) this.validUntil.delete(this.validUntil.keys().next().value!);
+    return blockhash;
   }
 
   async sendTransaction(tx: VersionedTransaction): Promise<string> {
@@ -132,11 +143,8 @@ export class RpcChain implements Chain {
       throw new ChainTxError(`simulação falhou: ${JSON.stringify(sim.value.err)}`, logs, programErrorFromLogs(logs));
     }
     const sig = await this.connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
-    const latest = await this.connection.getLatestBlockhash("confirmed");
-    const res = await this.connection.confirmTransaction(
-      { signature: sig, blockhash: tx.message.recentBlockhash, lastValidBlockHeight: latest.lastValidBlockHeight },
-      "confirmed",
-    );
+    const lastValidBlockHeight = this.validUntil.get(tx.message.recentBlockhash) ?? (await this.connection.getLatestBlockhash("confirmed")).lastValidBlockHeight;
+    const res = await this.connection.confirmTransaction({ signature: sig, blockhash: tx.message.recentBlockhash, lastValidBlockHeight }, "confirmed");
     if (res.value.err) {
       const info = await this.connection.getTransaction(sig, { maxSupportedTransactionVersion: 0, commitment: "confirmed" });
       const logs = info?.meta?.logMessages ?? [];

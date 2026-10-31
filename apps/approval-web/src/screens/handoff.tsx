@@ -1,15 +1,26 @@
 import { useEffect, useState } from "react";
 import { errorText, loginOrEnroll, useApp } from "../app";
 import { api } from "../lib/api";
-import type { StandardWallet } from "../lib/wallets";
+import { MWA_NAME, type StandardWallet } from "../lib/wallets";
 import { Icon, Logo } from "../icons";
 import { IosNotice, WalletList } from "./welcome";
 import { isIOS } from "../lib/activation";
 import { tr } from "../lib/i18n";
+import { short, sol } from "../lib/chain";
 import { IntentScreen } from "./intent";
 import { useTitle } from "../hooks/useTitle";
 
-type Info = { kind: "CONNECT" | "SIGN_INTENT"; label: string; intentId: string | null; accountId: string | null; wallet: string | null };
+/** O que o computador pediu, em dados: o celular monta o título no idioma dele. `label` (pt) é só fallback. */
+type Summary = { type: "CONNECT" } | { type: "TRANSFER_SOL"; amountLamports: string; destination: string; toSelf: boolean } | { type: "ROTATE_MEMBER"; role: "CLIENT" | "WEBAPP" | "SERVER"; newKey: string };
+type Info = { kind: "CONNECT" | "SIGN_INTENT"; label: string; summary?: Summary | null; intentId: string | null; accountId: string | null; wallet: string | null };
+
+function summaryTitle(info: Info): string {
+  const s = info.summary;
+  if (!s) return info.label;
+  if (s.type === "CONNECT") return tr("Entrar ou criar sua conta", "Sign in or create your account");
+  if (s.type === "TRANSFER_SOL") return s.toSelf ? tr(`Enviar ${sol(s.amountLamports, 9)} SOL para o seu Vault`, `Send ${sol(s.amountLamports, 9)} SOL to your Vault`) : tr(`Enviar ${sol(s.amountLamports, 9)} SOL para ${short(s.destination)}`, `Send ${sol(s.amountLamports, 9)} SOL to ${short(s.destination)}`);
+  return s.role === "CLIENT" ? tr(`Trocar a carteira da conta por ${short(s.newKey)}`, `Replace the account wallet with ${short(s.newKey)}`) : tr("Nova chave do serviço (recuse se não pediu)", "New service key (reject if you didn't ask)");
+}
 
 /**
  * O que o QR do computador abre no celular. Aqui (e não na carteira direto) a
@@ -22,7 +33,7 @@ export function MobileHandoff({ token }: { token: string }) {
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [login, setLogin] = useState(false);
-  useTitle(info?.label ?? tr("Pedido do computador", "Request from the computer"));
+  useTitle(info ? summaryTitle(info) : tr("Pedido do computador", "Request from the computer"));
 
   useEffect(() => {
     api<Info>("GET", `/v1/handoff/${token}`, undefined, { auth: false })
@@ -54,7 +65,7 @@ export function MobileHandoff({ token }: { token: string }) {
   };
 
   // Assinar pelo QR, sem entrar na conta: uma abertura só da carteira (conecta e assina juntos).
-  const mwa = ctx.wallets.some((w) => w.name === "Mobile Wallet Adapter");
+  const mwa = ctx.wallets.some((w) => w.name === MWA_NAME);
   if (info?.kind === "SIGN_INTENT" && info.wallet && mwa && !login && ctx.session?.accountId !== info.accountId)
     return (
       <>
@@ -77,7 +88,7 @@ export function MobileHandoff({ token }: { token: string }) {
           <div className="muted" style={{ fontSize: 12 }}>
             {tr("Pedido do computador", "Request from the computer")}
           </div>
-          <div style={{ fontSize: 18, fontWeight: 600, lineHeight: 1.3 }}>{info.label}</div>
+          <div style={{ fontSize: 18, fontWeight: 600, lineHeight: 1.3 }}>{summaryTitle(info)}</div>
         </div>
       )}
       {done ? (

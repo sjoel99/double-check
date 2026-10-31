@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { errorText, loginOrEnroll, loginWithBiometrics, useApp } from "../app";
 import { Icon, Logo } from "../icons";
-import { type StandardWallet, walletDisplay, walletLabel } from "../lib/wallets";
+import { MWA_NAME, PHONE_WALLET, type StandardWallet, walletDisplay, walletLabel } from "../lib/wallets";
 import { api } from "../lib/api";
 import { PhoneQr } from "../components/PhoneQr";
 import { isAndroid, isIOS, isMobile } from "../lib/activation";
 import { tr } from "../lib/i18n";
 
-const MWA = "Mobile Wallet Adapter";
+const MWA = MWA_NAME;
 
 const INSTALL = [
   { name: "Phantom", url: "https://phantom.com/download" },
@@ -82,7 +82,7 @@ export function Welcome() {
   const [phone, setPhone] = useState(false);
 
   const fromPhone = async (r: { sessionToken: string; accountId: string; publicKey: string }) => {
-    await ctx.setSession({ token: r.sessionToken, accountId: r.accountId, walletName: "Carteira do celular", publicKey: r.publicKey, via: "phone" });
+    await ctx.setSession({ token: r.sessionToken, accountId: r.accountId, walletName: PHONE_WALLET, publicKey: r.publicKey, via: "phone" });
     ctx.go("/");
     ctx.toast(tr("Você entrou pelo celular. As assinaturas continuam no celular.", "You signed in from your phone. Signing stays on the phone."));
   };

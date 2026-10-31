@@ -4,7 +4,7 @@ import bs58 from "bs58";
 import { DevMemorySigner } from "@duplachave/crypto";
 import { loginMessage } from "@duplachave/crypto";
 import { emailBindingMessage, signAsWallet, vetoMessage } from "@duplachave/custody";
-import { solToLamports } from "../src/server";
+import { redactUrl, solToLamports, tokenEquals } from "../src/server";
 import { blob, enroll, fromB64, setup, signIntent, signText, SOL } from "./helpers";
 
 describe("API (modelo 2 de 3)", () => {
@@ -95,9 +95,45 @@ describe("API (modelo 2 de 3)", () => {
     const t = await setup();
     const { account } = await enroll(t);
     expect((await t.call("POST", `/v1/admin/accounts/${account.id}/security-changes/server`, {})).status).toBe(401);
+    // Token errado do mesmo tamanho e token de outro tamanho: os dois 401 (comparação em tempo constante).
+    expect((await t.call("POST", `/v1/admin/accounts/${account.id}/security-changes/server`, {}, undefined, { "x-admin-token": "admin-token-123457" })).status).toBe(401);
+    expect((await t.call("POST", `/v1/admin/accounts/${account.id}/security-changes/server`, {}, undefined, { "x-admin-token": "curto" })).status).toBe(401);
     const r = await t.call("POST", `/v1/admin/accounts/${account.id}/security-changes/server`, {}, undefined, { "x-admin-token": "admin-token-123456" });
     expect(r.json.change.status).toBe("PREPARED");
     expect(r.json.desc.role).toBe("SERVER");
+  });
+
+  it("erros levam código e params: a tela monta a frase no idioma dela", async () => {
+    const t = await setup();
+    const { token, account } = await enroll(t);
+    await t.call("POST", "/v1/dev/airdrop", { address: account.vault, sol: 100 });
+    // Acima do teto da política (50 SOL): motivo e teto em params.
+    const over = await t.call("POST", `/v1/accounts/${account.id}/intents`, { type: "TRANSFER_SOL", destination: Keypair.generate().publicKey.toBase58(), amountSol: "60" }, token);
+    expect(over.status).toBe(422);
+    expect(over.json).toMatchObject({ error: "POLICY_DENIED", params: { reason: "LIMIT_EXCEEDED", limitLamports: (50n * SOL).toString() } });
+    expect(over.json.message).toMatch(/acima do limite/);
+    // Cancelada e depois preparada: o status vai em params.
+    const created = await t.call("POST", `/v1/accounts/${account.id}/intents`, { type: "TRANSFER_SOL", destination: Keypair.generate().publicKey.toBase58(), amountSol: "1" }, token);
+    expect((await t.call("POST", `/v1/intents/${created.json.intent.id}/reject`, undefined, token)).json.status).toBe("REJECTED");
+    const again = await t.call("POST", `/v1/intents/${created.json.intent.id}/prepare`, {}, token);
+    expect(again.json).toMatchObject({ error: "INTENT_NOT_PENDING", params: { status: "REJECTED" } });
+    // Erros de sessão e permissão têm código próprio.
+    expect((await t.call("GET", `/v1/accounts/${account.id}/security`)).json).toMatchObject({ error: "SESSION_INVALID" });
+    const other = await enroll(t);
+    expect((await t.call("GET", `/v1/accounts/${account.id}/security`, undefined, other.token)).json).toMatchObject({ error: "FORBIDDEN_ACCOUNT" });
+    expect((await t.call("GET", `/v1/accounts/${account.id}/intents/nope`, undefined, token)).status).toBe(404);
+  });
+
+  it("tokens do QR não vão para o log; comparação do admin token em tempo constante", () => {
+    expect(redactUrl("/v1/pay/0123abcd")).toBe("/v1/pay/***");
+    expect(redactUrl("/v1/handoff/0123abcd/prepare")).toBe("/v1/handoff/***/prepare");
+    expect(redactUrl("/v1/handoff/0123abcd?x=1")).toBe("/v1/handoff/***?x=1");
+    expect(redactUrl("/v1/intents/abc/pay")).toBe("/v1/intents/abc/pay");
+    expect(tokenEquals("abc", "abc")).toBe(true);
+    expect(tokenEquals("abd", "abc")).toBe(false);
+    expect(tokenEquals("ab", "abc")).toBe(false);
+    expect(tokenEquals(undefined, "abc")).toBe(false);
+    expect(tokenEquals("abc", null)).toBe(false);
   });
 
   it("a cópia cifrada da chave do webapp é achada pela passkey (sem sessão: é só texto cifrado)", async () => {

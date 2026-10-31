@@ -1,18 +1,20 @@
 import { loadSession } from "./storage";
-import { lang, tr } from "./i18n";
-import { errorEn } from "./errors-en";
+import { tr } from "./i18n";
+import { errorMessage, type Params, sentence } from "./errors";
+
+export { sentence };
 
 export class ApiError extends Error {
-  constructor(public readonly code: string, message: string, public readonly status: number) {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly status: number,
+    /** Valores que acompanham o código (ex.: `{ status }`), para quem quiser decidir por eles. */
+    public readonly params: Params = {},
+  ) {
     super(message);
   }
 }
-
-/** Mensagem do serviço pronta para a tela: sem "[CÓDIGO]" e com maiúscula no começo. */
-export const sentence = (m: string) => {
-  const t = String(m).replace(/^\[[A-Z0-9_]+\]\s*/, "");
-  return t.charAt(0).toUpperCase() + t.slice(1);
-};
 
 /** Um pedido pendurado (upstream fora, rede ruim) não pode deixar a tela em "assinando…" para sempre. */
 const TIMEOUT_MS = 15_000;
@@ -59,18 +61,14 @@ export async function api<T = any>(method: "GET" | "POST", path: string, body?: 
     // `fetch` só lança TypeError por falha de rede (sem conexão, DNS, túnel caído).
     throw new ApiError("NETWORK", tr("Sem conexão com o serviço. Confira a internet e tente de novo.", "No connection to the service. Check your internet and try again."), 0);
   }
-  const json: { error?: string; message?: string } | null = await r.json().catch(() => null);
+  const json: { error?: string; message?: string; params?: Params } | null = await r.json().catch(() => null);
   if (!r.ok) {
     // Só quando o pedido levou o token: um 401 de quem nem tinha sessão não é "sessão vencida".
     if (r.status === 401 && headers.authorization) onUnauthorized?.();
     const code: string = json?.error ?? "HTTP";
-    let message: string;
-    if (json?.message !== undefined) {
-      const pt = String(json.message);
-      // Em inglês, a mensagem sai da tabela pelo código; código desconhecido fica com o texto do serviço.
-      message = (lang === "en" && errorEn(code, pt)) || pt;
-    } else message = httpText(r.status);
-    throw new ApiError(code, sentence(message), r.status);
+    // A frase vem do código e dos parâmetros, no idioma do app; o texto do serviço só é fallback.
+    const message = json?.message !== undefined ? errorMessage(code, json.params, String(json.message)) : httpText(r.status);
+    throw new ApiError(code, message, r.status, json?.params ?? {});
   }
   return (json ?? {}) as T;
 }

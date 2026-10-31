@@ -3,6 +3,7 @@ import { VersionedTransaction } from "@solana/web3.js";
 import { trace } from "./trace";
 import { tr } from "./i18n";
 import { ensureActivation } from "./activation";
+import { MWA_NAME } from "./wallets";
 
 /**
  * Carteira do celular (Android) pelo Mobile Wallet Adapter, falando direto com
@@ -122,7 +123,7 @@ export function makeMwaWallet(opts: { chain: string; identity: { name: string; u
 
   return {
     version: "1.0.0" as const,
-    name: "Mobile Wallet Adapter",
+    name: MWA_NAME,
     icon: "data:image/svg+xml," + encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='9' fill='#C8F169'/><rect x='10' y='6' width='12' height='20' rx='3' fill='none' stroke='#0B0D10' stroke-width='2'/><circle cx='16' cy='22' r='1.5' fill='#0B0D10'/></svg>`),
     chains: [opts.chain],
     get accounts() {

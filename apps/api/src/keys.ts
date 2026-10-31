@@ -1,8 +1,8 @@
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { DevMemorySigner, type ServerSigner } from "@duplachave/crypto";
-import type { ServerKeyProvider } from "@duplachave/custody";
+import type { RetireReason, ServerKeyProvider } from "@duplachave/custody";
 import type { Cluster } from "@duplachave/shared";
 
 /**
@@ -58,10 +58,16 @@ export class DevFileKeyStore {
     return DevMemorySigner.fromSeed(seed, label, this.cluster);
   }
 
-  /** Mantém o arquivo (renomeado) para auditoria; produção agendaria destruição no KMS. */
-  retire(label: string) {
+  /**
+   * `ROTATED`: mantém o arquivo (renomeado) para auditoria; produção agendaria
+   * destruição no KMS. `UNUSED`: a chave nunca votou em nada — apaga, senão cada
+   * cadastro abandonado deixava um `.retired` para sempre.
+   */
+  retire(label: string, reason: RetireReason) {
     const p = this.path(label);
-    if (existsSync(p)) renameSync(p, `${p}.retired`);
+    if (!existsSync(p)) return;
+    if (reason === "UNUSED") unlinkSync(p);
+    else renameSync(p, `${p}.retired`);
   }
 
   labels() {
@@ -102,8 +108,8 @@ export class FileServerKeyProvider implements ServerKeyProvider {
     return this.cache.get(publicKey) ?? null;
   }
 
-  async retire(publicKey: string) {
+  async retire(publicKey: string, reason: RetireReason) {
     this.cache.delete(publicKey);
-    this.store?.retire(`server-${publicKey}`);
+    this.store?.retire(`server-${publicKey}`, reason);
   }
 }

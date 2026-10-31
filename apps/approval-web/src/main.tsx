@@ -9,15 +9,18 @@ import { trace } from "./lib/trace";
 import { tr } from "./lib/i18n";
 import { isMobile } from "./lib/activation";
 import { ed25519Supported, loadSession, type Session } from "./lib/storage";
-import { Deposit, Home } from "./screens/home";
-import { IntentScreen, Send } from "./screens/intent";
+import { Home } from "./screens/home";
 import { Welcome } from "./screens/welcome";
 
-// Telas fora do caminho principal (entrar → enviar) vêm sob demanda: ficam fora do chunk inicial.
+// Só entrar e a Home ficam no chunk inicial. O resto vem sob demanda; em especial tudo o que
+// confere transações (SDK da Squads) só baixa quando a pessoa vai enviar, depositar ou mexer em segurança.
+const Send = lazy(() => import("./screens/send").then((m) => ({ default: m.Send })));
+const Deposit = lazy(() => import("./screens/deposit").then((m) => ({ default: m.Deposit })));
+const IntentScreen = lazy(() => import("./screens/intent").then((m) => ({ default: m.IntentScreen })));
 const Security = lazy(() => import("./screens/security").then((m) => ({ default: m.Security })));
-const ChangeClient = lazy(() => import("./screens/security").then((m) => ({ default: m.ChangeClient })));
-const ChangeWebapp = lazy(() => import("./screens/security").then((m) => ({ default: m.ChangeWebapp })));
-const Activity = lazy(() => import("./screens/security").then((m) => ({ default: m.Activity })));
+const ChangeClient = lazy(() => import("./screens/change-client").then((m) => ({ default: m.ChangeClient })));
+const ChangeWebapp = lazy(() => import("./screens/change-webapp").then((m) => ({ default: m.ChangeWebapp })));
+const Activity = lazy(() => import("./screens/activity").then((m) => ({ default: m.Activity })));
 const MobileHandoff = lazy(() => import("./screens/handoff").then((m) => ({ default: m.MobileHandoff })));
 const PrfCheck = lazy(() => import("./screens/prfcheck").then((m) => ({ default: m.PrfCheck })));
 

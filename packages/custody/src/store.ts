@@ -207,6 +207,48 @@ export type SecurityEventRecord = {
   at: number;
 };
 
+/**
+ * "Continuar no celular": o pedido que o QR do computador abre no celular.
+ * `token` vai no link do QR; `poll` é o segredo separado com que o computador
+ * acompanha (quem só viu o QR não lê o resultado, que no CONNECT traz a sessão).
+ */
+export type HandoffRecord = {
+  token: string;
+  poll: string;
+  kind: "CONNECT" | "SIGN_INTENT";
+  label: string;
+  /** intentId (SIGN_INTENT) */
+  subject: string | null;
+  accountId: string | null;
+  createdAt: number;
+  expiresAt: number;
+  status: "WAITING" | "DONE" | "FAILED" | "EXPIRED";
+  error: string | null;
+  result: Record<string, unknown> | null;
+};
+
+/** Plano de um cadastro preparado: o que a conta vai ser quando a carteira assinar. */
+export type EnrollmentPlan = {
+  userId: string;
+  roles: ExpectedRoles;
+  multisig: string;
+  vault: string;
+};
+
+/**
+ * Cadastro preparado e ainda não confirmado: a carteira assina e paga a criação
+ * da multisig. Dura minutos, mas fica no banco para sobreviver a um restart da API.
+ */
+export type PendingEnrollmentRecord = {
+  id: string;
+  wallet: string;
+  webapp: string;
+  walletName: string;
+  plan: EnrollmentPlan;
+  message: string;
+  createdAt: number;
+};
+
 export interface Store {
   saveApproval(a: ApprovalRecord): Promise<void>;
   listApprovals(intentId: string): Promise<ApprovalRecord[]>;
@@ -239,6 +281,24 @@ export interface Store {
 
   saveWebappKey(k: WebappKeyRecord): Promise<void>;
   listWebappKeys(accountId: string): Promise<WebappKeyRecord[]>;
+  /** A cópia cifrada (não revogada) da chave ATUAL do webapp guardada para esta passkey, com a conta. */
+  findWebappKeyByCredential(credentialId: string): Promise<{ account: SmartAccountRecord; key: WebappKeyRecord } | null>;
+
+  saveHandoff(h: HandoffRecord): Promise<void>;
+  getHandoff(token: string): Promise<HandoffRecord | null>;
+  getHandoffByPoll(poll: string): Promise<HandoffRecord | null>;
+  /** Apaga os pedidos do QR vencidos antes de `before`. */
+  purgeHandoffs(before: number): Promise<void>;
+
+  savePendingEnrollment(p: PendingEnrollmentRecord): Promise<void>;
+  getPendingEnrollment(id: string): Promise<PendingEnrollmentRecord | null>;
+  deletePendingEnrollment(id: string): Promise<void>;
+  listPendingEnrollments(): Promise<PendingEnrollmentRecord[]>;
+
+  /** Contas com algo em aberto (intenção à espera da carteira; troca preparada ou pendente): só elas precisam da varredura. */
+  listAccountIdsWithOpenWork(): Promise<string[]>;
+  /** Lixo com prazo vencido: desafios, nonces, pedidos do QR (10 min depois) e cadastros preparados (1 h depois). */
+  purgeExpired(now: number): Promise<void>;
 
   saveSecurityChange(c: SecurityChangeRecord): Promise<void>;
   getSecurityChange(id: string): Promise<SecurityChangeRecord | null>;
@@ -329,6 +389,36 @@ export class MemoryStore implements Store, ChallengeStore {
     else this.webappKeys.push(clone(k));
   }
   async listWebappKeys(accountId: string) { return this.webappKeys.filter((k) => k.accountId === accountId).map(clone); }
+  async findWebappKeyByCredential(credentialId: string) {
+    for (const k of this.webappKeys) {
+      if (k.blob.credentialId !== credentialId || k.revokedAt) continue;
+      const acc = this.accounts.get(k.accountId);
+      if (acc && acc.roles.webapp === k.publicKey) return { account: clone(acc), key: clone(k) };
+    }
+    return null;
+  }
+  private handoffs = new Map<string, HandoffRecord>();
+  async saveHandoff(h: HandoffRecord) { this.handoffs.set(h.token, clone(h)); }
+  async getHandoff(token: string) { const h = this.handoffs.get(token); return h ? clone(h) : null; }
+  async getHandoffByPoll(poll: string) { const h = [...this.handoffs.values()].find((x) => x.poll === poll); return h ? clone(h) : null; }
+  async purgeHandoffs(before: number) { for (const [k, h] of this.handoffs) if (h.expiresAt < before) this.handoffs.delete(k); }
+  private pendingEnrollments = new Map<string, PendingEnrollmentRecord>();
+  async savePendingEnrollment(p: PendingEnrollmentRecord) { this.pendingEnrollments.set(p.id, clone(p)); }
+  async getPendingEnrollment(id: string) { const p = this.pendingEnrollments.get(id); return p ? clone(p) : null; }
+  async deletePendingEnrollment(id: string) { this.pendingEnrollments.delete(id); }
+  async listPendingEnrollments() { return [...this.pendingEnrollments.values()].map(clone); }
+  async listAccountIdsWithOpenWork() {
+    const ids = new Set<string>();
+    for (const r of this.intents.values()) if (r.status === "AWAITING_CLIENT") ids.add(r.accountId);
+    for (const c of this.changes.values()) if (c.status === "PREPARED" || c.status === "PENDING") ids.add(c.accountId);
+    return [...ids];
+  }
+  async purgeExpired(now: number) {
+    for (const [id, c] of this.challenges) if (c.expiresAt < now) this.challenges.delete(id);
+    for (const [k, exp] of this.nonces) if (exp < now) this.nonces.delete(k);
+    await this.purgeHandoffs(now - 600);
+    for (const [id, p] of this.pendingEnrollments) if (p.createdAt < now - 3600) this.pendingEnrollments.delete(id);
+  }
   private changes = new Map<string, SecurityChangeRecord>();
   async saveSecurityChange(c: SecurityChangeRecord) { this.changes.set(c.id, clone(c)); }
   async getSecurityChange(id: string) { const c = this.changes.get(id); return c ? clone(c) : null; }
@@ -373,6 +463,7 @@ export class MemoryStore implements Store, ChallengeStore {
     const snapshot = clone({
       challenges: this.challenges, approvals: this.approvals, squadsTxs: this.squadsTxs, secEvents: this.secEvents, users: this.users, devices: this.devices,
       accounts: this.accounts, members: this.members, intents: this.intents, nonces: this.nonces, audit: this.audit, webappKeys: this.webappKeys, changes: this.changes,
+      handoffs: this.handoffs, pendingEnrollments: this.pendingEnrollments,
     });
     try {
       return await fn(this);

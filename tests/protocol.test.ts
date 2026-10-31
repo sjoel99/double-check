@@ -224,9 +224,12 @@ describe("trocas de chave com prazo de 72 h", () => {
   it("chave do serviço: o serviço gera a nova; Phantom + serviço pedem; depois de 72 h a antiga é aposentada", async () => {
     const t = await setupService();
     const { change } = await t.requestChange("SERVER", null);
+    const oldServer = t.account.roles.server;
     t.advance(H72);
     await t.executeChange(change.id, t.wallet);
-    expect(await t.serverKeys.get(t.account.roles.server)).toBeNull();
+    expect(await t.serverKeys.get(oldServer)).toBeNull();
+    // A antiga saiu da multisig: guardada para auditoria, não apagada.
+    expect(t.serverKeys.retiredWhy.get(oldServer)).toBe("ROTATED");
     const r = await t.custody.createTransferSol(t.account.id, { destination: dest(), amountLamports: SOL.toString() });
     expect((await t.sign(r.intent.id)).status).toBe("EXECUTED");
   });

@@ -18,11 +18,21 @@ describe("continuar no celular", () => {
     const qr = await t.call("POST", "/v1/pay/connect");
     expect(qr.json.url).toMatch(/^https:\/\/dupla\.example\/#\/m\/[0-9a-f]{48}$/);
     const token = tokenOf(qr.json.url);
-    expect((await t.call("GET", `/v1/handoff/${token}`)).json.kind).toBe("CONNECT");
+    expect(qr.json.poll).toMatch(/^[0-9a-f]{48}$/);
+    expect(qr.json.poll).not.toBe(token);
+    const info = await t.call("GET", `/v1/handoff/${token}`);
+    expect(info.json.kind).toBe("CONNECT");
+    expect(info.json.summary).toEqual({ type: "CONNECT" });
+    // Sem sessão no celular: código estável, não frase solta.
+    expect((await t.call("POST", `/v1/handoff/${token}/claim`, { accountId: "00000000-0000-4000-8000-000000000000" })).json).toMatchObject({ error: "PHONE_NOT_SIGNED_IN" });
     const phone = await enroll(t);
     expect((await t.call("POST", `/v1/handoff/${token}/claim`, { accountId: phone.account.id }, phone.token)).status).toBe(200);
-    const st = await t.call("GET", `/v1/pay/${token}`);
+    // Quem só viu o QR (token) não lê o resultado: o acompanhamento é pelo `poll`.
+    expect((await t.call("GET", `/v1/pay/${token}`)).json.error).toBe("PAY_NOT_FOUND");
+    const st = await t.call("GET", `/v1/pay/${qr.json.poll}`);
     expect(st.json.status).toBe("DONE");
+    // O pedido vive no banco, não em memória.
+    expect((await t.store.getHandoff(token))?.status).toBe("DONE");
     expect((await t.call("GET", `/v1/accounts/${phone.account.id}/security`, undefined, st.json.result.sessionToken)).status).toBe(200);
   });
 
@@ -32,9 +42,10 @@ describe("continuar no celular", () => {
     t.chain.airdrop(new PublicKey(account.vault), 5n * SOL);
     const to = Keypair.generate().publicKey.toBase58();
     const intent = await t.call("POST", `/v1/accounts/${account.id}/intents`, { type: "TRANSFER_SOL", destination: to, amountSol: "2" }, session);
-    const token = tokenOf((await t.call("POST", `/v1/intents/${intent.json.intent.id}/pay`, {}, session)).json.url);
+    const pay = await t.call("POST", `/v1/intents/${intent.json.intent.id}/pay`, {}, session);
+    const token = tokenOf(pay.json.url);
     const info = await t.call("GET", `/v1/handoff/${token}`);
-    expect(info.json).toMatchObject({ kind: "SIGN_INTENT", intentId: intent.json.intent.id, wallet: account.roles.client });
+    expect(info.json).toMatchObject({ kind: "SIGN_INTENT", intentId: intent.json.intent.id, wallet: account.roles.client, summary: { type: "TRANSFER_SOL", amountLamports: (2n * SOL).toString(), destination: to, toSelf: false } });
     expect((await t.call("GET", `/v1/handoff/${token}/key`)).json.keys[0].publicKey).toBe(account.roles.webapp);
     // Assinatura de outra chave no lugar da do webapp: recusada.
     const prepared = await t.call("POST", `/v1/handoff/${token}/prepare`, {});
@@ -43,8 +54,8 @@ describe("continuar no celular", () => {
     expect((await t.call("POST", `/v1/handoff/${token}/authorize`, { message: Buffer.from(review.message).toString("base64"), webappSignature: bs58.encode(await bogus.sign(review.message)) })).json.error).toBe("WEBAPP_BAD_SIGNATURE");
     const done = await signIntent(t, `/v1/handoff/${token}`, wallet, webapp);
     expect(done.json.status).toBe("EXECUTED");
-    expect((await t.call("GET", `/v1/pay/${token}`)).json.status).toBe("DONE");
-    expect((await t.call("POST", `/v1/handoff/${token}/prepare`, {})).json.error).toBe("PAY_USED");
+    expect((await t.call("GET", `/v1/pay/${pay.json.poll}`)).json.status).toBe("DONE");
+    expect((await t.call("POST", `/v1/handoff/${token}/prepare`, {})).json).toMatchObject({ error: "PAY_USED", params: { what: "USED" } });
     expect(await t.chain.getBalance(new PublicKey(to))).toBe(2n * SOL);
   });
 

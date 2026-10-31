@@ -1,19 +1,18 @@
 import { PublicKey } from "@solana/web3.js";
-import { verifyEnrollmentTransaction } from "@duplachave/custody/src/client";
 import bs58 from "bs58";
 import { type BiometricConfirm, createWebappKey, deviceName, unlockWebappKey, type UnlockedKey, type WebappKeyBlob } from "./lib/webappKey";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Chain } from "@duplachave/solana";
 import type { Cluster } from "@duplachave/shared";
-import { api, ApiError, sentence } from "./lib/api";
+import { api, ApiError } from "./lib/api";
 import { appChain, short } from "./lib/chain";
 import { makeDevWallet, type DevConfirm } from "./lib/devwallet";
 import { saveSession, type Session } from "./lib/storage";
-import { ConnectedWallet, discoverWallets, registerWallet, type StandardWallet, walletDisplay, walletLabel } from "./lib/wallets";
+import { ConnectedWallet, discoverWallets, NO_WALLET, registerWallet, type StandardWallet, walletDisplay, walletLabel } from "./lib/wallets";
 import { setActivationGate } from "./lib/activation";
 import { trace } from "./lib/trace";
-import { lang, tr } from "./lib/i18n";
-import { errorEn } from "./lib/errors-en";
+import { tr } from "./lib/i18n";
+import { errorMessage } from "./lib/errors";
 import { Icon } from "./icons";
 import { Sheet } from "./components/Sheet";
 
@@ -284,6 +283,8 @@ export async function loginOrEnroll(ctx: Ctx, w: StandardWallet, onStep: (s: str
   try {
     onStep(tr("Preparando sua conta 2 de 3…", "Preparing your 2-of-3 account…"));
     const p = await api("POST", "/v1/enrollment/prepare", { publicKey, webappPublicKey: key.publicKey.toBase58(), walletName: c.name }, { auth: false });
+    // A conferência da criação da conta usa o SDK da Squads: só baixa aqui, na criação (não no chunk inicial).
+    const { verifyEnrollmentTransaction } = await import("@duplachave/custody/src/client");
     const { transaction } = verifyEnrollmentTransaction(p.transaction, new PublicKey(publicKey), key.publicKey);
     transaction.addSignature(key.publicKey, key.sign(transaction.message.serialize()));
     onStep(tr(`Confirme na ${c.name}: criar a conta custa ~0,003 SOL, pagos pela sua carteira…`, `Confirm in ${walletDisplay(c.name)}: creating the account costs ~0.003 SOL, paid by your wallet…`));
@@ -315,7 +316,7 @@ export async function loginWithBiometrics(ctx: Ctx, onStep: (s: string) => void)
     const ch = await api("POST", "/v1/auth/challenge", { publicKey: pub }, { auth: false });
     const signature = bs58.encode(key.sign(new TextEncoder().encode(ch.message)));
     const r = await api("POST", "/v1/auth/webapp", { challengeId: ch.challengeId, publicKey: pub, signature }, { auth: false });
-    const s: Session = { token: r.token, accountId: r.account.id, walletName: "sem carteira", publicKey: r.account.roles.client, via: "webapp" };
+    const s: Session = { token: r.token, accountId: r.account.id, walletName: NO_WALLET, publicKey: r.account.roles.client, via: "webapp" };
     await ctx.setSession(s);
     return s;
   } finally {
@@ -340,11 +341,8 @@ export function errorText(e: unknown): string {
   if (/NotAllowedError|The operation either timed out or was not allowed|biometria recusada/i.test(m)) return tr("Biometria cancelada.", "Biometrics canceled.");
   if (/User rejected|rejected the request|recusad/i.test(m)) return tr("Assinatura recusada na carteira.", "Signature declined in the wallet.");
   if (/insufficient|Attempt to debit an account but found no record/i.test(m)) return tr("Sua carteira não tem SOL suficiente para a taxa.", "Your wallet doesn't have enough SOL for the fee.");
-  // Erros de segurança gerados no próprio webapp ("[CÓDIGO] mensagem"): sem o código e, em inglês, pelo mapa.
+  // Erros de segurança gerados no próprio webapp (client.ts): pelo código e pelos parâmetros, como os do serviço.
   const code = (e as { code?: unknown })?.code;
-  if (typeof code === "string" && /^[A-Z0-9_]+$/.test(code)) {
-    const pt = m.replace(/^\[[A-Z0-9_]+\]\s*/, "");
-    return sentence((lang === "en" && errorEn(code, pt)) || pt);
-  }
+  if (typeof code === "string" && /^[A-Z0-9_]+$/.test(code)) return errorMessage(code, (e as { params?: Record<string, string | number | boolean | null> }).params, m);
   return m;
 }

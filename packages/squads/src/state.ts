@@ -44,7 +44,7 @@ const toBig = (n: unknown) => BigInt((n as { toString(): string }).toString());
 
 export async function readMultisig(chain: Chain, address: PublicKey): Promise<MultisigState> {
   const info = await chain.getAccountInfo(address);
-  if (!info) deny("MULTISIG_NOT_FOUND", `multisig ${address.toBase58()} não existe`);
+  if (!info) deny("MULTISIG_NOT_FOUND", `multisig ${address.toBase58()} não existe`, { address: address.toBase58() });
   if (!info.owner.equals(multisig.PROGRAM_ID)) deny("MULTISIG_WRONG_OWNER", "conta não pertence ao programa Squads v4");
   const [ms] = Multisig.fromAccountInfo(info);
   return {

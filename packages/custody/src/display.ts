@@ -70,6 +70,22 @@ export function renderIntent(
   };
 }
 
+/**
+ * Resumo estruturado do que o QR pede, para o celular montar a frase no idioma
+ * dele (o `label` em pt continua existindo, por compatibilidade).
+ */
+export type IntentSummary =
+  | { type: "CONNECT" }
+  | { type: "TRANSFER_SOL"; amountLamports: string; destination: string; toSelf: boolean }
+  | { type: "ROTATE_MEMBER"; role: "CLIENT" | "WEBAPP" | "SERVER"; newKey: string };
+
+export function intentSummary(intent: TransactionIntent): IntentSummary {
+  if (intent.type === "TRANSFER_SOL") return { type: "TRANSFER_SOL", amountLamports: intent.amountLamports, destination: intent.destination, toSelf: intent.destination === intent.vault };
+  if (intent.type === "ROTATE_MEMBER") return { type: "ROTATE_MEMBER", role: intent.role, newKey: intent.newKey };
+  // TRANSFER_TOKEN não é criado pelo serviço; se aparecer, o celular mostra o rótulo em pt.
+  return { type: "TRANSFER_SOL", amountLamports: "0", destination: intent.destination, toSelf: false };
+}
+
 /** Rótulo do pedido "continuar no celular" (QR): o resumo do que vai ser assinado. */
 export function qrLabel(intent: TransactionIntent): string {
   if (intent.type === "TRANSFER_SOL") return `Double Check · Enviar ${formatUnits(intent.amountLamports, 9)} SOL para ${intent.destination === intent.vault ? "o seu Vault" : shortKey(intent.destination)}`;

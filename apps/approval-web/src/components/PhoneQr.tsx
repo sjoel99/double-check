@@ -7,7 +7,8 @@ import { Icon } from "../icons";
 import { tr } from "../lib/i18n";
 import { qrDataUrl } from "../lib/qr";
 
-type Created = { token: string; url: string; link: string; expiresAt: number; https: boolean };
+/** `poll`: segredo separado para o computador acompanhar; quem só viu o QR (token) não lê o resultado. */
+type Created = { token: string; poll?: string; url: string; link: string; expiresAt: number; https: boolean };
 type Status = { status: "WAITING" | "DONE" | "FAILED" | "EXPIRED"; error: string | null; result: unknown };
 /** `T` é o que o celular devolve quando termina (sessão ao entrar; status da intenção ao assinar). */
 export type PhoneQrProps<T> = { create: () => Promise<Created>; title: string; steps: string[]; onDone: (result: T) => void };
@@ -52,7 +53,7 @@ export function PhoneQr<T>({ create, title, steps, onDone }: PhoneQrProps<T>) {
   }
 
   // Acompanha o celular enquanto a aba está visível; ao voltar, confere na hora.
-  const token = req?.token;
+  const token = req?.poll ?? req?.token;
   const finished = !st || st.status === "WAITING" ? false : true;
   const poll = useCallback(async () => {
     if (!token) return;

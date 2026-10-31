@@ -27,6 +27,8 @@ if (typeof document !== "undefined") document.documentElement.lang = locale;
 
 /** O mesmo texto nas duas línguas: `tr("Enviar", "Send")`. */
 export const tr = (pt: string, en: string): string => (lang === "pt" ? pt : en);
+/** O mesmo, para JSX ou qualquer valor: `trn(<>…</>, <>…</>)`. */
+export const trn = <T,>(pt: T, en: T): T => (lang === "pt" ? pt : en);
 
 /** Data e hora curtas no idioma do app. */
 export const fmtWhen = (unixSeconds: number, timeStyle: "short" | "medium" = "short") =>

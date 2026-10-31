@@ -1,5 +1,5 @@
 import { type MessageV0, PublicKey, SystemProgram, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
-import { deny, type TransactionIntent, verifyIntentHash } from "@duplachave/shared";
+import { deny, type ErrorParams, type TransactionIntent, verifyIntentHash } from "@duplachave/shared";
 import { MEMO_PROGRAM_ID, verifyEd25519 } from "@duplachave/crypto";
 import { type Chain, parseInstruction, type ParsedInstruction } from "@duplachave/solana";
 import * as squads from "@sqds/multisig";
@@ -37,10 +37,10 @@ function rolesFromState(state: MultisigState, mine: { client: PublicKey; webapp:
   if (!has(mine.webapp)) deny("WEBAPP_NOT_A_VOTER", "a chave deste webapp não é votante desta conta");
   const others = voters.filter((m) => m.key !== mine.client.toBase58() && m.key !== mine.webapp.toBase58());
   const operators = state.members.filter((m) => m.mask === 5);
-  if (voters.length !== 3 || others.length !== 1 || state.threshold !== 2) deny("BAD_STATE", "a multisig não está no modelo 2 de 3");
-  if (voters.some((m) => m.mask !== 2)) deny("BAD_STATE", "votante com permissão além de votar");
-  if (state.members.filter((m) => m.mask & 4).length !== 1 || operators.length !== 1) deny("BAD_STATE", "executor ausente ou não é único");
-  if (state.configAuthority !== PublicKey.default.toBase58()) deny("CONFIG_AUTHORITY_SET", "multisig controlada por uma chave");
+  if (voters.length !== 3 || others.length !== 1 || state.threshold !== 2) deny("BAD_STATE", "a multisig não está no modelo 2 de 3", { what: "MODEL" });
+  if (voters.some((m) => m.mask !== 2)) deny("BAD_STATE", "votante com permissão além de votar", { what: "VOTER_PERMS" });
+  if (state.members.filter((m) => m.mask & 4).length !== 1 || operators.length !== 1) deny("BAD_STATE", "executor ausente ou não é único", { what: "EXECUTOR" });
+  if (state.configAuthority !== PublicKey.default.toBase58()) deny("CONFIG_AUTHORITY_SET", "multisig controlada por uma chave", { authority: state.configAuthority });
   return { client: mine.client, webapp: mine.webapp, server: new PublicKey(others[0]!.key), operator: new PublicKey(operators[0]!.key) };
 }
 
@@ -49,7 +49,7 @@ const rentBack = (state: MultisigState, client: PublicKey) => (state.rentCollect
 
 /** Operação: Phantom + webapp votam, o operador executa, a Phantom paga. */
 export function atomicInstructionsFor(intent: TransactionIntent, roles: AccountRoles, state: MultisigState): TransactionInstruction[] {
-  if (intent.type !== "TRANSFER_SOL") deny("UNSUPPORTED", `o tipo ${intent.type} não é uma operação atômica`);
+  if (intent.type !== "TRANSFER_SOL") deny("UNSUPPORTED", `o tipo ${intent.type} não é uma operação atômica`, { what: "TYPE", type: intent.type });
   const multisig = new PublicKey(intent.multisig);
   const vault = vaultPda(multisig, 0);
   if (intent.vault !== vault.toBase58()) deny("BAD_INTENT", "o Vault da intenção não é o desta conta");
@@ -151,7 +151,7 @@ function decodeTransaction(b64: string): VersionedTransaction {
 export async function reviewPrepared(chain: Chain, request: ApprovalRequest, mine: { client: PublicKey; webapp: PublicKey }, now: number): Promise<Review> {
   const { intent } = request;
   if (!verifyIntentHash(intent)) deny("INTENT_HASH_INVALID", "hash da intenção não confere com os campos");
-  if (intent.cluster !== chain.cluster) deny("WRONG_CLUSTER", `intenção para ${intent.cluster}, app em ${chain.cluster}`);
+  if (intent.cluster !== chain.cluster) deny("WRONG_CLUSTER", `intenção para ${intent.cluster}, app em ${chain.cluster}`, { kind: "INTENT", want: intent.cluster, have: chain.cluster });
   if (now > intent.expiresAt) deny("INTENT_EXPIRED", "intenção expirada");
   if (intent.expiresAt - intent.createdAt > MAX_INTENT_TTL) deny("INTENT_TTL_TOO_LONG", "validade acima do máximo");
   const state = await readMultisig(chain, new PublicKey(intent.multisig));
@@ -160,18 +160,18 @@ export async function reviewPrepared(chain: Chain, request: ApprovalRequest, min
   const tx = decodeTransaction(request.transaction);
   const expected = compileAtomic(atomicInstructionsFor(intent, roles, state), roles.client, tx.message.recentBlockhash);
   const bytes = tx.message.serialize();
-  if (!sameBytes(expected.serialize(), bytes)) deny("INTENT_MISMATCH", "a transação recebida é diferente da que o webapp monta a partir da tela");
+  if (!sameBytes(expected.serialize(), bytes)) deny("INTENT_MISMATCH", "a transação recebida é diferente da que o webapp monta a partir da tela", { what: "BYTES" });
   return { transaction: tx, state, roles, message: bytes };
 }
 
 /** Pedido de troca: o webapp remonta e compara os bytes. */
 export async function reviewSecurityRequest(chain: Chain, change: SecurityChangeDesc, transactionB64: string, mine: { client: PublicKey; webapp: PublicKey }): Promise<Review> {
-  if (change.cluster !== chain.cluster) deny("WRONG_CLUSTER", `troca para ${change.cluster}, app em ${chain.cluster}`);
+  if (change.cluster !== chain.cluster) deny("WRONG_CLUSTER", `troca para ${change.cluster}, app em ${chain.cluster}`, { kind: "CHANGE", want: change.cluster, have: chain.cluster });
   const state = await readMultisig(chain, new PublicKey(change.multisig));
   const roles = rolesFromState(state, mine);
   const oldNow = change.role === "CLIENT" ? roles.client : change.role === "WEBAPP" ? roles.webapp : roles.server;
-  if (oldNow.toBase58() !== change.oldKey) deny("BAD_CHANGE", "a chave a trocar não é a atual na chain");
-  if (state.members.some((m) => m.key === change.newKey)) deny("BAD_CHANGE", "a chave nova já é membro");
+  if (oldNow.toBase58() !== change.oldKey) deny("BAD_CHANGE", "a chave a trocar não é a atual na chain", { what: "OLD_KEY" });
+  if (state.members.some((m) => m.key === change.newKey)) deny("BAD_CHANGE", "a chave nova já é membro", { what: "NEW_KEY_MEMBER" });
   if (BigInt(change.index) !== state.transactionIndex + 1n) deny("STALE_INDEX", "outra transação entrou antes; prepare de novo");
   const tx = decodeTransaction(transactionB64);
   const { payer } = securityChangeParties(change.role, roles, new PublicKey(change.newKey));
@@ -188,16 +188,16 @@ export async function reviewSecurityRequest(chain: Chain, change: SecurityChange
 export function verifyAuthorized(review: Review, transactionB64: string, required: PublicKey[] = [review.roles.operator, review.roles.webapp]): VersionedTransaction {
   const tx = decodeTransaction(transactionB64);
   const bytes = tx.message.serialize();
-  if (!sameBytes(bytes, review.message)) deny("INTENT_MISMATCH", "o serviço devolveu outra transação");
+  if (!sameBytes(bytes, review.message)) deny("INTENT_MISMATCH", "o serviço devolveu outra transação", { what: "SERVER_RETURNED_OTHER" });
   const signers = tx.message.staticAccountKeys.slice(0, tx.message.header.numRequiredSignatures);
   for (const who of required) {
     const i = signers.findIndex((k) => k.equals(who));
-    if (i < 0 || !verifyEd25519(bytes, tx.signatures[i]!, who)) deny("SERVER_NOT_SIGNED", `falta a assinatura de ${who.toBase58().slice(0, 4)}…`);
+    if (i < 0 || !verifyEd25519(bytes, tx.signatures[i]!, who)) deny("SERVER_NOT_SIGNED", `falta a assinatura de ${who.toBase58().slice(0, 4)}…`, { key: who.toBase58() });
   }
   return tx;
 }
 
-export type Inspection = { ok: true; review: Review } | { ok: false; code: string; message: string; actual: ParsedInstruction[] | null };
+export type Inspection = { ok: true; review: Review } | { ok: false; code: string; message: string; params: ErrorParams; actual: ParsedInstruction[] | null };
 
 /** reviewPrepared sem lançar; no bloqueio, diz o que a transação recebida faria de verdade. */
 export async function inspectPrepared(chain: Chain, request: ApprovalRequest, mine: { client: PublicKey; webapp: PublicKey }, now: number): Promise<Inspection> {
@@ -210,7 +210,7 @@ export async function inspectPrepared(chain: Chain, request: ApprovalRequest, mi
     } catch {
       /* transação ilegível */
     }
-    return { ok: false, code: (e as { code?: string }).code ?? "ERROR", message: (e as Error).message, actual };
+    return { ok: false, code: (e as { code?: string }).code ?? "ERROR", message: (e as Error).message, params: (e as { params?: ErrorParams }).params ?? {}, actual };
   }
 }
 
@@ -225,29 +225,29 @@ export function verifyEnrollmentTransaction(transactionB64: string, wallet: Publ
   const tx = decodeTransaction(transactionB64);
   const m = tx.message;
   const keys = m.staticAccountKeys;
-  if (m.addressTableLookups.length) deny("ENROLL_TX_UNEXPECTED", "lookup table na criação da conta");
-  if (!keys[0]?.equals(wallet)) deny("ENROLL_TX_UNEXPECTED", "quem paga a criação não é esta carteira");
+  if (m.addressTableLookups.length) deny("ENROLL_TX_UNEXPECTED", "lookup table na criação da conta", { what: "LOOKUP_TABLE" });
+  if (!keys[0]?.equals(wallet)) deny("ENROLL_TX_UNEXPECTED", "quem paga a criação não é esta carteira", { what: "PAYER" });
   const ixs = m.compiledInstructions;
   const memo = ixs[0];
   const create = ixs[1];
-  if (ixs.length !== 2 || !memo || !create) deny("ENROLL_TX_UNEXPECTED", "a criação da conta tem instruções a mais ou a menos");
+  if (ixs.length !== 2 || !memo || !create) deny("ENROLL_TX_UNEXPECTED", "a criação da conta tem instruções a mais ou a menos", { what: "INSTRUCTION_COUNT" });
   const memoSigners = memo.accountKeyIndexes.map((i) => keys[i]!.toBase58()).sort();
-  if (!keys[memo.programIdIndex]!.equals(MEMO_PROGRAM_ID) || memoSigners.join() !== [wallet.toBase58(), webapp.toBase58()].sort().join()) deny("ENROLL_TX_UNEXPECTED", "primeira instrução não é o memo da carteira e do webapp");
-  if (!keys[create.programIdIndex]!.equals(squads.PROGRAM_ID)) deny("ENROLL_TX_UNEXPECTED", "segunda instrução não é da Squads");
+  if (!keys[memo.programIdIndex]!.equals(MEMO_PROGRAM_ID) || memoSigners.join() !== [wallet.toBase58(), webapp.toBase58()].sort().join()) deny("ENROLL_TX_UNEXPECTED", "primeira instrução não é o memo da carteira e do webapp", { what: "MEMO" });
+  if (!keys[create.programIdIndex]!.equals(squads.PROGRAM_ID)) deny("ENROLL_TX_UNEXPECTED", "segunda instrução não é da Squads", { what: "NOT_SQUADS" });
   const data = Buffer.from(create.data);
-  if (!data.subarray(0, 8).equals(Buffer.from(squads.generated.multisigCreateV2InstructionDiscriminator))) deny("ENROLL_TX_UNEXPECTED", "não é multisig_create_v2");
+  if (!data.subarray(0, 8).equals(Buffer.from(squads.generated.multisigCreateV2InstructionDiscriminator))) deny("ENROLL_TX_UNEXPECTED", "não é multisig_create_v2", { what: "NOT_CREATE_V2" });
   const [{ args }] = squads.generated.multisigCreateV2Struct.deserialize(data);
   const accounts = create.accountKeyIndexes.map((i) => keys[i]!);
   const multisig = accounts[2]!;
-  if (!accounts[4]?.equals(wallet)) deny("ENROLL_TX_UNEXPECTED", "quem cria não é esta carteira");
-  if (args.configAuthority !== null) deny("ENROLL_TX_UNEXPECTED", "multisig com config authority");
-  if (args.threshold !== 2 || args.timeLock !== 0) deny("ENROLL_TX_UNEXPECTED", "não é 2 de 3 sem time lock");
-  if (!args.rentCollector?.equals(wallet)) deny("ENROLL_TX_UNEXPECTED", "o rent não volta para esta carteira");
+  if (!accounts[4]?.equals(wallet)) deny("ENROLL_TX_UNEXPECTED", "quem cria não é esta carteira", { what: "CREATOR" });
+  if (args.configAuthority !== null) deny("ENROLL_TX_UNEXPECTED", "multisig com config authority", { what: "CONFIG_AUTHORITY" });
+  if (args.threshold !== 2 || args.timeLock !== 0) deny("ENROLL_TX_UNEXPECTED", "não é 2 de 3 sem time lock", { what: "THRESHOLD" });
+  if (!args.rentCollector?.equals(wallet)) deny("ENROLL_TX_UNEXPECTED", "o rent não volta para esta carteira", { what: "RENT_COLLECTOR" });
   const masks = args.members.map((x) => ({ key: x.key.toBase58(), mask: x.permissions.mask }));
   const mask = (k: PublicKey) => masks.find((x) => x.key === k.toBase58())?.mask;
   const voters = masks.filter((x) => x.mask & 2);
-  if (masks.length !== 4 || voters.length !== 3 || voters.some((v) => v.mask !== 2) || mask(wallet) !== 2 || mask(webapp) !== 2) deny("ENROLL_TX_UNEXPECTED", "membros diferentes do modelo 2 de 3");
-  if (masks.filter((x) => x.mask === 5).length !== 1 || masks.filter((x) => x.mask & 4).length !== 1) deny("ENROLL_TX_UNEXPECTED", "operador ausente ou executor não é único");
+  if (masks.length !== 4 || voters.length !== 3 || voters.some((v) => v.mask !== 2) || mask(wallet) !== 2 || mask(webapp) !== 2) deny("ENROLL_TX_UNEXPECTED", "membros diferentes do modelo 2 de 3", { what: "MEMBERS" });
+  if (masks.filter((x) => x.mask === 5).length !== 1 || masks.filter((x) => x.mask & 4).length !== 1) deny("ENROLL_TX_UNEXPECTED", "operador ausente ou executor não é único", { what: "OPERATOR" });
   return { multisig: multisig.toBase58(), vault: vaultPda(multisig, 0).toBase58(), transaction: tx };
 }
 
