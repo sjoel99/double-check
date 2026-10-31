@@ -68,6 +68,13 @@ server {
         proxy_set_header Content-Type "application/json";
     }
 
+    # O mime.types desta imagem não conhece .webmanifest: sem isto sai como octet-stream.
+    location = /manifest.webmanifest {
+        types { }
+        default_type application/manifest+json;
+        try_files $uri =404;
+    }
+
     # Arquivos do build: existem ou 404. Um chunk de um deploy antigo não pode virar o
     # index.html com status 200 (o navegador tentaria rodar HTML como JavaScript).
     location /assets/ {

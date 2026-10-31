@@ -227,12 +227,30 @@ DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
   `NODE_ENV=production`, só dependências de produção, HEALTHCHECK em
   `/healthz`; compose com healthcheck do Postgres e `depends_on` por saúde;
   `.dockerignore` deixa segredos e lixo fora do contexto.
+- Webapp, bloco 4 (UX/UI, 2026-10-31): janelas (QR, carteira de teste, toque
+  do MWA) sobre `<dialog>` nativo (`components/Sheet.tsx`: foco preso, Esc,
+  toque fora, foco volta); foco visível só pelo teclado; área segura no pé;
+  transições curtas com `prefers-reduced-motion`; esqueleto no saldo e no
+  endereço; polling só com a aba visível (`hooks/usePolling.ts`); rolagem ao
+  topo e título da aba por tela (`hooks/useTitle.ts`); Enter envia nos
+  formulários; `aria-busy`/`role=status|alert|timer`. Tela inicial com a
+  ação antes da explicação ("Como funciona e quanto custa" recolhido); erro
+  de carregamento como faixa com "Tentar de novo"; vazio com atalho para
+  depositar; dica sob botões desabilitados em Segurança; "Mostrar mais" no
+  histórico; link do explorer por cluster. Instalável: `manifest.webmanifest`
+  e ícones PNG gerados por `apps/approval-web/scripts/icones.ts` (sem
+  rasterizador externo; `pnpm exec tsx` dele se mudar o `icon.svg`). O
+  `mime.types` da imagem do nginx não conhece `.webmanifest`: o template tem
+  um `location` com `default_type`. **Falta testar no Android**: instalar
+  pela tela inicial (`display: standalone`) e conferir que o MWA volta para o
+  app instalado; se não voltar, trocar para `"display": "browser"`.
 - Ainda no mapa: textos de tela gerados no servidor só em pt (hoje o webapp
   traduz pelo código em `errors-en.ts`), divisão de `intent.tsx`/
   `security.tsx` em uma tela por arquivo, busca da chave por passkey com
   índice, `@noble/curves` em duas versões (1.9 via web3.js 1.x), chunk
   `solana` acima de 500 kB (tirar `@sqds/multisig` do caminho inicial),
-  manifest/ícones para "adicionar à tela inicial".
+  16 ramos JSX `lang === "pt" ? … : …` que poderiam virar um `tr` rico,
+  modo claro (hoje só escuro, por decisão).
 
 **Próximos passos:**
 1. Cadastro da conta nova com a Phantom e envio pelo QR no Android (digital + Phantom numa abertura só); conferir se a passkey criada no computador sincroniza com o celular.
