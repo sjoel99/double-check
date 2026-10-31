@@ -13,6 +13,8 @@ import { useChanges } from "../hooks/useChanges";
 import { TopBar } from "../components/TopBar";
 import { fmtWhen, lang, tr } from "../lib/i18n";
 import type { TransactionIntent } from "@duplachave/shared";
+import { usePolling } from "../hooks/usePolling";
+import { useTitle } from "../hooks/useTitle";
 
 type AccountView = {
   account: { id: string; multisig: string; vault: string; roles: { client: string; webapp: string; server: string; operator: string }; frozenBy: string | null };
@@ -88,11 +90,8 @@ export function useAccount(pollMs = 5000) {
     }
   }, [accountId, chain]);
 
-  useEffect(() => {
-    void load();
-    const t = setInterval(load, pollMs);
-    return () => clearInterval(t);
-  }, [load, pollMs]);
+  // Só com a aba visível; ao voltar para ela, carrega na hora.
+  usePolling(load, pollMs);
 
   return { acc, intents, intentsLoaded, balance, err, reload: load };
 }
@@ -161,6 +160,9 @@ export function Home() {
   const recent = intents.filter((i) => !pending.includes(i)).slice(0, 5);
   const s = ctx.session!;
   const { pending: pendingChanges } = useChanges(15000);
+  useTitle(tr("Início", "Home"));
+  // Sem dado e sem erro: esqueleto (ainda carregando). Com erro e sem dado: "—".
+  const loading = !err;
 
   return (
     <>
@@ -175,6 +177,15 @@ export function Home() {
         </button>
       </div>
       <div className="page">
+        {err && (
+          <div className="banner danger" role="alert">
+            <Icon name="shieldalert" size={18} color="#FF8F80" />
+            <div className="grow">{err}</div>
+            <button type="button" className="linkbtn small act" onClick={() => void reload()}>
+              {tr("Tentar de novo", "Try again")}
+            </button>
+          </div>
+        )}
         <div className="card" style={{ borderRadius: 24, padding: 20, gap: 16 }}>
           <div className="row-between">
             <div className="muted" style={{ fontSize: 13 }}>
@@ -193,11 +204,11 @@ export function Home() {
                 }
               }}
             >
-              {acc ? short(acc.account.vault) : "…"} <Icon name="copy" size={12} />
+              {acc ? short(acc.account.vault) : loading ? <span className="skel">XXXX…XXXX</span> : "—"} <Icon name="copy" size={12} />
             </button>
           </div>
           <div className="big" style={{ fontSize: 40 }}>
-            {balance === null ? "—" : sol(balance)} <span style={{ fontSize: 20, color: "var(--muted)" }}>SOL</span>
+            {balance === null ? (loading ? <span className="skel">0,0000</span> : "—") : sol(balance)} <span style={{ fontSize: 20, color: "var(--muted)" }}>SOL</span>
           </div>
           <div className="status">
             <div className="dots">
@@ -323,14 +334,20 @@ export function Home() {
           <div className="section-title" style={{ paddingBottom: 6 }}>
             {tr("Recentes", "Recent")}
           </div>
-          {recent.length === 0 && <div className="subtle" style={{ fontSize: 13, padding: "10px 0" }}>{tr("Nada por aqui ainda. Comece depositando SOL no seu Vault.", "Nothing here yet. Start by depositing SOL into your Vault.")}</div>}
+          {acc && recent.length === 0 && (
+            <div className="stack" style={{ padding: "10px 0", alignItems: "flex-start" }}>
+              <div className="hint" style={{ fontSize: 13 }}>{tr("Nada por aqui ainda. Comece depositando SOL no seu Vault.", "Nothing here yet. Start by depositing SOL into your Vault.")}</div>
+              <button type="button" className="linkbtn small" onClick={() => ctx.go("/deposit")}>
+                {tr("Depositar SOL", "Deposit SOL")}
+              </button>
+            </div>
+          )}
           {recent.map((i) => (
             <IntentRow key={i.intent.id} i={i} />
           ))}
         </div>
 
         {ctx.config.devTools && acc && <DevTools vault={acc.account.vault} accountId={acc.account.id} reload={reload} />}
-        {err && <div className="err">{err}</div>}
       </div>
       <Tabs />
     </>
@@ -355,10 +372,10 @@ function DevTools({ vault, accountId, reload }: { vault: string; accountId: stri
     <div className="dev">
       <div className="title">{tr("Ferramentas de teste (localnet)", "Test tools (localnet)")}</div>
       <div style={{ display: "flex", gap: 8 }}>
-        <button type="button" className="btn small" style={{ flex: 1 }} disabled={busy} onClick={() => run(async () => { await api("POST", "/v1/dev/airdrop", { address: vault, sol: 10 }); ctx.toast(tr("10 SOL de teste no Vault", "10 test SOL in the Vault")); })}>
+        <button type="button" className="btn small" style={{ flex: 1 }} disabled={busy} aria-busy={busy} onClick={() => run(async () => { await api("POST", "/v1/dev/airdrop", { address: vault, sol: 10 }); ctx.toast(tr("10 SOL de teste no Vault", "10 test SOL in the Vault")); })}>
           <Icon name="drop" size={16} /> {tr("10 SOL no Vault", "10 SOL to Vault")}
         </button>
-        <button type="button" className="btn small" style={{ flex: 1 }} disabled={busy} onClick={() => run(async () => { await api("POST", "/v1/dev/airdrop", { address: ctx.session!.publicKey, sol: 5 }); ctx.toast(tr("5 SOL de teste na sua carteira", "5 test SOL in your wallet")); })}>
+        <button type="button" className="btn small" style={{ flex: 1 }} disabled={busy} aria-busy={busy} onClick={() => run(async () => { await api("POST", "/v1/dev/airdrop", { address: ctx.session!.publicKey, sol: 5 }); ctx.toast(tr("5 SOL de teste na sua carteira", "5 test SOL in your wallet")); })}>
           <Icon name="drop" size={16} /> {tr("5 SOL na carteira", "5 SOL to wallet")}
         </button>
       </div>
@@ -366,6 +383,7 @@ function DevTools({ vault, accountId, reload }: { vault: string; accountId: stri
         type="button"
         className="btn small"
         disabled={busy}
+        aria-busy={busy}
         onClick={() =>
           run(async () => {
             // Pedido de troca da chave do serviço: a carteira vota e paga; executa depois do prazo.
@@ -460,8 +478,17 @@ export function Deposit() {
   return (
     <>
       <TopBar title={tr("Depositar no Vault", "Deposit to Vault")} />
+      {/* Enter no campo envia; `display: contents` mantém page e actions como filhos diretos do .app (a barra continua sticky). */}
+      <form
+        style={{ display: "contents" }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          // Pelo celular o depósito é pelo QR: não há o que enviar daqui.
+          if (!viaPhone && !busy && amount) void submit();
+        }}
+      >
       <div className="page">
-        <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
+        <div className="lead">
           {tr(
             `Sai da sua ${walletWord(ctx.session!.walletName)} para o Vault da conta, com a taxa (~0,000005 SOL) paga por ela. Depositar não precisa da aprovação do serviço; sacar, sim.`,
             `Moves from your ${walletWord(ctx.session!.walletName)} to the account's Vault; it pays the fee (~0.000005 SOL). Deposits don't need the service's approval; withdrawals do.`,
@@ -485,7 +512,7 @@ export function Deposit() {
         </div>
         <div className="field">
           <label htmlFor="amt">{tr("Quantidade (SOL)", "Amount (SOL)")}</label>
-          <input id="amt" className="input mono" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={tr("1,5", "1.5")} />
+          <input id="amt" className="input mono" inputMode="decimal" autoComplete="off" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={tr("1,5", "1.5")} />
         </div>
         {acc && (
           <div className="card" style={{ gap: 8 }}>
@@ -524,10 +551,11 @@ export function Deposit() {
         {err && <div className="banner danger">{err}</div>}
       </div>
       <div className="actions" style={viaPhone ? { display: "none" } : undefined}>
-        <button type="button" className="btn primary" disabled={busy || !amount} onClick={submit}>
+        <button type="submit" className="btn primary" disabled={busy || !amount} aria-busy={busy}>
           {busy ? <span className="spinner" /> : <Icon name="key" color="#0B0D10" sw={2} />} {walletWord(ctx.session!.walletName).length <= 12 ? tr(`Assinar na ${walletWord(ctx.session!.walletName)}`, `Sign with ${walletWord(ctx.session!.walletName)}`) : tr("Assinar na carteira", "Sign with wallet")}
         </button>
       </div>
+      </form>
     </>
   );
 }

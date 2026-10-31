@@ -53,7 +53,7 @@ a { color: var(--accent); }
 
 .status { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 16px; background: var(--inset); border: 1px solid var(--line-soft); font-size: 13px; line-height: 1.35; }
 /* Progresso de um fluxo longo: fica à vista no pé da tela mesmo com a página rolada. */
-.status.sticky { position: sticky; bottom: 16px; z-index: 5; background: var(--surface-2); border-color: var(--line); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
+.status.sticky { position: sticky; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); z-index: 5; background: var(--surface-2); border-color: var(--line); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
 .dots { display: flex; }
 .dot { width: 26px; height: 26px; border-radius: 999px; display: flex; align-items: center; justify-content: center; }
 .dot + .dot { margin-left: -6px; border: 2px solid var(--inset); }
@@ -84,7 +84,7 @@ a { color: var(--accent); }
 .banner.danger { background: var(--danger-bg); border: 1px solid var(--danger-line); color: #ffb4a8; }
 
 .actions .btn { flex: 1 1 0; }
-.actions { display: flex; gap: 12px; padding: 14px 20px 26px; border-top: 1px solid var(--surface-2); background: var(--bg); position: sticky; bottom: 0; }
+.actions { display: flex; gap: 12px; padding: 14px 20px calc(26px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--surface-2); background: var(--bg); position: sticky; bottom: 0; }
 .btn { flex: none; height: 56px; border-radius: 18px; border: 1px solid #343a44; background: transparent; display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-size: 16px; font-weight: 600; cursor: pointer; text-decoration: none; color: var(--text); }
 .btn:hover { border-color: #4a515c; }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
@@ -92,9 +92,10 @@ a { color: var(--accent); }
 .btn.amber { background: var(--warn); border-color: var(--warn); color: var(--accent-ink); }
 .btn.light { background: var(--text); border-color: var(--text); color: var(--accent-ink); }
 .btn.small { height: 44px; font-size: 14px; border-radius: 14px; }
-.btn:disabled { opacity: 0.5; cursor: progress; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn[aria-busy="true"], .item[aria-busy="true"] { cursor: progress; }
 .linkbtn { background: none; border: 0; color: var(--muted); font-size: 14px; padding: 10px 16px; cursor: pointer; }
-.linkbtn.small { padding: 0; font-size: 13px; color: var(--accent); }
+.linkbtn.small { padding: 8px 6px; margin: -8px -6px; font-size: 13px; color: var(--accent); border-radius: 8px; }
 .linkbtn:disabled { opacity: 0.4; cursor: default; }
 
 .field { display: flex; flex-direction: column; gap: 8px; }
@@ -104,12 +105,16 @@ a { color: var(--accent); }
 .input[aria-invalid="true"] { border-color: var(--danger); }
 .input.mono { font-family: var(--mono); font-size: 14px; }
 
-nav.tabs { display: flex; justify-content: space-around; padding: 10px 12px 22px; border-top: 1px solid var(--surface-2); background: var(--bg); position: sticky; bottom: 0; }
+nav.tabs { display: flex; justify-content: space-around; padding: 10px 12px calc(22px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--surface-2); background: var(--bg); position: sticky; bottom: 0; }
 nav.tabs button { background: none; border: 0; color: var(--subtle); display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11px; min-width: 64px; padding-top: 6px; cursor: pointer; }
 nav.tabs button.on { color: var(--accent); }
 
-.sheet-wrap { position: fixed; inset: 0; background: rgba(5, 6, 8, 0.72); display: flex; align-items: flex-end; justify-content: center; z-index: 10; }
-.sheet { width: 100%; max-width: 430px; border-radius: 28px 28px 0 0; background: var(--surface); border-top: 1px solid #2b313a; padding: 14px 24px 30px; display: flex; flex-direction: column; align-items: center; gap: 18px; }
+/* Janela de baixo: <dialog> nativo (foco preso, Esc, camada de topo). */
+dialog.sheet-wrap { position: fixed; inset: 0; width: 100%; max-width: 430px; max-height: 100dvh; margin: auto auto 0; padding: 0; border: 0; background: transparent; color: inherit; overflow: visible; }
+dialog.sheet-wrap::backdrop { background: rgba(5, 6, 8, 0.72); }
+dialog.sheet-wrap:not([open]) { display: none; }
+body:has(dialog.sheet-wrap[open]) { overflow: hidden; }
+.sheet { width: 100%; max-width: 430px; border-radius: 28px 28px 0 0; background: var(--surface); border-top: 1px solid #2b313a; padding: 14px 24px calc(30px + env(safe-area-inset-bottom, 0px)); display: flex; flex-direction: column; align-items: center; gap: 18px; }
 .grab { width: 40px; height: 5px; border-radius: 999px; background: #343a44; }
 
 .center { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 14px; }
@@ -142,7 +147,7 @@ nav.tabs button.on { color: var(--accent); }
 .danger-ico { width: 64px; height: 64px; border-radius: 20px; background: #2a1413; border: 1px solid var(--danger-line); display: flex; align-items: center; justify-content: center; }
 .diff-box { border-radius: 18px; background: #170f0f; border: 1px solid #3b2220; padding: 6px 16px 4px; }
 .diff.head { border-top: 0; font-size: 11px; color: var(--subtle); text-transform: uppercase; letter-spacing: 0.1em; }
-.item:disabled { opacity: 0.6; cursor: progress; }
+.item:disabled { opacity: 0.6; cursor: not-allowed; }
 
 /* celular (QR) */
 .qr-box { display: flex; flex-direction: column; gap: 14px; align-items: stretch; }
@@ -152,3 +157,54 @@ nav.tabs button.on { color: var(--accent); }
 .or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .phone-cta { border-color: #3a4a1c; background: #12170c; }
 .phone-cta .s { color: #a9b98a; }
+
+/* ---------- fundamentos de interação ---------- */
+/* Foco visível só vindo do teclado; no toque, nada aparece. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.input:focus-visible { outline: none; }
+.btn:focus-visible, .item:focus-visible, .iconbtn:focus-visible, .wallet-chip:focus-visible { outline-offset: 3px; }
+nav.tabs button:focus-visible { outline-offset: -2px; border-radius: 12px; }
+
+.btn, .item, .iconbtn, .wallet-chip, .list-row.as-button, .linkbtn, .pill { transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease, opacity 0.15s ease, transform 0.08s ease; }
+.btn:active:not(:disabled), .item:active:not(:disabled), .iconbtn:active { transform: scale(0.985); }
+.linkbtn:hover:not(:disabled) { color: var(--text); }
+.linkbtn.small:hover:not(:disabled) { color: var(--accent); background: rgba(200, 241, 105, 0.08); }
+
+@keyframes sheet-in { from { transform: translateY(28px); opacity: 0; } }
+@keyframes fade-in { from { opacity: 0; transform: translate(-50%, -6px); } }
+.sheet { animation: sheet-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.toast { animation: fade-in 0.18s ease; }
+
+/* Esqueleto enquanto um dado não chegou (saldo, endereço). */
+@keyframes skel { to { background-position: -200% 0; } }
+.skel { display: inline-block; color: transparent !important; border-radius: 8px; background: linear-gradient(90deg, var(--surface-2) 25%, #242931 50%, var(--surface-2) 75%); background-size: 200% 100%; animation: skel 1.2s linear infinite; user-select: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  /* O spinner e o esqueleto são a própria informação de "esperando": ficam, mais lentos. */
+  .spinner { animation-duration: 1.4s !important; }
+  .skel { animation: none !important; background: var(--surface-2); }
+}
+
+/* ---------- tipografia utilitária (em vez de estilos inline repetidos) ---------- */
+.eyebrow { font-size: 12px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--subtle); display: flex; align-items: center; gap: 8px; }
+.eyebrow.warn { color: var(--warn); }
+.h1 { font-size: 26px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.2; }
+.lead { font-size: 14px; line-height: 1.5; color: var(--muted); }
+.hint { font-size: 12px; line-height: 1.5; color: var(--subtle); }
+.stack { display: flex; flex-direction: column; gap: 10px; }
+.wrap-any { overflow-wrap: anywhere; }
+/* Valor em destaque: encolhe em telas estreitas em vez de estourar. */
+.amount-xl { font-size: clamp(34px, 12vw, 52px); letter-spacing: -0.04em; overflow-wrap: anywhere; }
+
+/* "Como funciona" recolhido: a explicação fica a um toque, sem empurrar a ação para baixo. */
+details.how { border-radius: 18px; border: 1px solid var(--line); background: var(--surface); }
+details.how summary { list-style: none; cursor: pointer; padding: 14px 16px; font-size: 14px; font-weight: 600; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-radius: 18px; }
+details.how summary::-webkit-details-marker { display: none; }
+details.how summary .chev { transition: transform 0.18s ease; color: var(--muted); display: inline-flex; }
+details.how[open] summary .chev { transform: rotate(90deg); }
+details.how > :not(summary) { padding: 0 16px 16px; }
+
+/* Faixa de erro com ação (Tentar de novo) ao lado do texto. */
+.banner .act { margin-left: auto; flex-shrink: 0; }
+.banner.danger .linkbtn.small { color: #ffb4a8; }

@@ -7,6 +7,7 @@ import { IosNotice, WalletList } from "./welcome";
 import { isIOS } from "../lib/activation";
 import { tr } from "../lib/i18n";
 import { IntentScreen } from "./intent";
+import { useTitle } from "../hooks/useTitle";
 
 type Info = { kind: "CONNECT" | "SIGN_INTENT"; label: string; intentId: string | null; accountId: string | null; wallet: string | null };
 
@@ -21,6 +22,7 @@ export function MobileHandoff({ token }: { token: string }) {
   const [err, setErr] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
   const [login, setLogin] = useState(false);
+  useTitle(info?.label ?? tr("Pedido do computador", "Request from the computer"));
 
   useEffect(() => {
     api<Info>("GET", `/v1/handoff/${token}`, undefined, { auth: false })
@@ -92,8 +94,8 @@ export function MobileHandoff({ token }: { token: string }) {
       ) : (
         info && (
           <>
-            <div style={{ fontSize: 22, fontWeight: 600, letterSpacing: "-0.02em" }}>{title}</div>
-            <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
+            <div className="h1" style={{ fontSize: 22 }}>{title}</div>
+            <div className="lead">
               {tr("O webapp confere a transação aqui no celular e pede a sua biometria antes de abrir a carteira.", "The webapp checks the transaction here on the phone and asks for your fingerprint or face before opening the wallet.")}
             </div>
             <WalletList onPick={pick} busy={Boolean(step)} />

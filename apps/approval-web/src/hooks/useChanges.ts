@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
+import { usePolling } from "./usePolling";
 import { errorText, useApp } from "../app";
 import { api } from "../lib/api";
 
@@ -33,10 +34,7 @@ export function useChanges(pollMs = 8000) {
       setErr(errorText(e));
     }
   }, [accountId]);
-  useEffect(() => {
-    void load();
-    const i = setInterval(load, pollMs);
-    return () => clearInterval(i);
-  }, [load, pollMs]);
+  // Só com a aba visível; ao voltar para ela, confere na hora.
+  usePolling(load, pollMs);
   return { changes, pending: changes.filter((c) => c.status === "PENDING"), err, reload: load };
 }

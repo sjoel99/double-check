@@ -13,6 +13,7 @@ import { IntentRow, Tabs, useAccount } from "./home";
 import { WalletList } from "./welcome";
 import { TopBar } from "../components/TopBar";
 import { fmtWhen, lang, tr } from "../lib/i18n";
+import { usePolling } from "../hooks/usePolling";
 
 const ROLE_NAME: Record<ChangeView["role"], string> = { CLIENT: tr("carteira", "wallet"), WEBAPP: tr("chave do webapp", "webapp key"), SERVER: tr("chave do serviço", "service key") };
 const fromB64 = (b: string) => VersionedTransaction.deserialize(Uint8Array.from(atob(b), (c) => c.charCodeAt(0)));
@@ -25,24 +26,22 @@ function useOnchainCheck(multisig: string | undefined) {
   // Muda para forçar uma leitura nova ("Tentar de novo").
   const [attempt, setAttempt] = useState(0);
   const { chain } = ctx;
-  useEffect(() => {
-    if (!multisig) return;
-    let on = true;
-    const run = () =>
-      readMultisig(chain, new PublicKey(multisig))
-        .then((s) => {
-          if (!on) return;
-          setState(s);
-          setErr(null);
-        })
-        .catch((e) => on && setErr(errorText(e)));
-    void run();
-    const i = setInterval(run, 10_000);
-    return () => {
-      on = false;
-      clearInterval(i);
-    };
-  }, [multisig, chain, attempt]);
+  // `attempt` entra nas dependências para "Tentar de novo" reiniciar o ciclo na hora.
+  const run = useCallback(
+    () =>
+      multisig
+        ? readMultisig(chain, new PublicKey(multisig))
+            .then((s) => {
+              setState(s);
+              setErr(null);
+            })
+            .catch((e) => setErr(errorText(e)))
+        : undefined,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [multisig, chain, attempt],
+  );
+  // Só com a aba visível; a leitura mais recente sempre prevalece.
+  usePolling(run, 10_000, Boolean(multisig));
   const voters = state?.members.filter((m) => m.vote) ?? [];
   const ok = Boolean(state && state.threshold === 2 && voters.length === 3 && voters.every((v) => v.mask === 2) && state.members.filter((m) => m.mask & 4).length === 1 && state.configAuthority === PublicKey.default.toBase58());
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
@@ -150,11 +149,11 @@ function PendingChange({ c, onDone }: { c: ChangeView; onDone: () => void }) {
         )}
       </div>
       <div style={{ display: "flex", gap: 10 }}>
-        <button type="button" className="btn" style={{ flex: 1 }} disabled={Boolean(busy)} onClick={veto}>
+        <button type="button" className="btn" style={{ flex: 1 }} disabled={Boolean(busy)} aria-busy={Boolean(busy)} onClick={veto}>
           {tr("Não fui eu", "It wasn't me")}
         </button>
         {due && (
-          <button type="button" className="btn primary" style={{ flex: 1 }} disabled={Boolean(busy)} onClick={() => execute()}>
+          <button type="button" className="btn primary" style={{ flex: 1 }} disabled={Boolean(busy)} aria-busy={Boolean(busy)} onClick={() => execute()}>
             {tr("Concluir troca", "Complete change")}
           </button>
         )}
@@ -172,7 +171,7 @@ function PendingChange({ c, onDone }: { c: ChangeView; onDone: () => void }) {
         />
       )}
       {busy && (
-        <div className="status">
+        <div className="status" role="status">
           <span className="spinner" /> {busy}
         </div>
       )}
@@ -277,32 +276,47 @@ function AlertEmail() {
         </>
       )}
       {editing && !sent && (
-        <>
+        // <form>: o Enter no campo envia, como o botão.
+        <form
+          className="stack"
+          style={{ gap: 14 }}
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!busy && email) void start();
+          }}
+        >
           <div className="field">
             <label htmlFor="alert-email">{tr("E-mail", "Email")}</label>
-            <input id="alert-email" className="input" type="email" inputMode="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={tr("voce@exemplo.com", "you@example.com")} />
+            <input id="alert-email" className="input" type="email" inputMode="email" autoComplete="email" enterKeyHint="send" value={email} onChange={(e) => setEmail(e.target.value)} placeholder={tr("voce@exemplo.com", "you@example.com")} />
           </div>
-          <button type="button" className="btn primary" style={{ height: 44 }} disabled={!!busy || !email} onClick={start}>
+          <button type="submit" className="btn primary" style={{ height: 44 }} disabled={!!busy || !email} aria-busy={!!busy}>
             {busy ?? tr("Confirmar com a biometria e enviar código", "Confirm with biometrics and send code")}
           </button>
           <button type="button" className="linkbtn" onClick={() => (setEditing(false), setErr(null))}>
             {tr("Cancelar", "Cancel")}
           </button>
-        </>
+        </form>
       )}
       {sent && (
-        <>
+        <form
+          className="stack"
+          style={{ gap: 14 }}
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!busy && code.length === 6) void confirm();
+          }}
+        >
           <div style={{ fontSize: 13, color: "#b4bac4" }}>{tr(`Enviamos um código de 6 dígitos para ${sent.email}. Vale por 10 minutos.`, `We sent a 6-digit code to ${sent.email}. It's valid for 10 minutes.`)}</div>
           <div className="field">
             <label htmlFor="alert-code">{tr("Código", "Code")}</label>
-            <input id="alert-code" className="input mono" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} placeholder="000000" />
+            <input id="alert-code" className="input mono" inputMode="numeric" pattern="[0-9]*" autoComplete="one-time-code" enterKeyHint="done" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} placeholder="000000" />
           </div>
-          <button type="button" className="btn primary" style={{ height: 44 }} disabled={!!busy || code.length !== 6} onClick={confirm}>
+          <button type="submit" className="btn primary" style={{ height: 44 }} disabled={!!busy || code.length !== 6} aria-busy={!!busy}>
             {busy ?? tr("Confirmar", "Confirm")}
           </button>
-        </>
+        </form>
       )}
-      {err && <div className="err">{err}</div>}
+      {err && <div className="err" role="alert">{err}</div>}
     </div>
   );
 }
@@ -407,6 +421,12 @@ export function Security() {
         <button type="button" className="btn" style={{ height: 52 }} disabled={open || ctx.session?.via === "webapp"} onClick={() => ctx.go("/change/webapp")}>
           <Icon name="finger" size={18} /> {tr("Recuperar o webapp neste aparelho", "Recover the webapp on this device")}
         </button>
+        {/* Botão desabilitado sem explicação é um beco: um só motivo, o que se aplica. */}
+        {open ? (
+          <div className="hint">{tr("Com uma troca pendente, outra não pode ser pedida.", "While a change is pending, another can't be requested.")}</div>
+        ) : ctx.session?.via === "webapp" ? (
+          <div className="hint">{tr("Entre com a carteira para recuperar o webapp.", "Sign in with the wallet to recover the webapp.")}</div>
+        ) : null}
         <button
           type="button"
           className="linkbtn"
@@ -492,11 +512,11 @@ export function ChangeClient() {
         ) : (
           <>
             {lang === "pt" ? (
-              <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
+              <div className="lead">
                 A chave do webapp (com a sua biometria) e o serviço aprovam o pedido. A carteira nova paga a taxa e o depósito das contas (~0,006 SOL, que voltam). A troca só executa em <b>72 h</b>: se alguém pedir no seu lugar, a carteira atual veta.
               </div>
             ) : (
-              <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
+              <div className="lead">
                 The webapp key (with your biometrics) and the service approve the request. The new wallet pays the fee and the account deposit (~0.006 SOL, returned). The change only runs after <b>72 h</b>: if someone else asks in your place, the current wallet vetoes it.
               </div>
             )}
@@ -578,15 +598,15 @@ export function ChangeWebapp() {
         ) : (
           <>
             {lang === "pt" ? (
-              <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
+              <div className="lead">
                 Use quando perder o aparelho com a chave do webapp. Uma chave nova nasce aqui, protegida pela sua biometria. A sua carteira e o serviço aprovam; a troca só executa em <b>72 h</b>. Se alguém com a sua carteira tentar isso, a chave atual do webapp veta.
               </div>
             ) : (
-              <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
+              <div className="lead">
                 Use this if you lose the device with the webapp key. A new key is created here, protected by your biometrics. Your wallet and the service approve; the change only runs after <b>72 h</b>. If someone with your wallet tries this, the current webapp key vetoes it.
               </div>
             )}
-            <button type="button" className="btn primary" disabled={Boolean(busy)} onClick={run}>
+            <button type="button" className="btn primary" disabled={Boolean(busy)} aria-busy={Boolean(busy)} onClick={run}>
               <Icon name="finger" color="#0B0D10" sw={2} /> {tr("Criar a chave nova aqui e pedir a troca", "Create the new key here and request the change")}
             </button>
           </>
@@ -642,6 +662,8 @@ export function Activity() {
   const { intents, intentsLoaded, err } = useAccount(6000);
   const [audit, setAudit] = useState<{ seq: number; type: string; at: number; hash: string }[] | null>(null);
   const [auditErr, setAuditErr] = useState(false);
+  /** Quantos eventos do histórico aparecem; "Mostrar mais" soma 30. */
+  const [shown, setShown] = useState(30);
   const accountId = ctx.session?.accountId;
   const intentCount = intents.length;
   const loadAudit = useCallback(() => {
@@ -658,7 +680,11 @@ export function Activity() {
       <TopBar title={tr("Atividade", "Activity")} back={null} />
       <div className="page">
         <div>
-          {!intentsLoaded && !err && <span className="spinner" />}
+          {!intentsLoaded && !err && (
+            <div role="status" aria-label={tr("Carregando", "Loading")}>
+              <span className="spinner" />
+            </div>
+          )}
           {intentsLoaded && intents.length === 0 && <div className="subtle" style={{ fontSize: 13 }}>{tr("Nenhuma transação ainda.", "No transactions yet.")}</div>}
           {intents.map((i) => (
             <IntentRow key={i.intent.id} i={i} />
@@ -683,7 +709,7 @@ export function Activity() {
               </button>
             </div>
           )}
-          {(audit ?? []).slice(0, 30).map((e) => (
+          {(audit ?? []).slice(0, shown).map((e) => (
             <div className="list-row" key={e.seq} style={{ padding: "9px 0" }}>
               <div className="grow">
                 <div className="t" style={{ fontSize: 14, color: AUDIT_ALERT.has(e.type) ? "var(--warn)" : undefined }} title={e.type}>
@@ -696,6 +722,11 @@ export function Activity() {
               </div>
             </div>
           ))}
+          {audit && audit.length > shown && (
+            <button type="button" className="btn small" style={{ width: "100%", marginTop: 10 }} onClick={() => setShown((n) => n + 30)}>
+              {tr(`Mostrar mais (${audit.length - shown})`, `Show more (${audit.length - shown})`)}
+            </button>
+          )}
         </div>
         {err && <div className="err">{err}</div>}
       </div>

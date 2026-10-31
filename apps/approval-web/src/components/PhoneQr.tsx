@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
+import { Sheet } from "./Sheet";
+import { usePolling } from "../hooks/usePolling";
 import { errorText, useApp } from "../app";
 import { api } from "../lib/api";
 import { Icon } from "../icons";
@@ -42,28 +44,30 @@ export function PhoneQr<T>({ create, title, steps, onDone }: PhoneQrProps<T>) {
     }
   }, []);
 
-  useEffect(() => {
+  // O pedido é feito uma vez só por abertura (ver createRef acima).
+  const started = useRef(false);
+  if (!started.current) {
+    started.current = true;
     void make();
-  }, [make]);
+  }
 
-  useEffect(() => {
-    if (!req) return;
-    const i = setInterval(async () => {
-      try {
-        const s = await api<Status>("GET", `/v1/pay/${req.token}`, undefined, { auth: false });
-        setSt(s);
-        if (s.status === "DONE" && !done.current) {
-          done.current = true;
-          clearInterval(i);
-          onDoneRef.current(s.result as T);
-        }
-        if (s.status === "FAILED" || s.status === "EXPIRED") clearInterval(i);
-      } catch {
-        /* tenta de novo */
+  // Acompanha o celular enquanto a aba está visível; ao voltar, confere na hora.
+  const token = req?.token;
+  const finished = !st || st.status === "WAITING" ? false : true;
+  const poll = useCallback(async () => {
+    if (!token) return;
+    try {
+      const s = await api<Status>("GET", `/v1/pay/${token}`, undefined, { auth: false });
+      setSt(s);
+      if (s.status === "DONE" && !done.current) {
+        done.current = true;
+        onDoneRef.current(s.result as T);
       }
-    }, 1500);
-    return () => clearInterval(i);
-  }, [req]);
+    } catch {
+      /* tenta de novo */
+    }
+  }, [token]);
+  usePolling(poll, 1500, Boolean(token) && !finished);
 
   const phase = st?.status === "WAITING" || !st ? "WAITING_SCAN" : st.status;
   return (
@@ -121,15 +125,12 @@ export function PhoneQr<T>({ create, title, steps, onDone }: PhoneQrProps<T>) {
 /** Janela com o QR por cima da tela atual. */
 export function PhoneQrSheet<T>(props: PhoneQrProps<T> & { onClose: () => void }) {
   return (
-    <div className="sheet-wrap" role="dialog" aria-modal="true" aria-label={props.title}>
-      <div className="sheet" style={{ alignItems: "stretch" }}>
-        <div className="grab" style={{ alignSelf: "center" }} />
-        <PhoneQr {...props} />
-        <button type="button" className="linkbtn" onClick={props.onClose}>
-          {tr("Fechar", "Close")}
-        </button>
-      </div>
-    </div>
+    <Sheet label={props.title} onClose={props.onClose}>
+      <PhoneQr {...props} />
+      <button type="button" className="linkbtn" onClick={props.onClose}>
+        {tr("Fechar", "Close")}
+      </button>
+    </Sheet>
   );
 }
 

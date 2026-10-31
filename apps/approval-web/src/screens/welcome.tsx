@@ -34,8 +34,8 @@ export function WalletList({ onPick, busy, exclude }: { onPick: (w: StandardWall
   const real = injected.length > 0 ? injected : wallets.filter((w) => w.name === MWA);
   const test = wallets.filter((w) => w.name.startsWith("Carteira de teste"));
   const row = (w: StandardWallet) => (
-    <button key={w.name} type="button" className="item" disabled={busy} onClick={() => onPick(w)} style={{ padding: 14 }}>
-      <img src={w.icon} alt="" width={36} height={36} style={{ borderRadius: 10 }} />
+    <button key={w.name} type="button" className="item" disabled={busy} aria-busy={busy} onClick={() => onPick(w)} style={{ padding: 14 }}>
+      <img src={w.icon} alt="" width={36} height={36} style={{ borderRadius: 10 }} loading="lazy" draggable={false} />
       <div className="grow">
         <div className="t">{walletDisplay(w.name)}</div>
         {w.name === MWA && <div className="s">{tr("Abre o app da sua carteira (Phantom, Solflare…)", "Opens your wallet app (Phantom, Solflare…)")}</div>}
@@ -106,29 +106,13 @@ export function Welcome() {
     }
   };
 
+  // A ação (conectar) vem antes da explicação longa: ela fica a um toque, em "Como funciona".
   return (
     <div className="page" style={{ paddingTop: 44, gap: 22 }}>
-      <Logo size={52} />
-      <div style={{ fontSize: 30, fontWeight: 600, letterSpacing: "-0.03em", lineHeight: 1.1 }}>{tr("Seus fundos só saem com duas assinaturas.", "Your funds only move with two signatures.")}</div>
-      <div className="muted" style={{ fontSize: 15, lineHeight: 1.55 }}>
-        {tr("Três chaves: a sua carteira (Phantom, Backpack, Solflare…), a chave do webapp (protegida pela biometria do seu aparelho) e a do serviço. Um envio precisa da carteira e da biometria, e só o serviço executa, depois de conferir a sua política. Quem garante é o programa da Squads na Solana.", "Three keys: your wallet (Phantom, Backpack, Solflare…), the webapp key (protected by your device's fingerprint or face) and the service key. A send needs your wallet and biometrics, and only the service executes it, after checking your policy. Squads' program on Solana enforces it.")}
-      </div>
-      <div className="steps">
-        {[
-          ["1", tr("Conecte sua carteira", "Connect your wallet"), "Phantom, Backpack, Solflare…"],
-          ["2", tr("Biometria + carteira", "Biometrics + wallet"), tr("a biometria protege a chave do webapp; a carteira paga ~0,003 SOL, uma vez só", "biometrics protect the webapp key; the wallet pays ~0.003 SOL, just once")],
-          ["3", tr("Pronto", "Done"), tr("sua conta 2 de 3 existe na Solana; cada envio custa ~0,000015 SOL", "your 2-of-3 account lives on Solana; each send costs ~0.000015 SOL")],
-        ].map(([n, t, s]) => (
-          <div key={n} className="step">
-            <div className="step-n">{n}</div>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 600 }}>{t}</div>
-              <div className="muted" style={{ fontSize: 12 }}>
-                {s}
-              </div>
-            </div>
-          </div>
-        ))}
+      <Logo size={44} />
+      <div className="h1" style={{ fontSize: 28 }}>{tr("Seus fundos só saem com duas assinaturas.", "Your funds only move with two signatures.")}</div>
+      <div className="lead">
+        {tr("Sua carteira e a biometria do seu aparelho assinam; o serviço confere a política e executa. Quem garante é o programa da Squads na Solana.", "Your wallet and your device's biometrics sign; the service checks the policy and executes. Squads' program on Solana enforces it.")}
       </div>
       {/* No celular não há extensão nem faz sentido escanear a própria tela: a carteira abre pelo app (MWA). */}
       {isMobile() ? null : phone ? (
@@ -161,6 +145,36 @@ export function Welcome() {
       )}
       {!isMobile() && <div className="or">{tr("ou a extensão deste navegador", "or this browser's extension")}</div>}
       <WalletList onPick={pick} busy={Boolean(step)} />
+      <details className="how">
+        <summary>
+          {tr("Como funciona e quanto custa", "How it works and what it costs")}
+          <span className="chev">
+            <Icon name="chev" size={16} />
+          </span>
+        </summary>
+        <div className="stack" style={{ gap: 14 }}>
+          <div className="steps">
+            {[
+              ["1", tr("Conecte sua carteira", "Connect your wallet"), "Phantom, Backpack, Solflare…"],
+              ["2", tr("Biometria + carteira", "Biometrics + wallet"), tr("a biometria protege a chave do webapp; a carteira paga ~0,003 SOL, uma vez só", "biometrics protect the webapp key; the wallet pays ~0.003 SOL, just once")],
+              ["3", tr("Pronto", "Done"), tr("sua conta 2 de 3 existe na Solana; cada envio custa ~0,000015 SOL", "your 2-of-3 account lives on Solana; each send costs ~0.000015 SOL")],
+            ].map(([n, t, s]) => (
+              <div key={n} className="step">
+                <div className="step-n">{n}</div>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>{t}</div>
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    {s}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="hint">
+            {tr("Já tem conta? Escolha a mesma carteira: o app reconhece e só pede para confirmar a entrada. Todas as taxas saem da sua carteira; o serviço não paga nada.", "Already have an account? Pick the same wallet: the app recognizes it and just asks you to confirm sign-in. All fees come from your wallet; the service pays nothing.")}
+          </div>
+        </div>
+      </details>
       {step && (
         <div className="status sticky" role="status">
           <span className="spinner" /> {step}
@@ -168,11 +182,6 @@ export function Welcome() {
       )}
       {err && <div className="banner danger">{err}</div>}
       {!isIOS() && <BiometricLogin busy={Boolean(step)} setStep={setStep} setErr={setErr} />}
-      {!isIOS() && (
-        <div className="subtle" style={{ fontSize: 12, lineHeight: 1.5 }}>
-          {tr("Já tem conta? Escolha a mesma carteira: o app reconhece e só pede para confirmar a entrada. Todas as taxas saem da sua carteira; o serviço não paga nada.", "Already have an account? Pick the same wallet: the app recognizes it and just asks you to confirm sign-in. All fees come from your wallet; the service pays nothing.")}
-        </div>
-      )}
     </div>
   );
 }
@@ -184,6 +193,7 @@ function BiometricLogin({ busy, setStep, setErr }: { busy: boolean; setStep: (s:
     <button
       type="button"
       className="linkbtn"
+      style={{ alignSelf: "center" }}
       disabled={busy}
       onClick={async () => {
         setErr(null);

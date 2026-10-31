@@ -22,7 +22,7 @@ function Countdown({ until }: { until: number }) {
   }, []);
   const left = Math.max(0, until - t);
   return (
-    <div className="pill mono" style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", border: "1px solid var(--line)", background: "var(--surface)", color: left < 60 ? "var(--warn)" : "var(--muted)", fontSize: 12 }}>
+    <div className="pill mono" role="timer" aria-label={tr("Tempo restante para assinar", "Time left to sign")} style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 10px", border: "1px solid var(--line)", background: "var(--surface)", color: left < 60 ? "var(--warn)" : "var(--muted)", fontSize: 12 }}>
       <Icon name="clock" size={14} />
       {String(Math.floor(left / 60)).padStart(2, "0")}:{String(left % 60).padStart(2, "0")}
     </div>
@@ -95,8 +95,16 @@ export function Send() {
   return (
     <>
       <TopBar title={tr("Enviar SOL", "Send SOL")} />
+      {/* Um <form>: o Enter no teclado (e o "ir" do celular) revisa, como o botão. */}
+      <form
+        style={{ display: "contents" }}
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (valid && !busy) void submit();
+        }}
+      >
       <div className="page">
-        <div className="muted" style={{ fontSize: 14, lineHeight: 1.5 }}>
+        <div className="lead">
           {tr(
             `O serviço confere a sua política. Depois você revisa, confirma com a biometria e assina uma vez na ${walletWord(ctx.session!.walletName)}, que paga a taxa da rede (~0,000015 SOL).`,
             `The service checks your policy. Then you review, confirm with biometrics and sign once in ${walletWord(ctx.session!.walletName)}, which pays the network fee (~0.000015 SOL).`,
@@ -109,8 +117,8 @@ export function Send() {
               {tr("Colar", "Paste")}
             </button>
           </div>
-          <input id="dest" className="input mono" value={dest} onChange={(e) => setDest(e.target.value)} placeholder={tr("Endereço Solana", "Solana address")} spellCheck={false} autoComplete="off" aria-invalid={Boolean(destErr)} />
-          {destErr && <div className="err">{destErr}</div>}
+          <input id="dest" className="input mono" value={dest} onChange={(e) => setDest(e.target.value)} placeholder={tr("Endereço Solana", "Solana address")} spellCheck={false} autoComplete="off" autoCapitalize="none" autoCorrect="off" inputMode="text" enterKeyHint="next" aria-invalid={Boolean(destErr)} aria-describedby={destErr ? "dest-err" : undefined} />
+          {destErr && <div className="err" id="dest-err">{destErr}</div>}
         </div>
         <div className="field">
           <div className="row-between">
@@ -119,9 +127,9 @@ export function Send() {
               {tr("Máx", "Max")}
             </button>
           </div>
-          <input id="amt" className="input mono" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={tr("0,5", "0.5")} aria-invalid={Boolean(amountErr)} />
+          <input id="amt" className="input mono" inputMode="decimal" autoComplete="off" enterKeyHint="done" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={tr("0,5", "0.5")} aria-invalid={Boolean(amountErr)} aria-describedby={amountErr ? "amt-err" : undefined} />
           {amountErr ? (
-            <div className="err">{amountErr}</div>
+            <div className="err" id="amt-err">{amountErr}</div>
           ) : (
             <div className="subtle" style={{ fontSize: 12 }}>
               {tr("Saldo do Vault", "Vault balance")}: {balance === null ? "…" : `${sol(balance, 9)} SOL`}
@@ -132,10 +140,11 @@ export function Send() {
         {err && <div className="banner danger">{err}</div>}
       </div>
       <div className="actions">
-        <button type="button" className="btn primary" disabled={!valid || busy} onClick={submit}>
+        <button type="submit" className="btn primary" disabled={!valid || busy} aria-busy={busy}>
           {busy ? <span className="spinner" /> : null} {tr("Revisar", "Review")}
         </button>
       </div>
+      </form>
     </>
   );
 }
@@ -369,7 +378,7 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
   const actions = (
     <>
       <div className="actions" style={{ flexWrap: "wrap" }}>
-        <button type="button" className="btn" disabled={Boolean(busy)} onClick={reject}>
+        <button type="button" className="btn" disabled={Boolean(busy)} aria-busy={busy === "reject"} onClick={reject}>
           {busy === "reject" ? <span className="spinner" /> : null}
           {intent.type === "TRANSFER_SOL" ? tr("Cancelar", "Cancel") : tr("Recusar", "Reject")}
         </button>
@@ -382,13 +391,13 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
             <Icon name="phone" color="#0B0D10" sw={2} /> {tr("Continuar no celular", "Continue on your phone")}
           </button>
         ) : (
-          <button type="button" className={primaryClass} disabled={Boolean(busy)} onClick={sign}>
+          <button type="button" className={primaryClass} disabled={Boolean(busy)} aria-busy={busy === "sign"} onClick={sign}>
             {busy === "sign" ? <span className="spinner" /> : <Icon name="finger" color="#0B0D10" sw={2} />}
             {resign ? tr("Assinar de novo", "Sign again") : tr("Assinar", "Sign")}
           </button>
         )}
         {stepText && (
-          <div className="status" style={{ flexBasis: "100%", justifyContent: "center" }}>
+          <div className="status" role="status" aria-live="polite" style={{ flexBasis: "100%", justifyContent: "center" }}>
             <span className="spinner" /> {stepText}
           </div>
         )}
@@ -426,10 +435,10 @@ export function IntentScreen({ id, handoff }: { id: string; handoff?: { token: s
       <div className="page">
         {serverOk}
         <div className="center" style={{ gap: 6, padding: "10px 0 2px" }}>
-          <div className="muted" style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: "0.12em" }}>
+          <div className="eyebrow" style={{ justifyContent: "center" }}>
             {tr("Enviar", "Send")}
           </div>
-          <div className="big" style={{ fontSize: 52, letterSpacing: "-0.04em" }}>
+          <div className="big amount-xl">
             {sol(intent.amountLamports, 9)} <span style={{ fontSize: 24, color: "var(--muted)" }}>SOL</span>
           </div>
         </div>
@@ -500,10 +509,10 @@ function RotationApproval({ request, header, actions, err }: { request: Approval
       <TopBar title={tr("Segurança", "Security")} right={<Countdown until={intent.expiresAt} />} />
       <div className="page">
         <div style={{ display: "flex", flexDirection: "column", gap: 10, paddingTop: 4 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontWeight: 600, color: "var(--warn)", letterSpacing: "0.12em", textTransform: "uppercase" }}>
+          <div className="eyebrow warn">
             <Icon name="shieldalert" size={16} color="#F2B33D" /> {tr("Alteração de segurança", "Security change")}
           </div>
-          <div style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.2 }}>
+          <div className="h1">
             {isClient ? tr("Trocar a carteira da conta?", "Change the account wallet?") : tr("O serviço está pedindo para trocar a chave de segurança dele.", "The service is asking to change its security key.")}
           </div>
         </div>
@@ -655,8 +664,8 @@ function Blocked({ check, request }: { check: Extract<Inspection, { ok: false }>
           <div className="danger-ico">
             <Icon name="shieldalert" size={32} color="#FF8F80" />
           </div>
-          <div style={{ fontSize: 28, fontWeight: 600, letterSpacing: "-0.02em", lineHeight: 1.15 }}>{tr("Transação bloqueada", "Transaction blocked")}</div>
-          <div style={{ fontSize: 15, color: "#b4bac4", lineHeight: 1.5 }}>{reason[check.code] ?? (lang === "en" ? errorEn(check.code, check.message) : null) ?? check.message} {tr("Nada foi assinado e seus fundos não se moveram.", "Nothing was signed and your funds did not move.")}</div>
+          <div className="h1" style={{ fontSize: 28, lineHeight: 1.15 }}>{tr("Transação bloqueada", "Transaction blocked")}</div>
+          <div role="alert" style={{ fontSize: 15, color: "#b4bac4", lineHeight: 1.5 }}>{reason[check.code] ?? (lang === "en" ? errorEn(check.code, check.message) : null) ?? check.message} {tr("Nada foi assinado e seus fundos não se moveram.", "Nothing was signed and your funds did not move.")}</div>
         </div>
         {rows.length > 0 && (
           <div className="diff-box">
@@ -694,7 +703,12 @@ function Outcome({ record, onAgain }: { record: IntentView; onAgain: () => void 
   const ok = record.status === "EXECUTED";
   const intent = record.intent;
   const rot = intent.type === "ROTATE_MEMBER";
-  const explorer = (sig: string) => `https://explorer.solana.com/tx/${sig}?cluster=${config.cluster === "devnet" ? "devnet" : `custom&customUrl=${encodeURIComponent("http://127.0.0.1:8899")}`}`;
+  // Explorer por cluster: devnet e mainnet têm parâmetro próprio; localnet aponta para o validador local.
+  const explorer = (sig: string) => {
+    const c = config.cluster as string;
+    const q = c === "devnet" ? "?cluster=devnet" : c === "mainnet" || c === "mainnet-beta" ? "" : `?cluster=custom&customUrl=${encodeURIComponent("http://127.0.0.1:8899")}`;
+    return `https://explorer.solana.com/tx/${sig}${q}`;
+  };
   // Uma transação só (criar, aprovar, executar, fechar): os passos não têm assinaturas separadas.
   const steps = rot
     ? [tr("O serviço conferiu e assinou", "The service checked and signed"), tr(`Você assinou e pagou na ${walletWord(session?.walletName)}`, `You signed and paid in ${walletWord(session?.walletName)}`), tr("Chaves trocadas na Solana", "Keys changed on Solana")]
@@ -725,7 +739,7 @@ function Outcome({ record, onAgain }: { record: IntentView; onAgain: () => void 
           <div className="hero-ico" style={{ background: ok ? "var(--accent)" : "var(--surface-2)", border: ok ? 0 : "1px solid var(--line)" }}>
             <Icon name={ok ? "check" : "x"} size={44} color={ok ? "#0B0D10" : "var(--muted)"} sw={2.4} />
           </div>
-          <div style={{ fontSize: 26, fontWeight: 600, letterSpacing: "-0.02em" }}>{ok ? (rot ? tr("Chave trocada", "Key changed") : tr("Envio executado", "Transfer executed")) : title[record.status] ?? record.status}</div>
+          <div className="h1">{ok ? (rot ? tr("Chave trocada", "Key changed") : tr("Envio executado", "Transfer executed")) : title[record.status] ?? record.status}</div>
           <div className="muted" style={{ fontSize: 15 }}>
             {rot ? (
               <>

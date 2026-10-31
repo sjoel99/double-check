@@ -34,6 +34,10 @@ if (isMobile()) {
 function Router() {
   const { route, session } = useApp();
   const [path] = route.split("?");
+  // Tela nova começa do topo: a rolagem de uma tela longa não pode "vazar" para a seguinte.
+  useEffect(() => {
+    window.scrollTo(0, 0);
+  }, [path]);
   return <Suspense fallback={<Spinner />}><Routes path={path} session={session} /></Suspense>;
 }
 

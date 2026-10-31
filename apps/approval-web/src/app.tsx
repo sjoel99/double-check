@@ -15,6 +15,7 @@ import { trace } from "./lib/trace";
 import { lang, tr } from "./lib/i18n";
 import { errorEn } from "./lib/errors-en";
 import { Icon } from "./icons";
+import { Sheet } from "./components/Sheet";
 
 let mwaRegistered = false;
 
@@ -155,9 +156,13 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
         />
       )}
       {tapReq && (
-        <div className="sheet-wrap" role="dialog" aria-modal="true" aria-label={tapReq.label}>
-          <div className="sheet" style={{ alignItems: "stretch" }}>
-            <div className="grab" style={{ alignSelf: "center" }} />
+        <Sheet
+          label={tapReq.label}
+          onClose={() => {
+            tapReq.reject(new Error("assinatura recusada"));
+            setTapReq(null);
+          }}
+        >
             <div style={{ fontSize: 17, fontWeight: 600, textAlign: "center" }}>{tr("Continue com um toque", "Tap to continue")}</div>
             <div className="muted" style={{ fontSize: 13, textAlign: "center", lineHeight: 1.5 }}>
               {tr("O celular só deixa abrir a carteira ou a biometria logo depois de um toque seu.", "Your phone only opens the wallet or biometrics right after you tap.")}
@@ -183,8 +188,7 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
             >
               {tr("Cancelar", "Cancel")}
             </button>
-          </div>
-        </div>
+        </Sheet>
       )}
       {toastMsg && (
         <div className="toast" role="status">
@@ -198,9 +202,7 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
 /** Janela da carteira de teste: imita a confirmação de uma carteira de verdade. */
 function DevWalletSheet({ req, onDone }: { req: ConfirmReq; onDone: (ok: boolean) => void }) {
   return (
-    <div className="sheet-wrap" role="dialog" aria-modal="true" aria-label={tr(`${req.walletName}: confirmar assinatura`, `${walletDisplay(req.walletName)}: confirm signature`)}>
-      <div className="sheet" style={{ alignItems: "stretch" }}>
-        <div className="grab" style={{ alignSelf: "center" }} />
+    <Sheet label={tr(`${req.walletName}: confirmar assinatura`, `${walletDisplay(req.walletName)}: confirm signature`)} onClose={() => onDone(false)}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div className="wallet-badge">
             <Icon name="lock" size={18} />
@@ -231,8 +233,7 @@ function DevWalletSheet({ req, onDone }: { req: ConfirmReq; onDone: (ok: boolean
             ? tr("Biometria de teste do ambiente local. No celular, é a digital ou o rosto do próprio aparelho.", "Local test biometrics. On a phone, it's the device's own fingerprint or face.")
             : tr("Carteira de teste do ambiente local. Com uma carteira de verdade, esta janela é a da própria carteira.", "Local test wallet. With a real wallet, this window is the wallet's own.")}
         </div>
-      </div>
-    </div>
+    </Sheet>
   );
 }
 
