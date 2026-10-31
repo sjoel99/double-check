@@ -6,7 +6,7 @@ import { emailBindingMessage, emailInput, reviewSecurityRequest, verifyAuthorize
 import { accountKeyBlobs, errorText, unlockAccountKey, useApp } from "../app";
 import { api } from "../lib/api";
 import { now, short } from "../lib/chain";
-import { type ConnectedWallet, type StandardWallet, walletDisplay } from "../lib/wallets";
+import { ConnectedWallet, type StandardWallet, walletDisplay } from "../lib/wallets";
 import { createWebappKey, deviceName, signatureB58 } from "../lib/webappKey";
 import { Icon } from "../icons";
 import { IntentRow, Tabs, useAccount } from "./home";
@@ -101,12 +101,20 @@ function PendingChange({ c, onDone }: { c: ChangeView; onDone: () => void }) {
     }
   };
 
-  const execute = async (payerWallet?: ConnectedWallet) => {
+  const execute = async (picked?: StandardWallet) => {
     setErr(null);
     try {
       setBusy(tr("Preparando a execução…", "Preparing to execute…"));
       const r = await api<{ transaction: string; payer: string }>("POST", `/v1/security-changes/${c.id}/execute-prepare`, {});
-      const w = payerWallet ?? (c.role === "CLIENT" ? null : await ctx.accountWallet());
+      // Carteira escolhida na lista: a do celular conecta e assina numa abertura só, já
+      // sabendo qual conta esperar (a pagadora); as extensões conectam primeiro.
+      const w = picked
+        ? picked.features["duplachave:connectAndSignMessage"]
+          ? ConnectedWallet.forAddress(picked, r.payer, ctx.config.cluster)
+          : await ctx.connect(picked)
+        : c.role === "CLIENT"
+          ? null
+          : await ctx.accountWallet();
       if (!w || w.publicKey !== r.payer) {
         setPickPayer(true);
         throw new Error(tr(`Quem paga a conclusão é a carteira ${short(r.payer)}: conecte essa carteira abaixo.`, `The wallet ${short(r.payer)} pays to complete this: connect that wallet below.`));
@@ -161,13 +169,7 @@ function PendingChange({ c, onDone }: { c: ChangeView; onDone: () => void }) {
       {pickPayer && (
         <WalletList
           busy={Boolean(busy)}
-          onPick={async (sw: StandardWallet) => {
-            try {
-              await execute(await ctx.connect(sw));
-            } catch (e) {
-              setErr(errorText(e));
-            }
-          }}
+          onPick={(sw: StandardWallet) => void execute(sw)}
         />
       )}
       {busy && (

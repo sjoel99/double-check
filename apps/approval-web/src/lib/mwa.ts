@@ -144,6 +144,23 @@ export function makeMwaWallet(opts: { chain: string; identity: { name: string; u
         },
       },
       "standard:events": { version: "1.0.0", on: () => () => {} },
+      /**
+       * Conectar e assinar um texto na MESMA abertura da carteira. `message` recebe a
+       * chave pública recém-autorizada e devolve o que assinar (ou null para só conectar):
+       * é aí que o app pergunta ao serviço se a carteira tem conta e pede o desafio de
+       * entrada. Sem isto, entrar eram duas aberturas: uma para "conectar", outra para assinar.
+       */
+      "duplachave:connectAndSignMessage": {
+        version: "1.0.0",
+        connectAndSignMessage: async ({ message }: { message: (publicKey: Uint8Array) => Promise<Uint8Array | null> }) =>
+          session("connectAndSign", async (wallet, acc) => {
+            const m = await message(acc.publicKey);
+            if (!m) return { account: acc, signature: null };
+            trace("mwa:connectAndSign:assinando");
+            const r = await wallet.signMessages({ addresses: [acc.address], payloads: [b64(m)] });
+            return { account: acc, signature: fromB64(r.signed_payloads[0]!).slice(-64) };
+          }),
+      },
       "solana:signMessage": {
         version: "1.0.0",
         signMessage: async ({ message, account: input }: { message: Uint8Array; account?: { publicKey: Uint8Array } }) =>

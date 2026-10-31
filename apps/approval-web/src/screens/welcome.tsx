@@ -90,13 +90,11 @@ export function Welcome() {
   const pick = async (w: StandardWallet) => {
     setErr(null);
     try {
-      setStep(tr(`Conectando à ${walletDisplay(w.name)}…`, `Connecting to ${walletDisplay(w.name)}…`));
-      const c = await ctx.connect(w);
-      const s = await loginOrEnroll(ctx, c, setStep);
+      const s = await loginOrEnroll(ctx, w, setStep);
       ctx.go("/");
       ctx.toast(
         s.created
-          ? tr(`Conta 2 de 3 criada: sua ${c.name} + a chave do webapp (biometria) + o serviço.`, `2-of-3 account created: your ${walletDisplay(c.name)} + the webapp key (biometrics) + the service.`)
+          ? tr(`Conta 2 de 3 criada: sua ${walletDisplay(w.name)} + a chave do webapp (biometria) + o serviço.`, `2-of-3 account created: your ${walletDisplay(w.name)} + the webapp key (biometrics) + the service.`)
           : tr("Você entrou.", "You're signed in."),
       );
     } catch (e) {

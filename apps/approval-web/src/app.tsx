@@ -32,6 +32,8 @@ type Ctx = {
   wallet: ConnectedWallet | null;
   /** Conecta (ou reconecta) uma carteira. */
   connect: (w: StandardWallet) => Promise<ConnectedWallet>;
+  /** Adota uma carteira já conectada por outro caminho (conectar + assinar numa sessão). */
+  attach: (c: ConnectedWallet) => void;
   /** A carteira da conta, conectada e na conta certa — ou erro explicando o que fazer. */
   accountWallet: () => Promise<ConnectedWallet>;
   route: string;
@@ -91,14 +93,17 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
     return stop;
   }, [config.devTools, config.cluster]);
 
+  const attach = useCallback((c: ConnectedWallet) => {
+    c.onChange(() => bump((x) => x + 1));
+    setWallet(c);
+  }, []);
   const connect = useCallback(
     async (w: StandardWallet) => {
       const c = await ConnectedWallet.connect(w, config.cluster);
-      c.onChange(() => bump((x) => x + 1));
-      setWallet(c);
+      attach(c);
       return c;
     },
-    [config.cluster],
+    [config.cluster, attach],
   );
 
   // Tudo o que entra no contexto tem identidade estável: as telas dependem dele
@@ -139,8 +144,8 @@ export function AppProvider({ config, initialSession, children }: { config: Conf
   const dev = useMemo(() => ({ malicious, setMalicious }), [malicious]);
 
   const ctx = useMemo<Ctx>(
-    () => ({ config, chain, session, setSession, wallets, wallet, connect, accountWallet, route, go, toast, biometric, dev }),
-    [config, chain, session, setSession, wallets, wallet, connect, accountWallet, route, go, toast, biometric, dev],
+    () => ({ config, chain, session, setSession, wallets, wallet, connect, attach, accountWallet, route, go, toast, biometric, dev }),
+    [config, chain, session, setSession, wallets, wallet, connect, attach, accountWallet, route, go, toast, biometric, dev],
   );
 
   return (
@@ -241,17 +246,29 @@ function DevWalletSheet({ req, onDone }: { req: ConfirmReq; onDone: (ok: boolean
  * Entra com a carteira: se ela já tem conta, assina o texto de entrada (sem
  * custo); se não, cria a chave do webapp (biometria) e a carteira assina e paga
  * a criação da conta 2 de 3 (~0,003 SOL), depois de o app conferir a transação.
+ *
+ * Conectar e assinar a entrada acontecem numa sessão só da carteira: ela devolve o
+ * endereço, o app pergunta ao serviço se há conta e pede o desafio, e a carteira
+ * assina sem fechar. No celular isso é uma abertura do app da carteira em vez de duas.
  */
-export async function loginOrEnroll(ctx: Ctx, c: ConnectedWallet, onStep: (s: string) => void): Promise<Session & { created?: boolean }> {
-  const publicKey = c.publicKey;
-  const status = await api<{ enrolled: boolean; revoked: boolean }>("GET", `/v1/wallets/${publicKey}`, undefined, { auth: false });
-  if (status.revoked && !status.enrolled) throw new Error(tr("Esta carteira foi substituída em uma conta e não volta a valer. Use outra carteira.", "This wallet was replaced on an account and can't be used again. Use another wallet."));
-  if (status.enrolled) {
+export async function loginOrEnroll(ctx: Ctx, w: StandardWallet, onStep: (s: string) => void): Promise<Session & { created?: boolean }> {
+  const name = walletDisplay(w.name);
+  onStep(tr(`Conectando à ${name}…`, `Connecting to ${name}…`));
+  let challengeId: string | null = null;
+  const { wallet: c, signature } = await ConnectedWallet.connectAndSign(w, ctx.config.cluster, async (publicKey) => {
+    const status = await api<{ enrolled: boolean; revoked: boolean }>("GET", `/v1/wallets/${publicKey}`, undefined, { auth: false });
+    if (status.revoked && !status.enrolled) throw new Error(tr("Esta carteira foi substituída em uma conta e não volta a valer. Use outra carteira.", "This wallet was replaced on an account and can't be used again. Use another wallet."));
+    if (!status.enrolled) return null;
     trace("login:desafio");
-    onStep(tr(`Confirme a entrada na ${c.name}…`, `Confirm sign-in in ${walletDisplay(c.name)}…`));
+    onStep(tr(`Confirme a entrada na ${name}…`, `Confirm sign-in in ${name}…`));
     const ch = await api("POST", "/v1/auth/challenge", { publicKey }, { auth: false });
-    const signature = await c.signMessage(ch.message);
-    const r = await api("POST", "/v1/auth/verify", { challengeId: ch.challengeId, publicKey, signature }, { auth: false });
+    challengeId = ch.challengeId;
+    return ch.message as string;
+  });
+  ctx.attach(c);
+  const publicKey = c.publicKey;
+  if (signature && challengeId) {
+    const r = await api("POST", "/v1/auth/verify", { challengeId, publicKey, signature }, { auth: false });
     const s: Session = { token: r.token, accountId: r.account.id, walletName: c.name, publicKey, via: "extension" };
     await ctx.setSession(s);
     return s;

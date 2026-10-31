@@ -241,9 +241,16 @@ DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
   e ícones PNG gerados por `apps/approval-web/scripts/icones.ts` (sem
   rasterizador externo; `pnpm exec tsx` dele se mudar o `icon.svg`). O
   `mime.types` da imagem do nginx não conhece `.webmanifest`: o template tem
-  um `location` com `default_type`. **Falta testar no Android**: instalar
-  pela tela inicial (`display: standalone`) e conferir que o MWA volta para o
-  app instalado; se não voltar, trocar para `"display": "browser"`.
+  um `location` com `default_type`. Testado no Android em 2026-10-31:
+  instalado pela tela inicial (`display: standalone`), a Phantom volta para o
+  app instalado.
+- Carteira do celular numa abertura só para entrar: antes eram duas
+  (conectar; depois conectar + assinar). Agora `ConnectedWallet.connectAndSign`
+  autoriza, pergunta ao serviço se a carteira tem conta, pede o desafio e
+  assina na mesma sessão do MWA (`duplachave:connectAndSignMessage` em
+  `lib/mwa.ts`). Criar conta nova continua em duas aberturas por natureza
+  (a biometria cria a chave do webapp entre a conexão e a assinatura da
+  transação). "Concluir troca" com outra carteira também virou uma abertura.
 - Ainda no mapa: textos de tela gerados no servidor só em pt (hoje o webapp
   traduz pelo código em `errors-en.ts`), divisão de `intent.tsx`/
   `security.tsx` em uma tela por arquivo, busca da chave por passkey com

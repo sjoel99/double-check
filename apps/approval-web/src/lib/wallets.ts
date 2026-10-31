@@ -39,6 +39,10 @@ type WalletFeatures = {
   "standard:events"?: { on(event: "change", cb: (props: unknown) => void): () => void };
   "standard:disconnect"?: { disconnect(): Promise<void> };
   "solana:signMessage": { signMessage(...inputs: { account: WalletAccount; message: Uint8Array }[]): Promise<readonly { signature: Uint8Array }[]> };
+  /** Só a carteira do celular (MWA): conectar e assinar numa abertura só. */
+  "duplachave:connectAndSignMessage"?: {
+    connectAndSignMessage(input: { message: (publicKey: Uint8Array) => Promise<Uint8Array | null> }): Promise<{ account: WalletAccount; signature: Uint8Array | null }>;
+  };
   "solana:signTransaction": { signTransaction(...inputs: { account: WalletAccount; transaction: Uint8Array; chain?: string }[]): Promise<readonly { signedTransaction: Uint8Array }[]> };
 } & Record<string, unknown>;
 export type StandardWallet = {
@@ -106,6 +110,30 @@ export class ConnectedWallet {
     const account = (out?.accounts ?? wallet.accounts)[0];
     if (!account) throw new Error(tr(`${walletDisplay(wallet.name)} não devolveu nenhuma conta`, `${walletDisplay(wallet.name)} returned no account`));
     return new ConnectedWallet(wallet, account, cluster);
+  }
+
+  /**
+   * Conecta e, se `message` devolver um texto para a chave pública conectada, assina-o.
+   * Na carteira do celular isso é UMA abertura (autorizar → texto → assinar); nas
+   * extensões, conectar e assinar são as duas janelas normais da própria carteira.
+   * `message` devolve null para só conectar (carteira ainda sem conta).
+   */
+  static async connectAndSign(wallet: StandardWallet, cluster: string, message: (publicKey: string) => Promise<string | null>): Promise<{ wallet: ConnectedWallet; signature: string | null }> {
+    const combo = wallet.features["duplachave:connectAndSignMessage"];
+    if (combo) {
+      trace("carteira:connectAndSign:inicio", wallet.name);
+      const out = await combo.connectAndSignMessage({
+        message: async (pk) => {
+          const text = await message(new PublicKey(pk).toBase58());
+          return text === null ? null : new TextEncoder().encode(text);
+        },
+      });
+      trace("carteira:connectAndSign:ok", out.signature ? "assinado" : "só conectado");
+      return { wallet: new ConnectedWallet(wallet, out.account, cluster), signature: out.signature ? bs58.encode(out.signature) : null };
+    }
+    const c = await ConnectedWallet.connect(wallet, cluster);
+    const text = await message(c.publicKey);
+    return { wallet: c, signature: text === null ? null : await c.signMessage(text) };
   }
 
   /**

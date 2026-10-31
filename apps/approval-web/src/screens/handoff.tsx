@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { errorText, loginOrEnroll, useApp } from "../app";
 import { api } from "../lib/api";
-import { type StandardWallet, walletDisplay } from "../lib/wallets";
+import type { StandardWallet } from "../lib/wallets";
 import { Icon, Logo } from "../icons";
 import { IosNotice, WalletList } from "./welcome";
 import { isIOS } from "../lib/activation";
@@ -39,9 +39,7 @@ export function MobileHandoff({ token }: { token: string }) {
     if (!info) return;
     setErr(null);
     try {
-      setStep(tr(`Conectando à ${walletDisplay(w.name)}…`, `Connecting to ${walletDisplay(w.name)}…`));
-      const c = await ctx.connect(w);
-      const s = await loginOrEnroll(ctx, c, setStep);
+      const s = await loginOrEnroll(ctx, w, setStep);
       if (info.kind === "SIGN_INTENT") {
         if (s.accountId !== info.accountId) throw new Error(tr("Esta carteira não é a da conta que pediu a assinatura. Troque de conta na carteira e tente de novo.", "This isn't the wallet of the account that asked for the signature. Switch accounts in the wallet and try again."));
         return ctx.go(`/intent/${info.intentId}`);
