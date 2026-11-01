@@ -294,7 +294,7 @@ export class PgStore implements Store, ChallengeStore {
               a.id AS a_id, a.user_id AS a_user_id, a.cluster AS a_cluster, a.multisig AS a_multisig, a.vault AS a_vault, a.roles AS a_roles, a.frozen_by AS a_frozen_by, a.created_at AS a_created_at
          FROM webapp_keys k JOIN smart_accounts a ON a.id = k.account_id
         WHERE k.credential_id = $1 AND k.revoked_at IS NULL AND k.public_key = a.roles->>'webapp'
-        ORDER BY k.created_at DESC LIMIT 1`,
+        ORDER BY k.created_at ASC LIMIT 1`,
       [credentialId],
     );
     const r = rows[0];

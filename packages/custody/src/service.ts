@@ -64,6 +64,8 @@ export type CustodyConfig = {
   notifications: NotificationService;
   /** Relógio do servidor, em segundos. Injetável para teste. */
   now?: () => number;
+  /** URL pública do webapp: o host entra no texto de entrada que a carteira assina. */
+  appUrl?: string;
   /** Tesouraria da Squads (ProgramConfig) para multisig_create_v2. */
   squadsTreasury: PublicKey;
   intentTtl?: number;
@@ -106,7 +108,11 @@ export class CustodyService {
     this.now = cfg.now ?? (() => Math.floor(Date.now() / 1000));
     this.intentTtl = cfg.intentTtl ?? 10 * 60;
     this.securityDelay = cfg.securityDelay ?? SECURITY_DELAY;
+    this.site = cfg.appUrl ? new URL(cfg.appUrl).host : "127.0.0.1:5173";
   }
+
+  /** Host do webapp, como aparece no texto de entrada. */
+  readonly site: string;
 
   // -------------------------------------------------------------------------
   // utilidades
@@ -267,7 +273,7 @@ export class CustodyService {
     new PublicKey(publicKey);
     const c = { id: randomUUID(), purpose, subject: publicKey, challenge: randomHex(32), expiresAt: this.now() + 300 };
     await this.store.putChallenge(c);
-    return { ...c, message: loginMessage({ publicKey, cluster: this.cfg.cluster, challenge: c.challenge, expiresAt: c.expiresAt }) };
+    return { ...c, message: loginMessage({ publicKey, cluster: this.cfg.cluster, challenge: c.challenge, expiresAt: c.expiresAt, site: this.site }) };
   }
 
   /**
@@ -321,6 +327,7 @@ export class CustodyService {
     const { tx } = this.parseSigned(transactionB64, [p.message], p.wallet);
     this.requireSignature(tx, p.webapp, "WEBAPP_BAD_SIGNATURE", "falta a assinatura da chave do webapp", { what: "MISSING" });
     if (!keyBlob?.credentialId || !keyBlob.ciphertext || !keyBlob.iv || !keyBlob.salt) deny("WEBAPP_KEY_MISSING", "falta a chave do webapp cifrada", { which: "CURRENT" });
+    await this.assertCredentialFree(keyBlob.credentialId, null);
     const sig = await this.sendSigned(tx);
     return this.finishEnrollment(p, sig, keyBlob);
   }
@@ -401,16 +408,30 @@ export class CustodyService {
   private async verifyLoginSignature(args: { challengeId: string; publicKey: string; signature: string }) {
     const ch = await this.store.takeChallenge(args.challengeId);
     if (!ch || ch.purpose !== "AUTH" || ch.subject !== args.publicKey || ch.expiresAt < this.now()) deny("CHALLENGE_INVALID", "desafio inválido", { what: "LOGIN" });
-    const text = loginMessage({ publicKey: args.publicKey, cluster: this.cfg.cluster, challenge: ch.challenge, expiresAt: ch.expiresAt });
+    const text = loginMessage({ publicKey: args.publicKey, cluster: this.cfg.cluster, challenge: ch.challenge, expiresAt: ch.expiresAt, site: this.site });
     if (!verifyWalletMessage(text, args.signature, args.publicKey)) deny("BAD_SIGNATURE", "assinatura inválida", { what: "GENERIC" });
   }
 
-  /** Cópia cifrada da chave do webapp pela passkey (só texto cifrado; a passkey é quem abre). */
+  /**
+   * Cópia cifrada da chave do webapp pela passkey (só texto cifrado; a passkey é
+   * quem abre). Sem sessão, quem souber o id da credencial fica sabendo só isto:
+   * nada da conta (id, multisig, carteira) sai daqui.
+   */
   async webappKeyByCredential(credentialId: string) {
     const found = await this.store.findWebappKeyByCredential(credentialId);
     if (!found) deny("WEBAPP_KEY_NOT_FOUND", "nenhuma conta com esta biometria");
-    const { account: acc, key: k } = found;
-    return { accountId: acc.id, publicKey: k.publicKey, blob: k.blob, client: acc.roles.client, multisig: acc.multisig };
+    return { publicKey: found.key.publicKey, blob: found.key.blob };
+  }
+
+  /**
+   * Uma passkey guarda a chave de UMA conta. Sem isto, quem soubesse o id da
+   * credencial de outra pessoa podia registrá-lo na própria conta e o lookup
+   * (que devolve uma cópia) passaria a entregar a cópia errada: a vítima não
+   * conseguiria mais entrar sem a Phantom.
+   */
+  private async assertCredentialFree(credentialId: string, accountId: string | null) {
+    const found = await this.store.findWebappKeyByCredential(credentialId);
+    if (found && found.account.id !== accountId) deny("CREDENTIAL_IN_USE", "esta biometria já guarda a chave do webapp de outra conta");
   }
 
   private async accountOfWallet(publicKey: string) {
@@ -771,6 +792,7 @@ export class CustodyService {
       if (await this.store.isRevokedKey(newKey)) deny("REVOKED_KEY_REUSE", "chave revogada não volta");
       if (args.role !== "SERVER" && (await this.cfg.serverKeys.get(newKey))) deny("CLIENT_KEY_IS_SERVER_KEY", "chave do servidor não pode ser do usuário");
       if (args.role === "WEBAPP" && !args.newKeyBlob?.ciphertext) deny("WEBAPP_KEY_MISSING", "falta a chave nova do webapp cifrada", { which: "NEW" });
+      if (args.role === "WEBAPP") await this.assertCredentialFree(args.newKeyBlob!.credentialId, accountId);
 
       const oldKey = args.role === "CLIENT" ? acc.roles.client : args.role === "WEBAPP" ? acc.roles.webapp : acc.roles.server;
       const now = this.now();
@@ -1014,6 +1036,7 @@ export class CustodyService {
     const acc = await this.account(accountId);
     const text = webappCopyMessage(acc.multisig, args.blob.credentialId);
     if (!verifyEd25519(utf8(text), decodeSignature(args.signature), new PublicKey(acc.roles.webapp))) deny("WEBAPP_BAD_SIGNATURE", "a cópia não foi assinada pela chave do webapp", { what: "COPY" });
+    await this.assertCredentialFree(args.blob.credentialId, accountId);
     await this.store.saveWebappKey({ accountId, publicKey: acc.roles.webapp, blob: args.blob, deviceName: args.deviceName, createdAt: this.now(), revokedAt: null });
     await this.audit({ type: "PASSKEY_ADDED", accountId, publicKey: acc.roles.webapp, details: { device: args.deviceName } });
   }

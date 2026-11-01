@@ -93,9 +93,10 @@ export async function buildServer(d: ApiDeps) {
     const token = (req.headers.authorization ?? "").replace(/^Bearer /, "");
     const s = readSession(d.sessionSecret, token, now());
     if (!s) throw new HttpError(401, "SESSION_INVALID", "sessão inválida");
-    // Sessão de carteira substituída morre junto com ela.
+    // Sessão de carteira substituída morre junto com ela; a de chave do webapp substituída também.
     const acc = await d.store.getAccount(s.acc);
     if (!acc || acc.roles.client !== s.key) throw new HttpError(401, "SESSION_STALE_WALLET", "sessão de uma carteira que não é mais a da conta");
+    if (s.wk && acc.roles.webapp !== s.wk) throw new HttpError(401, "SESSION_STALE_WALLET", "sessão de uma chave do webapp que não é mais a da conta");
     return s;
   };
   const ownAccount = async (req: FastifyRequest, accountId: string) => {
@@ -103,15 +104,17 @@ export async function buildServer(d: ApiDeps) {
     if (s.acc !== accountId) throw new HttpError(403, "FORBIDDEN_ACCOUNT", "conta de outro usuário");
     return s;
   };
+  // Sessão antes de ler o registro: sem sessão a resposta é sempre 401, e um id não se confirma sem entrar.
   const ownIntent = async (req: FastifyRequest, id: string) => {
+    const s = await session(req);
     const rec = await d.store.getIntent(id);
     if (!rec) throw new SecurityError("INTENT_NOT_FOUND", id, { id });
-    await ownAccount(req, rec.accountId);
+    if (rec.accountId !== s.acc) throw new HttpError(403, "FORBIDDEN_ACCOUNT", "conta de outro usuário");
     return rec;
   };
   const view = (rec: IntentRecord) => ({ ...rec, display: renderIntent(rec.intent, { riskFlags: rec.riskFlags }) });
-  const tokenFor = (acc: { userId: string; id: string; roles: { client: string } }) =>
-    issueSession(d.sessionSecret, { sub: acc.userId, acc: acc.id, key: acc.roles.client, exp: now() + 12 * 3600 });
+  const tokenFor = (acc: { userId: string; id: string; roles: { client: string; webapp?: string } }, via: "WALLET" | "WEBAPP" = "WALLET") =>
+    issueSession(d.sessionSecret, { sub: acc.userId, acc: acc.id, key: acc.roles.client, ...(via === "WEBAPP" ? { wk: acc.roles.webapp } : {}), exp: now() + 12 * 3600 });
 
   app.get("/healthz", async () => ({ ok: true }));
 
@@ -169,7 +172,7 @@ export async function buildServer(d: ApiDeps) {
   app.post("/v1/auth/webapp", async (req) => {
     const body = z.object({ challengeId: z.string().uuid(), publicKey: pubkey, signature }).parse(req.body);
     const acc = await d.custody.loginWithWebapp(body);
-    return { token: tokenFor(acc), account: acc };
+    return { token: tokenFor(acc, "WEBAPP"), account: acc };
   });
 
   /**
@@ -287,9 +290,10 @@ export async function buildServer(d: ApiDeps) {
     return rest;
   };
   const ownChange = async (req: FastifyRequest, id: string) => {
+    const s = await session(req);
     const c = await d.custody.listSecurityChangesById(id);
     if (!c) throw new SecurityError("CHANGE_NOT_FOUND", id, { id });
-    await ownAccount(req, c.accountId);
+    if (c.accountId !== s.acc) throw new HttpError(403, "FORBIDDEN_ACCOUNT", "conta de outro usuário");
     return c;
   };
 
@@ -378,7 +382,7 @@ export async function buildServer(d: ApiDeps) {
   }
 
   // Continuar no celular: o QR abre o nosso app no celular.
-  registerPay(app, { custody: d.custody, store: d.store, appUrl: d.publicUrl ?? "http://127.0.0.1:5173", issueToken: tokenFor, now, ownAccount });
+  registerPay(app, { custody: d.custody, store: d.store, appUrl: d.publicUrl ?? "http://127.0.0.1:5173", issueToken: (acc) => tokenFor(acc), now, ownIntent, ownAccount });
 
   return app;
 }

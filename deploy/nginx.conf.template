@@ -11,10 +11,18 @@ map $uri $dk_cache_control {
 
 # IP real do cliente para os limites por IP da API (que confia no X-Forwarded-For):
 # atrás da Cloudflare é o CF-Connecting-IP; sem ela, o próprio remetente.
+# Este nginx não tem porta pública: só o cloudflared (túnel) e os outros containers
+# da VPS chegam nele. Por isso o CF-Connecting-IP é confiável aqui; quem o forjasse
+# teria que estar dentro da própria VPS.
 map $http_cf_connecting_ip $dk_client_ip {
     default    $http_cf_connecting_ip;
     ""         $remote_addr;
 }
+
+# /rpc é um proxy aberto para o RPC da devnet: um limite por IP para ninguém usar
+# este endereço como RPC gratuito (o webapp faz poucas chamadas por segundo).
+limit_req_zone $dk_client_ip zone=dk_rpc:10m rate=10r/s;
+limit_req_status 429;
 
 server {
     listen 80;
@@ -50,6 +58,7 @@ server {
 
     location = /rpc {
         limit_except POST { deny all; }
+        limit_req zone=dk_rpc burst=30 nodelay;
         set $rpc ${RPC_UPSTREAM};
         proxy_pass $rpc;
         proxy_ssl_server_name on;

@@ -5,6 +5,7 @@ import { MWA_NAME, PHONE_WALLET, type StandardWallet, walletDisplay, walletLabel
 import { api } from "../lib/api";
 import { PhoneQr } from "../components/PhoneQr";
 import { isAndroid, isIOS, isMobile } from "../lib/activation";
+import { short } from "../lib/chain";
 import { tr } from "../lib/i18n";
 
 const MWA = MWA_NAME;
@@ -80,9 +81,19 @@ export function Welcome() {
   const [step, setStep] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [phone, setPhone] = useState(false);
+  /** O celular entrou; antes de este computador entrar junto, a pessoa confirma que a carteira é a dela. */
+  const [pending, setPending] = useState<{ sessionToken: string; accountId: string; publicKey: string } | null>(null);
 
-  const fromPhone = async (r: { sessionToken: string; accountId: string; publicKey: string }) => {
-    await ctx.setSession({ token: r.sessionToken, accountId: r.accountId, walletName: PHONE_WALLET, publicKey: r.publicKey, via: "phone" });
+  // Quem fotografa o QR de entrada pode entrar NELE com a própria carteira: este computador
+  // cairia na conta de outra pessoa (e um depósito iria para o Vault dela). Por isso a
+  // carteira que entrou aparece aqui, e só entra com um toque de quem está na frente da tela.
+  const fromPhone = (r: { sessionToken?: string; accountId: string; publicKey: string }) => {
+    if (!r.sessionToken) return setErr(tr("Este QR já foi usado. Gere outro.", "This QR code was already used. Generate a new one."));
+    setPending({ sessionToken: r.sessionToken, accountId: r.accountId, publicKey: r.publicKey });
+  };
+  const acceptPhone = async () => {
+    if (!pending) return;
+    await ctx.setSession({ token: pending.sessionToken, accountId: pending.accountId, walletName: PHONE_WALLET, publicKey: pending.publicKey, via: "phone" });
     ctx.go("/");
     ctx.toast(tr("Você entrou pelo celular. As assinaturas continuam no celular.", "You signed in from your phone. Signing stays on the phone."));
   };
@@ -113,7 +124,23 @@ export function Welcome() {
         {tr("Sua carteira e a biometria do seu aparelho assinam; o serviço confere a política e executa. Quem garante é o programa da Squads na Solana.", "Your wallet and your device's biometrics sign; the service checks the policy and executes. Squads' program on Solana enforces it.")}
       </div>
       {/* No celular não há extensão nem faz sentido escanear a própria tela: a carteira abre pelo app (MWA). */}
-      {isMobile() ? null : phone ? (
+      {isMobile() ? null : pending ? (
+        <div className="card" style={{ gap: 12 }}>
+          <div style={{ fontSize: 17, fontWeight: 600 }}>{tr("O celular entrou com a carteira", "The phone signed in with wallet")}</div>
+          <div className="mono" style={{ fontSize: 15, wordBreak: "break-all" }} title={pending.publicKey}>
+            {short(pending.publicKey)}
+          </div>
+          <div className="muted" style={{ fontSize: 13, lineHeight: 1.5 }}>
+            {tr("Confira na sua carteira do celular se é este endereço. Se não foi você que acabou de entrar no celular, não continue: alguém usou o seu QR.", "Check on your phone wallet that this is the address. If it wasn't you who just signed in on the phone, don't continue: someone used your QR code.")}
+          </div>
+          <button type="button" className="btn primary" onClick={() => void acceptPhone()}>
+            <Icon name="check" color="#0B0D10" sw={2} /> {tr("É a minha carteira, entrar", "It's my wallet, sign in")}
+          </button>
+          <button type="button" className="linkbtn" onClick={() => setPending(null)}>
+            {tr("Não é a minha carteira", "Not my wallet")}
+          </button>
+        </div>
+      ) : phone ? (
         <div className="card">
           <PhoneQr
             create={() => api("POST", "/v1/pay/connect", {}, { auth: false })}

@@ -29,11 +29,17 @@ describe("continuar no celular", () => {
     expect((await t.call("POST", `/v1/handoff/${token}/claim`, { accountId: phone.account.id }, phone.token)).status).toBe(200);
     // Quem só viu o QR (token) não lê o resultado: o acompanhamento é pelo `poll`.
     expect((await t.call("GET", `/v1/pay/${token}`)).json.error).toBe("PAY_NOT_FOUND");
+    // O token de sessão não fica no banco: é emitido quando o computador busca, uma vez só.
+    expect((await t.store.getHandoff(token))?.status).toBe("DONE");
+    expect(JSON.stringify((await t.store.getHandoff(token))?.result)).not.toContain("sessionToken");
     const st = await t.call("GET", `/v1/pay/${qr.json.poll}`);
     expect(st.json.status).toBe("DONE");
-    // O pedido vive no banco, não em memória.
-    expect((await t.store.getHandoff(token))?.status).toBe("DONE");
+    expect(st.json.result.publicKey).toBe(phone.account.roles.client);
     expect((await t.call("GET", `/v1/accounts/${phone.account.id}/security`, undefined, st.json.result.sessionToken)).status).toBe(200);
+    const again = await t.call("GET", `/v1/pay/${qr.json.poll}`);
+    expect(again.json.status).toBe("DONE");
+    expect(again.json.result.sessionToken).toBeUndefined();
+    expect(JSON.stringify((await t.store.getHandoff(token))?.result)).not.toContain("sessionToken");
   });
 
   it("pelo QR, sem entrar na conta: cópia cifrada da chave, conferência, webapp + operador + Phantom", async () => {
@@ -54,9 +60,29 @@ describe("continuar no celular", () => {
     expect((await t.call("POST", `/v1/handoff/${token}/authorize`, { message: Buffer.from(review.message).toString("base64"), webappSignature: bs58.encode(await bogus.sign(review.message)) })).json.error).toBe("WEBAPP_BAD_SIGNATURE");
     const done = await signIntent(t, `/v1/handoff/${token}`, wallet, webapp);
     expect(done.json.status).toBe("EXECUTED");
+    // Assinada, o token do QR não abre mais nada da conta — mesmo antes de o computador buscar.
+    expect((await t.call("GET", `/v1/handoff/${token}/key`)).json).toMatchObject({ error: "PAY_USED", params: { what: "USED" } });
+    expect((await t.call("POST", `/v1/handoff/${token}/reject`, {})).json).toMatchObject({ error: "PAY_USED" });
+    expect((await t.call("GET", `/v1/handoff/${token}/intent`)).json.record.status).toBe("EXECUTED");
     expect((await t.call("GET", `/v1/pay/${pay.json.poll}`)).json.status).toBe("DONE");
     expect((await t.call("POST", `/v1/handoff/${token}/prepare`, {})).json).toMatchObject({ error: "PAY_USED", params: { what: "USED" } });
     expect(await t.chain.getBalance(new PublicKey(to))).toBe(2n * SOL);
+  });
+
+  it("QR de assinatura vencido: nem a intenção nem a chave saem; sem sessão, um id de intenção não se confirma", async () => {
+    const t = await setup();
+    const { token: session, account } = await enroll(t);
+    t.chain.airdrop(new PublicKey(account.vault), 5n * SOL);
+    const intent = await t.call("POST", `/v1/accounts/${account.id}/intents`, { type: "TRANSFER_SOL", destination: Keypair.generate().publicKey.toBase58(), amountSol: "1" }, session);
+    const pay = await t.call("POST", `/v1/intents/${intent.json.intent.id}/pay`, {}, session);
+    const token = tokenOf(pay.json.url);
+    t.advance(11 * 60);
+    expect((await t.call("GET", `/v1/handoff/${token}/intent`)).json.error).toBe("PAY_USED");
+    expect((await t.call("GET", `/v1/handoff/${token}/key`)).json.error).toBe("PAY_USED");
+    // Sem sessão: 401 tanto para um id real quanto para um inventado.
+    expect((await t.call("GET", `/v1/intents/${intent.json.intent.id}`)).status).toBe(401);
+    expect((await t.call("GET", "/v1/intents/00000000-0000-4000-8000-000000000000")).status).toBe(401);
+    expect((await t.call("POST", `/v1/intents/${intent.json.intent.id}/pay`, {})).status).toBe(401);
   });
 
   it("QR sem pedido não existe", async () => {

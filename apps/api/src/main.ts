@@ -69,6 +69,7 @@ const custody = new CustodyService({
   service,
   notifications,
   squadsTreasury: programConfig.treasury,
+  appUrl: publicUrl,
   securityDelay: cfg.DK_SECURITY_DELAY,
   log,
 });

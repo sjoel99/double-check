@@ -20,7 +20,7 @@ export async function setup(opts: { securityDelay?: number } = {}) {
   const now = () => Math.floor(Date.now() / 1000) + offset;
   chain.warp(now() - (await chain.now()));
   const store = new MemoryStore();
-  const custody = new CustodyService({ cluster: "localnet", chain, store, policy: new DefaultPolicyEngine(), serverKeys: new DevServerKeyProvider("localnet"), service, notifications: new LogNotificationService(), squadsTreasury: chain.treasury, now, securityDelay: opts.securityDelay });
+  const custody = new CustodyService({ cluster: "localnet", chain, store, policy: new DefaultPolicyEngine(), serverKeys: new DevServerKeyProvider("localnet"), service, notifications: new LogNotificationService(), squadsTreasury: chain.treasury, now, securityDelay: opts.securityDelay, appUrl: ORIGIN });
   const app = await buildServer({ custody, store, chain, cluster: "localnet", sessionSecret: "s".repeat(64), adminToken: "admin-token-123456", airdrop: async (a, l) => chain.airdrop(a, BigInt(l)), publicUrl: ORIGIN, now });
   const call = async (method: "GET" | "POST", url: string, body?: unknown, token?: string, headers: Record<string, string> = {}) => {
     const r = await app.inject({ method, url, payload: body as object, headers: { origin: ORIGIN, ...(token ? { authorization: `Bearer ${token}` } : {}), ...headers } });
@@ -35,16 +35,16 @@ export async function setup(opts: { securityDelay?: number } = {}) {
 export type T = Awaited<ReturnType<typeof setup>>;
 
 /** Cadastro pela API: a chave do webapp e a Phantom assinam; vai a cópia cifrada da chave do webapp. */
-export async function enroll(t: T, wallet = DevMemorySigner.generate("PHANTOM"), webapp = DevMemorySigner.generate("WEBAPP")) {
+export async function enroll(t: T, wallet = DevMemorySigner.generate("PHANTOM"), webapp = DevMemorySigner.generate("WEBAPP"), keyBlob = blob()) {
   const publicKey = (await wallet.publicKey()).toBase58();
   t.chain.airdrop(await wallet.publicKey(), SOL);
   const p = await t.call("POST", "/v1/enrollment/prepare", { publicKey, webappPublicKey: (await webapp.publicKey()).toBase58(), walletName: "Phantom" });
   expect(p.status).toBe(200);
   const tx = fromB64(p.json.transaction);
   tx.addSignature(await webapp.publicKey(), await webapp.sign(tx.message.serialize()));
-  const r = await t.call("POST", "/v1/enrollment/submit", { enrollmentId: p.json.enrollmentId, transaction: await signAsWallet(tx, wallet), keyBlob: blob() });
-  expect(r.status).toBe(200);
-  return { wallet, webapp, token: r.json.token as string, account: r.json.account };
+  const r = await t.call("POST", "/v1/enrollment/submit", { enrollmentId: p.json.enrollmentId, transaction: await signAsWallet(tx, wallet), keyBlob });
+  if (r.status !== 200) return { wallet, webapp, token: "", account: null, error: r.json as { error: string } };
+  return { wallet, webapp, token: r.json.token as string, account: r.json.account, error: null };
 }
 
 /** Assinar uma intenção pela API (base = /v1/intents/:id ou /v1/handoff/:token). */

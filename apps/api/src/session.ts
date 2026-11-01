@@ -5,7 +5,8 @@ import { createHmac, timingSafeEqual } from "node:crypto";
  * move fundos ou muda chaves continua exigindo as assinaturas das chaves do
  * usuário (Phantom e chave do webapp).
  */
-export type Session = { sub: string; acc: string; key: string; exp: number };
+/** `key`: a carteira da conta na hora da entrada. `wk`: só quando se entrou com a chave do webapp — a sessão morre se essa chave for trocada. */
+export type Session = { sub: string; acc: string; key: string; wk?: string; exp: number };
 
 const b64u = (b: Buffer) => b.toString("base64url");
 

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { SecurityError } from "@duplachave/shared";
-import { type CustodyService, type HandoffRecord, intentSummary, qrLabel, renderIntent, type Store } from "@duplachave/custody";
+import { type CustodyService, type HandoffRecord, type IntentRecord, intentSummary, qrLabel, renderIntent, type Store } from "@duplachave/custody";
 import { HttpError } from "./errors";
 
 /**
@@ -13,7 +13,11 @@ import { HttpError } from "./errors";
  * O token só diz o que abrir; quem assina continua sendo a carteira da conta
  * (o celular entra com ela) e a biometria. O computador acompanha por
  * GET /v1/pay/:poll — `poll` é um segredo separado, que só o computador recebe:
- * quem só viu o QR não lê o resultado (no CONNECT ele traz o token de sessão).
+ * quem só viu o QR não lê o resultado.
+ *
+ * No CONNECT, o token de sessão NÃO fica no banco: o celular grava só a conta,
+ * e a sessão é emitida na hora em que o computador busca o resultado, uma vez.
+ * Quem lê o banco (ou um backup) não leva uma sessão viva.
  *
  * Os pedidos ficam no banco (não em memória): sobrevivem a um restart da API.
  */
@@ -29,6 +33,8 @@ export type PayDeps = {
   appUrl: string;
   issueToken: (acc: { userId: string; id: string; roles: { client: string } }) => string;
   now: () => number;
+  /** Sessão primeiro, registro depois: sem sessão é 401, e não se confirma um id sem entrar. */
+  ownIntent: (req: FastifyRequest, id: string) => Promise<IntentRecord>;
   ownAccount: (req: FastifyRequest, accountId: string) => Promise<unknown>;
 };
 
@@ -53,11 +59,12 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
     }
     return h;
   };
-  const byToken = async (token: string) => settle(await d.store.getHandoff(token));
-  const byPoll = async (poll: string) => settle(await d.store.getHandoffByPoll(poll));
-
-  /** Para o computador: em assinatura, o estado vem da própria intenção. */
-  const view = async (h: HandoffRecord) => {
+  /**
+   * Em assinatura, o estado vem da própria intenção: assim que ela sai de
+   * AWAITING_CLIENT (assinada, recusada ou vencida), o token do QR deixa de abrir
+   * seja o que for — mesmo que o computador ainda não tenha vindo buscar.
+   */
+  const settleSign = async (h: HandoffRecord) => {
     if (h.kind === "SIGN_INTENT" && h.status === "WAITING") {
       const rec = await d.store.getIntent(h.subject!);
       if (rec && rec.status !== "AWAITING_CLIENT") {
@@ -66,7 +73,22 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
         await d.store.saveHandoff(h);
       }
     }
-    return { status: h.status, kind: h.kind, error: h.error, result: h.result, expiresAt: h.expiresAt };
+    return h;
+  };
+  const byToken = async (token: string) => settleSign(await settle(await d.store.getHandoff(token)));
+  const byPoll = async (poll: string) => settleSign(await settle(await d.store.getHandoffByPoll(poll)));
+
+  /** Para o computador. No CONNECT, a sessão é emitida aqui, uma vez só, e nunca gravada. */
+  const view = async (h: HandoffRecord) => {
+    let result = h.result;
+    if (h.kind === "CONNECT" && h.status === "DONE" && result && !result.delivered) {
+      const acc = await d.store.getAccount(result.accountId as string);
+      if (!acc) throw new SecurityError("ACCOUNT_NOT_FOUND", String(result.accountId), { id: String(result.accountId) });
+      h.result = { ...result, delivered: true };
+      await d.store.saveHandoff(h);
+      result = { ...h.result, sessionToken: d.issueToken(acc) };
+    }
+    return { status: h.status, kind: h.kind, error: h.error, result, expiresAt: h.expiresAt };
   };
 
   const used = (what: "USED" | "NOT_SIGN" = "USED") => new SecurityError("PAY_USED", what === "USED" ? "este QR já foi usado ou expirou" : "este QR não é de assinatura", { what });
@@ -76,9 +98,7 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
 
   app.post("/v1/intents/:id/pay", async (req) => {
     const { id } = req.params as { id: string };
-    const rec = await d.store.getIntent(id);
-    if (!rec) throw new SecurityError("INTENT_NOT_FOUND", id, { id });
-    await d.ownAccount(req, rec.accountId);
+    const rec = await d.ownIntent(req, id);
     return create("SIGN_INTENT", id, rec.accountId, qrLabel(rec.intent).replace(/^Double Check · /, ""));
   });
 
@@ -111,9 +131,11 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
     return { ...rec, display: renderIntent(rec.intent, { riskFlags: rec.riskFlags }) };
   };
 
+  // A intenção continua legível depois de assinada (o celular mostra o resultado), mas não depois de vencer ou falhar.
   app.get("/v1/handoff/:token/intent", async (req) => {
     const h = await byToken((req.params as { token: string }).token);
     if (h.kind !== "SIGN_INTENT") throw used("NOT_SIGN");
+    if (h.status !== "WAITING" && h.status !== "DONE") throw used();
     return { record: await intentView(h.subject!) };
   });
 
@@ -158,7 +180,8 @@ export function registerPay(app: FastifyInstance, d: PayDeps) {
     await d.ownAccount(req, accountId);
     const acc = (await d.store.getAccount(accountId))!;
     h.status = "DONE";
-    h.result = { accountId, sessionToken: d.issueToken(acc), walletName: "Carteira do celular", publicKey: acc.roles.client };
+    // Sem token de sessão aqui: `view` emite um quando o computador buscar (ver o cabeçalho).
+    h.result = { accountId, walletName: "Carteira do celular", publicKey: acc.roles.client };
     await d.store.saveHandoff(h);
     return { ok: true };
   });

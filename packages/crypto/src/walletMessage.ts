@@ -16,11 +16,17 @@ import { verifyEd25519 } from "./signer";
 
 const iso = (t: number) => new Date(t * 1000).toISOString().replace(".000Z", "Z");
 
-export function loginMessage(f: { publicKey: string; cluster: string; challenge: string; expiresAt: number }): string {
+/**
+ * `site` é o host do webapp: a carteira mostra de que site veio o pedido, e o
+ * texto diz para que site vale. Um site falso que repassar este texto para a
+ * carteira assinar não consegue fazer o texto dizer o nome dele (SIWS).
+ */
+export function loginMessage(f: { publicKey: string; cluster: string; challenge: string; expiresAt: number; site: string }): string {
   return [
     "Double Check",
     "Entrar na sua conta. Isto não aprova nenhuma transação.",
     "",
+    `Site: ${f.site}`,
     `Carteira: ${f.publicKey}`,
     `Rede: ${f.cluster}`,
     `Desafio: ${f.challenge}`,

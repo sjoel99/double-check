@@ -73,6 +73,7 @@ const RULES: Record<string, Rule> = {
   WEBAPP_IS_WALLET: tr("A chave do webapp não pode ser a carteira.", "The webapp key can't be the wallet."),
   WEBAPP_KEY_MISSING: (p) => (p.which === "NEW" ? tr("Falta a chave nova do webapp cifrada.", "The new encrypted webapp key is missing.") : tr("Falta a chave do webapp cifrada.", "The encrypted webapp key is missing.")),
   WEBAPP_KEY_NOT_FOUND: tr("Nenhuma conta com esta biometria.", "No account uses these biometrics."),
+  CREDENTIAL_IN_USE: tr("Esta biometria já guarda a chave de outra conta. Use outra passkey.", "These biometrics already hold another account's key. Use another passkey."),
   WEBAPP_SIGNATURE_MISSING: tr("Trocar a carteira exige a chave do webapp (biometria).", "Changing the wallet requires the webapp key (biometrics)."),
   WEBAPP_BAD_SIGNATURE: (p) =>
     p.what === "COPY"

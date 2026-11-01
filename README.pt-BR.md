@@ -291,6 +291,32 @@ DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
     **Armadilha:** `require("buffer")` em dependências CommonJS (safe-buffer)
     caía no builtin vazio do Vite e a página morria com `Buffer.from`
     undefined; `resolve.alias.buffer` aponta para o pacote npm.
+- Bloco 6 (2026-11-01, revisão de segurança "acesso não autorizado"): dez
+  apontamentos, oito corrigidos e dois aceitos.
+  - **QR de entrada:** quem fotografa o QR podia entrar NELE com a própria
+    carteira e o computador da vítima caía na conta do atacante (um depósito
+    pelo QR do Solana Pay iria para o Vault dele). Agora o computador mostra a
+    carteira que entrou e só entra com um toque ("É a minha carteira, entrar");
+    a tela de depósito mostra de que carteira é a conta. O token de sessão não
+    vai mais para o banco: `claim` grava só a conta e `GET /v1/pay/:poll` emite
+    a sessão na primeira busca (`delivered`), uma vez.
+  - **QR de assinatura:** `/key`, `/reject`, `/prepare`… morrem assim que a
+    intenção sai de AWAITING_CLIENT (antes só quando o computador buscava);
+    `/intent` recusa QR vencido ou falhado.
+  - **Entrada:** o texto que a carteira assina traz `Site: <host>` (SIWS);
+    `CustodyConfig.appUrl`. Sessão aberta com a chave do webapp leva `wk` e
+    morre se essa chave for trocada (`SESSION_STALE_WALLET`).
+  - **Passkey:** `credentialId` é de UMA conta (`CREDENTIAL_IN_USE` no
+    cadastro, na cópia e na troca); Postgres devolve a mais antiga (igual à
+    memória); `/v1/webapp-keys/lookup` entrega só `{ publicKey, blob }`.
+  - **401 antes de 404:** `ownIntent`, `ownChange` e `/v1/intents/:id/pay`
+    leem a sessão antes do registro (um id não se confirma sem entrar).
+  - **nginx:** `limit_req` 10 r/s por IP no `/rpc` (proxy aberto para a
+    devnet pública); nota de que o CF-Connecting-IP é confiável porque o nginx
+    só é alcançado pelo túnel do cloudflared e por containers da VPS.
+  - Aceitos: `trustProxy` + CF-Connecting-IP forjável só de dentro da VPS;
+    `/v1/intents/:id` de outra conta responde 403 (não 404) para quem já entrou.
+  - Testes: 95 em memória + 18 com Postgres.
 - Ainda no mapa (aceito por ora): `@noble/curves` em duas versões (web3.js 1.x
   pinna 1.9; trocar lib criptográfica por alias para poupar ~20 kB não vale);
   `bigint-buffer` via `@sqds/multisig` sem correção; modo claro (só escuro,

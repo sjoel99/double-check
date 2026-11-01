@@ -3,6 +3,7 @@ import { PublicKey, SystemProgram, TransactionMessage, VersionedTransaction } fr
 import { verifyAccountOnChain } from "@duplachave/custody/src/client";
 import { errorText, useApp } from "../app";
 import { qrDataUrl } from "../lib/qr";
+import { short } from "../lib/chain";
 import { parseSol, sendSigned, sol } from "../lib/chain";
 import { walletWord } from "../lib/wallets";
 import { Icon } from "../icons";
@@ -141,11 +142,16 @@ export function Deposit() {
             </div>
           </div>
         )}
-        {viaPhone && qr && (
+        {viaPhone && qr && acc && (
           <div className="card qr-box">
             <img className="qr" src={qr} alt={tr("QR de depósito", "Deposit QR code")} />
             <div className="muted" style={{ fontSize: 13, textAlign: "center" }}>
               {tr("Escaneie com a carteira do celular. O saldo do Vault atualiza sozinho quando chegar.", "Scan with your phone wallet. The Vault balance updates on its own when it arrives.")}
+            </div>
+            {/* Quem entrou pelo QR não tem a carteira aqui para conferir o Vault na chain: mostra de que carteira é esta conta. */}
+            <div className="muted" style={{ fontSize: 12, textAlign: "center" }}>
+              {tr("Vault da conta da carteira ", "Vault of the account of wallet ")}
+              <span className="mono" title={acc.account.roles.client}>{short(acc.account.roles.client)}</span>
             </div>
           </div>
         )}

@@ -153,7 +153,7 @@ As decisões D1–D14 do modelo 2 de 2 estão no histórico do git (commit `b210
 
 ### D18. Entrar sem a Phantom
 
-Quem perdeu a Phantom entra com a chave do webapp (`POST /v1/auth/webapp`, assinatura do texto de entrada). O aparelho descobre a passkey e pede a cópia cifrada ao serviço (`/v1/webapp-keys/lookup`, que entrega só texto cifrado). Depois pede "Trocar a Phantom".
+Quem perdeu a Phantom entra com a chave do webapp (`POST /v1/auth/webapp`, assinatura do texto de entrada). O aparelho descobre a passkey e pede a cópia cifrada ao serviço (`/v1/webapp-keys/lookup`, que entrega só a chave pública e o texto cifrado: nada da conta). Uma credencial de passkey guarda a chave de uma conta só (`CREDENTIAL_IN_USE` nas demais). A sessão aberta assim fica presa à chave do webapp: se ela for trocada, a sessão morre. Depois pede "Trocar a Phantom".
 
 ## Ambientes
 

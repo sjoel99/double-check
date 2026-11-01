@@ -141,9 +141,33 @@ describe("API (modelo 2 de 3)", () => {
     const { token, account } = await enroll(t);
     const keys = (await t.call("GET", `/v1/accounts/${account.id}/webapp-keys`, undefined, token)).json.keys;
     const found = await t.call("POST", "/v1/webapp-keys/lookup", { credentialId: keys[0].blob.credentialId });
-    expect(found.json).toMatchObject({ accountId: account.id, publicKey: account.roles.webapp });
+    // Só a chave pública e o texto cifrado: nada da conta sai sem sessão.
+    expect(found.json).toEqual({ publicKey: account.roles.webapp, blob: keys[0].blob });
     expect((await t.call("POST", "/v1/webapp-keys/lookup", { credentialId: "nao-existe-123" })).json.error).toBe("WEBAPP_KEY_NOT_FOUND");
+    // Uma passkey guarda a chave de UMA conta: outra conta não registra a mesma credencial (nem no cadastro, nem como cópia, nem na troca).
+    const other = await enroll(t, undefined, undefined, { ...blob(), credentialId: keys[0].blob.credentialId });
+    expect(other.error?.error).toBe("CREDENTIAL_IN_USE");
+    const b = await enroll(t);
+    const thief = DevMemorySigner.generate("WEBAPP_LADRAO");
+    const req = await t.call("POST", `/v1/accounts/${b.account.id}/security-changes`, { role: "WEBAPP", newKey: (await thief.publicKey()).toBase58(), newKeyBlob: { ...blob(), credentialId: keys[0].blob.credentialId } }, b.token);
+    expect(req.json.error).toBe("CREDENTIAL_IN_USE");
+    // A mesma conta pode guardar mais uma cópia para a mesma credencial.
+    expect((await t.call("POST", "/v1/webapp-keys/lookup", { credentialId: keys[0].blob.credentialId })).json.publicKey).toBe(account.roles.webapp);
     void loginMessage;
+  });
+
+  it("o texto de entrada diz o site; a sessão aberta com a chave do webapp morre quando essa chave é trocada", async () => {
+    const t = await setup();
+    const { webapp, account } = await enroll(t);
+    const ch = await t.call("POST", "/v1/auth/challenge", { publicKey: account.roles.webapp });
+    expect(ch.json.message).toContain("Site: dupla.example");
+    const login = await t.call("POST", "/v1/auth/webapp", { challengeId: ch.json.challengeId, publicKey: account.roles.webapp, signature: await signText(webapp, ch.json.message) });
+    expect(login.status).toBe(200);
+    expect((await t.call("GET", `/v1/accounts/${account.id}/security`, undefined, login.json.token)).status).toBe(200);
+    // Troca da chave do webapp concluída (aqui, direto no banco): a sessão antiga não vale mais.
+    const acc = (await t.store.getAccount(account.id))!;
+    await t.store.saveAccount({ ...acc, roles: { ...acc.roles, webapp: (await DevMemorySigner.generate("WEBAPP_NOVA").publicKey()).toBase58() } });
+    expect((await t.call("GET", `/v1/accounts/${account.id}/security`, undefined, login.json.token)).json.error).toBe("SESSION_STALE_WALLET");
   });
 
   it("e-mail de alerta: exige sessão e a assinatura da chave do webapp", async () => {
