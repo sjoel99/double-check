@@ -251,9 +251,8 @@ DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
   `lib/mwa.ts`). Criar conta nova continua em duas aberturas por natureza
   (a biometria cria a chave do webapp entre a conexão e a assinatura da
   transação). "Concluir troca" com outra carteira também virou uma abertura.
-- Carteira do celular numa abertura só para entrar (2026-10-31): a sessão do
-  MWA autoriza, pergunta ao serviço se há conta, pede o desafio e assina sem
-  fechar (`ConnectedWallet.connectAndSign`). Criar conta continua em duas.
+  **Testado no Android em 2026-11-01** (Phantom, MWA 3.0.1): uma ligação e
+  uma assinatura, só.
 - Bloco 5 (2026-10-31, "o resto do mapa"):
   - **Erros por código e parâmetros.** `SecurityError(code, message, params)`;
     a API devolve `{ error, message, params }` e o webapp monta a frase em
@@ -287,7 +286,7 @@ DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
     `trn()` no lugar dos ramos `lang === "pt"`; sentinelas `PHONE_WALLET`/
     `NO_WALLET`; `UnlockedKey.sign` após `wipe()` lança `KEY_WIPED`; sal do
     blob conferido (sempre foi o `PRF_SALT` fixo; os 3 blobs em produção batem).
-    MWA 3.0.1. Chunks: `polyfills` 27 kB (tem que avaliar antes do web3.js),
+    MWA 3.0.1 (testado no Android em 2026-11-01). Chunks: `polyfills` 27 kB (tem que avaliar antes do web3.js),
     `index` 239 kB, `solana` 331 kB, `squads` 217 kB só nas telas que assinam.
     **Armadilha:** `require("buffer")` em dependências CommonJS (safe-buffer)
     caía no builtin vazio do Vite e a página morria com `Buffer.from`
