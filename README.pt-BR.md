@@ -332,6 +332,11 @@ DATABASE_URL=postgres://... pnpm dev   # API persistindo em Postgres
    abrem o app, assinam e voltam ao Safari) ou (c) navegador dentro da carteira
    (a passkey provavelmente falha lá; precisa testar).
 6. Textos do webapp: "biometria" → "biometria ou PIN" (pendente de decisão).
+8. Entrada pelo QR (decisão em aberto, 2026-11-01): hoje o computador mostra a
+   carteira que entrou e pede um toque. Alternativas: entrar direto com o
+   endereço num aviso (mais leve, protege menos) ou código de 4 dígitos
+   mostrado no celular e digitado no computador (mais forte). O serviço não
+   tem como validar sozinho: na entrada ainda não existe conta para comparar.
 7. Nome definitivo do produto/domínio (provisório: dupla.sjoel99.com).
 
 **Armadilha nos testes:** com o LiteSVM carregado, o resto de double (`x % 1e6` com x > 2^31) e o `randomInt` do Node dão NaN ou travam. Use só inteiros de 32 bits.
